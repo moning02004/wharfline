@@ -1,0 +1,41 @@
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wharfline
+      POSTGRES_USER: wharfline
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-wharfline}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wharfline -d wharfline"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  backend:
+    build: ./backend
+    image: wharfline-backend
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql+psycopg://wharfline:${POSTGRES_PASSWORD:-wharfline}@db:5432/wharfline
+      CORS_ORIGINS: http://localhost:${WEB_PORT:-8080}
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+
+  frontend:
+    build: ./frontend
+    image: wharfline-frontend
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  pgdata:

@@ -1,0 +1,209 @@
+export type Status = "ok" | "bad" | "run" | "cancel" | "warn";
+export type Role = "Owner" | "Admin" | "Deployer" | "Viewer";
+
+export interface Me {
+  name: string;
+  role: Role;
+  email: string;
+}
+
+export interface Session {
+  loggedIn: boolean;
+  me: Me;
+  sudoUntil: number;
+  sudoMinutes: number;
+}
+
+export interface Host {
+  name: string;
+  ip: string;
+  port: number;
+  user: string;
+  group: string;
+  hostKey: "ok" | "changed";
+  status: "on" | "off";
+  skip?: string;
+}
+
+export interface Inventory {
+  id: string;
+  name: string;
+  key: string;
+  hosts: Host[];
+}
+
+export interface ImageTag {
+  name: string;
+  digest: string;
+  pushed: string;
+}
+
+export interface Job {
+  id: string;
+  method: "compose" | "ansible";
+  name: string;
+  image: string;
+  tagNow: string;
+  defaultTag: string;
+  repo?: string;
+  book?: string;
+  dir?: string;
+  compose?: string;
+  inventory: string;
+  targets: string[];
+  env: string;
+  hook: boolean;
+  protected: boolean;
+  lock: boolean;
+  rollback: boolean;
+  last: { status: Status; time: string; duration: string };
+  inventoryHostCount: number;
+  targetLabel: string;
+  targetHosts: Host[];
+  groups: Record<string, Host[]>;
+  imageTags: ImageTag[];
+  latestTag: string | null;
+  prevTag: string | null;
+}
+
+export interface Run {
+  no: number;
+  job: string;
+  jobId: string;
+  target: string;
+  tag: string;
+  status: Status;
+  by: string;
+  trigger: string;
+  time: string;
+  duration: string;
+  steps?: string[];
+}
+
+export type RunEvent =
+  | { t: "step"; i: number; state: "run" | "ok" | "bad"; d?: string }
+  | { t: "line"; c: string; text: string; ts: string }
+  | { t: "done"; status: Status; duration: string }
+  | { t: "cancel" };
+
+export interface RunDetail extends Run {
+  live: boolean;
+  events: RunEvent[];
+  method?: string;
+  image?: string;
+  inventory?: string;
+}
+
+export interface Registry {
+  id: string;
+  name: string;
+  host: string;
+  namespace: string;
+  auth: string;
+  user: string;
+  imageCount: number;
+}
+
+export interface Image {
+  ref: string;
+  registry: string;
+  tags: ImageTag[];
+  usedBy: string[];
+}
+
+export interface Repo {
+  name: string;
+  kind: "git" | "local";
+  url: string;
+  branch: string;
+  auth: string;
+  commit: string;
+  books: string[];
+}
+
+export interface Key {
+  id: string;
+  kind: "ssh" | "token";
+  name: string;
+  type: string;
+  fingerprint: string;
+  createdBy: string;
+  createdAt: string;
+  lastUsed: string;
+  usedCount: number;
+  publicKey?: string;
+}
+
+export interface EnvSet {
+  id: string;
+  name: string;
+  ver: number;
+  updated: string;
+  vars: { key: string; length: number }[];
+  usedBy: string[];
+}
+
+export interface EnvDiff {
+  add: string[];
+  chg: string[];
+  del: string[];
+}
+
+export interface EnvHistory {
+  name: string;
+  ver: number;
+  items: { ver: number; updated: string; count: number; current: boolean; prevVer: number | null; diff: EnvDiff | null }[];
+}
+
+export interface Activity {
+  time: string;
+  user: string;
+  action: string;
+  object: string;
+  ip: string;
+  result: Status;
+}
+
+export interface Login {
+  time: string;
+  user: string;
+  method: string;
+  ip: string;
+  location: string;
+  agent: string;
+  result: "ok" | "bad" | "warn";
+}
+
+export interface Member {
+  name: string;
+  email: string;
+  role: Role;
+  tfa: boolean;
+  last: string;
+}
+
+export interface Policy {
+  enforce2fa: boolean;
+  sudoMinutes: number;
+  session: string;
+  lockout: string;
+  allowIps: string;
+}
+
+export interface Dashboard {
+  me: Me;
+  stats: {
+    today: number;
+    todayOk: number;
+    todayBad: number;
+    successRate: string;
+    successDelta: string;
+    hostsOnline: number;
+    hostsTotal: number;
+    avgDuration: string;
+  };
+  hostKeyAlert: Host | null;
+  recentRuns: Run[];
+  jobs: Job[];
+  security: { tfaUsers: number; members: number };
+}
