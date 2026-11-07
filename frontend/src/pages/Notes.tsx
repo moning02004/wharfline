@@ -8,6 +8,23 @@ const L = ({ to, children }: { to: string; children: ReactNode }) => (
   </Link>
 );
 
+const Code = ({ children }: { children: ReactNode }) => <span className="font-mono text-fg">{children}</span>;
+
+const FLOW: [string, ReactNode][] = [
+  ["플레이북", <>Git 주소, 브랜치, 플레이북 경로(예: <Code>deploy/app.yml</Code>). 또는 기본 플레이북.</>],
+  ["대상", <><L to="/inventory">인벤토리</L>와 보낼 그룹(web, worker…).</>],
+  ["이미지 (선택)", <><Code>postgres:15</Code>, <Code>ghcr.io/acme/api:v1.2</Code>처럼 적어요. 버전은 실행할 때 바꿀 수 있어요.</>],
+  ["환경 변수 (선택)", <><Code>.env</Code>를 붙여넣거나 저장해 둔 <L to="/envs">환경 변수</L> 세트를 골라요.</>],
+];
+
+const VARS: [string, ReactNode][] = [
+  ["image", <><Code>docker.io/library/postgres</Code> · 태그 없는 이미지 주소</>],
+  ["image_tag", <><Code>15</Code> · 이번에 배포할 버전</>],
+  ["image_ref", <><Code>docker.io/library/postgres:15</Code> · 주소와 버전을 합친 것</>],
+  ["env_file", <>대상 서버의 <Code>/srv/wharfline/&lt;app_name&gt;/.env</Code></>],
+  ["app_name", <>작업 이름을 바꾼 것, 예: <Code>api-server-production</Code></>],
+];
+
 function NoteList({ title, items, no }: { title: string; items: [ReactNode, ReactNode][]; no?: boolean }) {
   return (
     <Card>
@@ -29,14 +46,53 @@ export default function Notes() {
   return (
     <>
       <PageHeader title="설계 노트" desc="요청한 기능이 화면 어디에 있는지, 제가 더한 것과 일부러 뺀 것을 정리했어요." />
+      <Card>
+        <CardHeader title="배포 흐름" sub="배포 작업 하나를 한 화면에서 만들어요. 미리 등록해 둘 것은 서버(인벤토리)와 키뿐이에요." />
+        <div className="p-5 flex flex-col gap-5">
+          <ol className="m-0 p-0 list-none grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 xl:grid-cols-4 gap-3">
+            {FLOW.map(([t, d], i) => (
+              <li key={t} className="rounded-lg border border-line bg-surface-2 p-4 min-w-0">
+                <div className="flex items-center gap-2 mb-1">
+                  <span className="grid place-items-center size-5 rounded-full bg-accent-soft text-accent text-[11px] font-semibold tabular-nums">{i + 1}</span>
+                  <b className="font-semibold">{t}</b>
+                </div>
+                <div className="text-muted text-[13px]">{d}</div>
+              </li>
+            ))}
+          </ol>
+          <ul className="m-0 pl-[18px] flex flex-col gap-2.5 text-muted marker:text-faint">
+            <li className="max-w-[80ch]">
+              <b className="font-semibold text-fg">저절로 등록돼요</b> · 작업에 넣은 Git 주소는 <L to="/repos">플레이북 레포</L>에, 이미지는 <L to="/registries">이미지 목록</L>에 들어가요. 같은 주소와 브랜치의 레포, 같은 이미지는 다시 써요.
+            </li>
+            <li className="max-w-[80ch]">
+              <b className="font-semibold text-fg">기본 플레이북</b> · 플레이북이 없으면 Wharfline 기본 플레이북 <Code>container.yml</Code>을 골라요. 이미지 하나를 <Code>.env</Code>와 함께 컨테이너로 띄워요. 이때는 이미지가 꼭 있어야 해요.
+            </li>
+            <li className="max-w-[80ch]">
+              <b className="font-semibold text-fg">플레이북이 받는 변수</b> · 이것만 넘기고, 실행 로그에도 그대로 보여요. 이미지나 환경 변수가 없는 작업이면 해당 변수는 빠져요.
+            </li>
+          </ul>
+          <div className="rounded-lg border border-line overflow-hidden">
+            <table className="tbl">
+              <tbody>
+                {VARS.map(([k, v]) => (
+                  <tr key={k}>
+                    <td className="font-mono w-[120px]">{k}</td>
+                    <td className="text-muted !whitespace-normal">{v}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </Card>
       <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-4">
         <NoteList
           title="요청한 기능"
           items={[
             ["SSH 키 저장소", <><L to="/keys">키 저장소</L>. ED25519 키 생성과 기존 키 가져오기.</>],
             ["인벤토리", <><L to="/inventory">인벤토리</L>. 서버 묶음별로 IP, 포트, 사용자, 키, 그룹 지정.</>],
-            ["배포할 것 고르기", <><L to="/registries">이미지 레지스트리</L>(GitHub, GitLab, Gitea)의 도커 이미지를 고르고, 실행할 때 태그를 정해요.</>],
-            ["배포 방식 섞어 쓰기", <>작업마다 Docker Compose(서버에 compose.yml을 올려 교체) 또는 Ansible 플레이북(<L to="/repos">플레이북 레포</L>)을 골라요.</>],
+            ["배포할 것 고르기", <>배포 작업에 <span className="font-mono">postgres:15</span>처럼 이미지를 적고, 실행할 때 버전을 아는 태그 중에서 고르거나 직접 적어요. 비공개 이미지는 <L to="/registries">이미지 레지스트리</L>(GitHub, GitLab, Gitea)에 토큰을 넣어 두면 호스트로 알아서 찾아요.</>],
+            ["플레이북으로 배포", <>모든 작업은 Ansible 플레이북을 실행해요. 작업마다 Git 주소와 플레이북 경로를 적거나, 플레이북이 없으면 Wharfline 기본 플레이북(container.yml)을 골라요.</>],
             [".env 업로드·붙여넣기", <>배포 작업 만들기와 <L to="/envs">환경 변수</L>.</>],
             ["실행 로그 모달", "아무 작업에서 \"실행\"을 눌러 보세요. 로그는 서버에서 실시간으로 스트리밍돼요."],
             ["로그인과 2단계 인증", <>왼쪽 아래 로그아웃 버튼, <L to="/security">보안</L>.</>],
@@ -49,7 +105,7 @@ export default function Notes() {
         <NoteList
           title="제가 더한 것"
           items={[
-            ["단계별 매뉴얼", "새 배포 작업의 제목 옆 (i) 버튼을 누르면 지금 단계에 맞는 매뉴얼이 보여요. 서버 준비, 토큰 발급, compose.yml 규칙 등을 복사해서 바로 쓸 수 있어요."],
+            ["단계별 매뉴얼", "새 배포 작업의 제목 옆 (i) 버튼을 누르면 지금 단계에 맞는 매뉴얼이 보여요. 서버 준비, 토큰 발급, 플레이북 변수 등을 복사해서 바로 쓸 수 있어요."],
             ["비밀 값 봉투 암호화", "환경 변수, SSH 비공개 키, 토큰을 레코드마다 새 데이터 키로 암호화해요. 마스터 키는 키 파일이나 Vault/OpenBao(KMS)에 둬요."],
             ["역할 기반 권한", "Owner, Admin, Deployer, Viewer. 역할은 할 수 있는 일을 정하고, production 작업은 승인 필요."],
             ["그룹별 메뉴와 빌드", <><L to="/members">멤버와 권한</L>에서 Owner가 그룹을 만들고 그룹마다 보일 메뉴와 빌드 레포를 정해요. 멤버는 속한 그룹들의 권한을 합쳐서 받고, 빌드 목록은 서버에서 걸러서 내려줘요. 숨긴 메뉴는 아직 화면에서만 막혀요(서버 API도 같이 막아야 해요).</>],
@@ -67,8 +123,8 @@ export default function Notes() {
           no
           title="일부러 뺀 것"
           items={[
-            ["웹 터미널, 임의 명령 실행 칸", "계정 하나가 털리면 서버 전체가 넘어가요. 정해진 두 방식(Compose, 연결한 레포의 플레이북)만 돌리고, 넘기는 변수도 정해져 있어요."],
-            ["서버에서 이미지 빌드, 위험한 compose 설정", "build:, privileged, network_mode: host, docker.sock 마운트, cap_add가 있으면 저장을 막아요. 이미지는 CI에서 만들어 레지스트리에 올린 것만 써요."],
+            ["웹 터미널, 임의 명령 실행 칸", "계정 하나가 털리면 서버 전체가 넘어가요. 플레이북만 돌리고, 플레이북에 넘기는 변수도 정해져 있어요."],
+            ["서버에서 이미지 빌드", "Wharfline 서버는 이미지를 만들지 않아요. 이미지는 CI에서 만들어 레지스트리에 올린 것만 써요."],
             ["비공개 키 다시 보기·내려받기", "요청하신 \"비밀번호로 열람\"은 .env 값에만 적용했어요. 비공개 키는 저장 후 누구도 꺼낼 수 없어요."],
             ["root 접속", "SSH 사용자로 root를 지정하면 저장을 막고, 제한된 deploy 계정을 쓰도록 안내해요."],
             ["2단계 인증 끄기", "정책이 켜져 있으면 개인이 끌 수 없어요."],
@@ -89,10 +145,10 @@ export default function Notes() {
       </div>
       <Card>
         <CardHeader title="참고한 프로젝트" />
-        <div className="p-5 grid md:grid-cols-3 gap-3">
+        <div className="p-5 grid grid-cols-[minmax(0,1fr)] md:grid-cols-3 gap-3">
           {[
             ["Semaphore UI", "키 저장소, 인벤토리, 플레이북 레포, 환경을 묶어 작업 템플릿을 만드는 구조. Ansible 방식과 실행 로그 화면."],
-            ["Komodo", "서버와 배포 단위를 나눠 관리하는 방식, 레지스트리 이미지 + Compose 배포, 권한 모델."],
+            ["Komodo", "서버와 배포 단위를 나눠 관리하는 방식, 레지스트리 이미지 배포, 권한 모델."],
             ["Coolify", "이미지 태그 webhook 자동 배포, 환경 변수 편집 경험, 깔끔한 대시보드."],
           ].map(([t, d]) => (
             <div key={t} className="rounded-lg border border-line bg-surface-2 p-4">
