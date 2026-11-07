@@ -210,3 +210,16 @@
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation: none !important; transition: none !important; }
 }
+
+/* Unlayered on purpose: it must beat the label's Tailwind utility classes. */
+/* Inside modals each field reads as its own section: a larger title with an accent bar. */
+.modal-body .field { gap: 8px; }
+.modal-body .field-label {
+  display: inline-flex; align-items: center; gap: 8px;
+  font-size: 14px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg);
+}
+.modal-body .field-label::before {
+  content: ""; flex: none; width: 3px; height: 14px; border-radius: 2px;
+  background: var(--accent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 14%, transparent);
+}

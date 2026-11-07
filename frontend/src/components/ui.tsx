@@ -451,14 +451,14 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaHTMLAttributes<H
 
 export function Field({ label, hint, htmlFor, children, right, error }: { label?: ReactNode; hint?: ReactNode; htmlFor?: string; children: ReactNode; right?: ReactNode; error?: boolean }) {
   return (
-    <div className="flex flex-col gap-1.5 min-w-0">
+    <div className="field flex flex-col gap-1.5 min-w-0">
       {(label || right) && (
         <div className="flex items-center justify-between gap-2 flex-wrap">
           {label && (
             <label
               htmlFor={htmlFor}
               id={htmlFor ? `${htmlFor}-label` : undefined}
-              className="text-[12.5px] font-medium"
+              className="field-label text-[12.5px] font-medium"
               onClick={() => htmlFor && document.getElementById(htmlFor)?.getAttribute("role") === "combobox" && document.getElementById(htmlFor)?.focus()}
             >
               {label}

@@ -49,7 +49,7 @@ export function ModalHead({ title, sub, onClose, border, extra }: { title: React
 }
 
 export function ModalBody({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("px-5 pt-1 pb-5 overflow-auto scroll-soft flex flex-col gap-3.5 min-h-0 flex-1", className)}>{children}</div>;
+  return <div className={cx("modal-body px-5 pt-1 pb-5 overflow-auto scroll-soft flex flex-col gap-5 min-h-0 flex-1", className)}>{children}</div>;
 }
 
 export function ModalFoot({ children, between }: { children: ReactNode; between?: boolean }) {
