@@ -791,7 +791,7 @@ function StepIndex({ mode, cur, skipped, onPick }: { mode: Mode; cur: number; sk
             </>
           );
           return (
-            <li key={s.id} className="flex items-center gap-1.5 flex-none sm:flex-1 sm:last:flex-none min-w-0" aria-current={now ? "step" : undefined}>
+            <li key={s.id} className="flex items-center gap-1.5 flex-none sm:flex-auto sm:last:flex-none" aria-current={now ? "step" : undefined}>
               {mode === "edit" ? (
                 <button type="button" onClick={() => onPick(i)} title={s.label} className="inline-flex items-center gap-1.5 rounded-md px-1 -mx-1 h-6 hover:bg-hover transition-colors">
                   {inner}
