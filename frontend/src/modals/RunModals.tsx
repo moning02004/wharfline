@@ -6,23 +6,31 @@ import { PROVIDER_NAME, buildNo, buildState, elapsed } from "../components/Build
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Button, Chip, Field, Hint, KV, Select, StatusPill, cx } from "../components/ui";
+import { Button, Chip, Field, Hint, Input, KV, Select, StatusPill, cx } from "../components/ui";
 
-const METHODS = { compose: "Docker Compose", ansible: "Ansible 플레이북" };
+/** Same rule as the server's TAG_RE. */
+const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+const CUSTOM_TAG = "\u0000custom";
 
-export function MethodLine({ job }: { job: Job }) {
-  return job.method === "compose" ? (
+/** Where a job's playbook comes from: the repo and the path inside it, or the built-in one. */
+export function PlaybookLine({ job }: { job: Job }) {
+  const pb = job.playbook;
+  if (pb.kind === "builtin")
+    return (
+      <>
+        <Chip>기본 플레이북</Chip> <span className="font-mono text-muted text-[12.5px]">{pb.path}</span>
+      </>
+    );
+  return (
     <>
-      <Chip>Compose</Chip> <span className="font-mono text-muted text-[12.5px]">{job.dir}/compose.yml</span>
-    </>
-  ) : (
-    <>
-      <Chip>Ansible</Chip>{" "}
-      <span className="font-mono text-muted text-[12.5px]">
-        {job.repo} / {job.book}
-      </span>
+      {pb.repo} <span className="text-faint">·</span> <span className="font-mono text-muted text-[12.5px]">{pb.path}</span>
     </>
   );
+}
+
+/** Short "name:tag" for lists, or null when the job runs without an image. */
+export function shortImage(job: Job, tag = job.tagNow): string | null {
+  return job.image ? `${job.image.split("/").pop()}:${tag}` : null;
 }
 
 export function useRun() {
@@ -72,13 +80,16 @@ export function useRun() {
 
 function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: string; rollback?: boolean }; onClose: () => void; onStarted: (no: number) => void }) {
   const { toast } = useApp();
+  const hasImage = job.image !== null;
   const [tag, setTag] = useState(opt.tag ?? job.defaultTag ?? "latest");
+  // "직접 입력…": type a tag the image list doesn't know yet (the server records it on the image).
+  const [custom, setCustom] = useState(() => tag !== "latest" && !job.imageTags.some((t) => t.name === tag));
   const [sel, setSel] = useState<string[]>([...job.targets]);
   const [busy, setBusy] = useState(false);
 
   // Latest CI build of this image, polled while it runs, so a deploy can wait for a fresh tag.
   const [poll, setPoll] = useState(2500);
-  const builds = useApi<Build[]>(`/builds?image=${encodeURIComponent(job.image)}`, poll).data;
+  const builds = useApi<Build[]>(job.image ? `/builds?image=${encodeURIComponent(job.image)}` : null, poll).data;
   const latest = builds?.[0];
   const showBuild = !!latest && (latest.active || Date.now() / 1000 - latest.updatedAt < 3600);
   const [waitForBuild, setWaitForBuild] = useState(false);
@@ -96,6 +107,7 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
     .filter((h) => !sel.length || sel.includes(h.group));
   const ready = hosts.filter((h) => !h.skip);
   const changed = JSON.stringify([...sel].sort()) !== JSON.stringify([...job.targets].sort());
+  const tagOk = !hasImage || !tag || tag === "latest" || TAG_RE.test(tag); // empty only disables the button
 
   const go = async (useTag = tag) => {
     setBusy(true);
@@ -129,44 +141,103 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
         onClose={onClose}
       />
       <ModalBody>
-        {showBuild && latest && !opt.rollback && (
+        {hasImage && showBuild && latest && !opt.rollback && (
           <BuildPanel
             build={latest}
             selected={resolved === latest.tag}
             waiting={waitForBuild}
-            onUseTag={() => latest.tag && setTag(latest.tag)}
+            onUseTag={() => {
+              if (!latest.tag) return;
+              setCustom(false);
+              setTag(latest.tag);
+            }}
             onWait={setWaitForBuild}
           />
         )}
-        <Field
-          label="이미지 태그"
-          htmlFor="cTag"
-          hint={
-            <>
-              {tag === "latest" && (
+        {hasImage ? (
+          <Field
+            label="이미지 태그"
+            htmlFor="cTag"
+            error={!tagOk}
+            right={
+              custom && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => {
+                    setCustom(false);
+                    setTag("latest");
+                  }}
+                >
+                  목록에서 고르기
+                </Button>
+              )
+            }
+            hint={
+              !tagOk ? (
+                "태그는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)으로 128자까지 쓸 수 있어요."
+              ) : custom ? (
                 <>
-                  latest는 지금 <span className="font-mono">{resolved}</span>이에요. 이 digest로 고정해서 배포해요 ·{" "}
+                  목록에 없는 태그면 이미지에 기록해 두고 실행할 때 digest로 고정해요
+                  {tag === job.tagNow && " · 지금 배포된 버전과 같아서 다시 배포돼요"}
                 </>
-              )}
-              {info.digest ? <span className="font-mono">sha256:{info.digest}…</span> : "digest는 실행할 때 고정해요"} · {info.pushed}
-              {resolved === job.tagNow && " · 지금 배포된 버전과 같아서 다시 배포돼요"}
-            </>
-          }
-        >
-          <Select id="cTag" mono value={tag} onChange={(e) => setTag(e.target.value)}>
-            <option value="latest">latest · 지금 {latestTag ?? "-"}</option>
-            {tagOptions.map((t) => (
-              <option key={t.name} value={t.name}>
-                {t.name}
-                {t.name === job.tagNow ? "  · 지금 배포됨" : ""}
-              </option>
-            ))}
-          </Select>
-        </Field>
+              ) : (
+                <>
+                  {tag === "latest" && (
+                    <>
+                      latest는 지금 <span className="font-mono">{resolved}</span>이에요. 이 digest로 고정해서 배포해요 ·{" "}
+                    </>
+                  )}
+                  {info.digest ? <span className="font-mono">sha256:{info.digest}…</span> : "digest는 실행할 때 고정해요"} · {info.pushed}
+                  {resolved === job.tagNow && " · 지금 배포된 버전과 같아서 다시 배포돼요"}
+                </>
+              )
+            }
+          >
+            {custom ? (
+              <Input
+                id="cTag"
+                mono
+                value={tag}
+                onChange={(e) => setTag(e.target.value.trim())}
+                placeholder="예: v1.8.3"
+                autoComplete="off"
+                spellCheck={false}
+                autoFocus
+              />
+            ) : (
+              <Select
+                id="cTag"
+                mono
+                value={tag}
+                onChange={(e) => {
+                  if (e.target.value === CUSTOM_TAG) {
+                    setCustom(true);
+                    setTag("");
+                  } else setTag(e.target.value);
+                }}
+              >
+                <option value="latest">latest · 지금 {latestTag ?? "-"}</option>
+                {tagOptions.map((t) => (
+                  <option key={t.name} value={t.name}>
+                    {t.name}
+                    {t.name === job.tagNow ? "  · 지금 배포됨" : ""}
+                  </option>
+                ))}
+                <option value={CUSTOM_TAG}>직접 입력…</option>
+              </Select>
+            )}
+          </Field>
+        ) : (
+          <Hint className="flex items-center gap-1.5">
+            <Icon name="info" className="size-3.5 flex-none text-accent" />
+            이미지 없이 플레이북만 실행해요.
+          </Hint>
+        )}
         <KV
           items={[
-            ["이미지", job.image, "font-mono text-[12.5px]"],
-            ["배포 방식", <MethodLine job={job} />],
+            ...(hasImage ? ([["이미지", job.image, "font-mono text-[12.5px]"]] as [string, string, string][]) : []),
+            ["플레이북", <PlaybookLine job={job} />],
             ["환경 변수", job.env || "없음", "font-mono text-[12.5px]"],
             ...(job.protected
               ? ([["안전장치", [job.lock && "동시 실행 금지", job.rollback && "실패 시 이전 태그로 롤백"].filter(Boolean).join(" · "), "text-muted"]] as [string, string, string][])
@@ -200,7 +271,7 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
       </ModalBody>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
-        <Button variant="primary" icon="play" disabled={!ready.length || busy || waitForBuild} onClick={() => go()} autoFocus>
+        <Button variant="primary" icon="play" disabled={!ready.length || busy || waitForBuild || !tagOk || (hasImage && !tag)} onClick={() => go()} autoFocus>
           {waitForBuild ? "빌드 끝나길 기다리는 중…" : `서버 ${ready.length}대에 배포`}
         </Button>
       </ModalFoot>
@@ -361,10 +432,14 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
         sub={
           run && (
             <>
-              <span className="font-mono">
-                {short}:{run.tag}
-              </span>{" "}
-              · {run.method} · {run.inventory} / {run.target}
+              {short ? (
+                <span className="font-mono">
+                  {short}:{run.tag}
+                </span>
+              ) : (
+                "이미지 없음"
+              )}{" "}
+              {run.method && <>· {run.method} </>}· {run.inventory} / {run.target}
               {run.build && (
                 <span className="block mt-1 text-[12px]">
                   <span className={run.build.status === "success" ? "text-ok" : "text-muted"}>
@@ -452,5 +527,3 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
     </>
   );
 }
-
-export { METHODS };

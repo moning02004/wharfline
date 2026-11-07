@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useApi, useApp } from "../lib/app";
 import type { Job, Run } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
-import { MethodLine, useRun } from "../modals/RunModals";
+import { PlaybookLine, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
@@ -23,7 +23,7 @@ export function Jobs() {
     <>
       <PageHeader
         title="배포 작업"
-        desc="도커 이미지, 배포 방식, 서버 그룹, 환경 변수를 묶은 실행 단위예요. 행을 누르면 자세한 설정이 보여요."
+        desc="플레이북, 서버 그룹, 도커 이미지, 환경 변수를 묶은 실행 단위예요. 행을 누르면 자세한 설정이 보여요."
       >
         <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
           새 배포 작업
@@ -60,12 +60,18 @@ export function Jobs() {
                             </Chip>
                           )}
                         </div>
-                        <div className="pl-[22px] text-[12px] text-muted">{j.method === "compose" ? "Docker Compose" : "Ansible 플레이북"}</div>
+                        <div className="pl-[22px] text-[12px] text-muted truncate max-w-[320px]">
+                          {j.playbook.kind === "builtin" ? (
+                            "기본 플레이북"
+                          ) : (
+                            <>
+                              {j.playbook.repo} · <span className="font-mono">{j.playbook.path}</span>
+                            </>
+                          )}
+                        </div>
                       </td>
                       <td>
-                        <span className="font-mono text-[12.5px]">
-                          {j.image.split("/").pop()}:{j.tagNow}
-                        </span>
+                        {j.image ? <span className="font-mono text-[12.5px]">{shortImage(j)}</span> : <span className="text-faint text-[12.5px]">이미지 없음</span>}
                         {newer && (
                           <span className="ml-2">
                             <Chip tone="accent" mono>
@@ -109,11 +115,11 @@ export function Jobs() {
                     {expanded && (
                       <tr>
                         <td colSpan={5} className="!bg-surface-2 !py-3.5 !whitespace-normal">
-                          <div className="pl-[22px] grid md:grid-cols-2 gap-x-10 gap-y-2 animate-fade">
+                          <div className="pl-[22px] grid grid-cols-[minmax(0,1fr)] md:grid-cols-2 gap-x-10 gap-y-2 animate-fade">
                             <KV
                               items={[
-                                ["이미지", j.image, "font-mono text-[12.5px]"],
-                                ["배포 방식", <MethodLine job={j} />],
+                                ["이미지", j.image ?? <span className="text-faint">없음</span>, "font-mono text-[12.5px]"],
+                                ["플레이북", <PlaybookLine job={j} />],
                                 ["환경 변수", j.env || <span className="text-faint">없음</span>, "font-mono text-[12.5px]"],
                               ]}
                             />

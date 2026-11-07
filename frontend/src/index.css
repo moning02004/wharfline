@@ -225,3 +225,7 @@
 }
 .modal-body .field:focus-within::before { background: var(--section); }
 .modal-body .field-label { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg); }
+/* A field inside a section field is a plain sub-field: no second line, a regular-size title. */
+.modal-body .field .field { padding-left: 0; gap: 6px; }
+.modal-body .field .field::before { content: none; }
+.modal-body .field .field .field-label { font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--muted); }

@@ -3,7 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
 import type { Dashboard as D } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
-import { useRun } from "../modals/RunModals";
+import { shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Icon, type IconName } from "../components/Icon";
 import { Banner, Button, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
@@ -103,7 +103,7 @@ export default function Dashboard() {
                 title={j.name}
                 sub={
                   <span className="font-mono text-xs">
-                    {j.image.split("/").pop()}:{j.tagNow} → {j.targetLabel} ({j.targetHosts.length}대)
+                    {shortImage(j) ?? j.playbook.path} → {j.targetLabel} ({j.targetHosts.length}대)
                   </span>
                 }
               >
