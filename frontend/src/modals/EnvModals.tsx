@@ -222,7 +222,7 @@ export function EnvHistoryModal({ env, onClose }: { env: EnvSet; onClose: () => 
     <>
       <ModalHead title="버전 기록" sub={env.name} onClose={onClose} />
       <ModalBody>
-        <div className="rounded-2xl shadow-[inset_0_0_0_1px_var(--border)] overflow-hidden">
+        <div className="rounded-lg border border-line overflow-hidden">
           {data?.items.map((it) => {
             const d = it.diff;
             const changes = d ? d.add.length + d.chg.length + d.del.length : 0;

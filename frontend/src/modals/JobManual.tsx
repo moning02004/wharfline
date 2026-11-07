@@ -14,7 +14,7 @@ function Code({ children, label, wrap }: { children: string; label?: string; wra
   return (
     <div className="relative group my-2">
       {label && <div className="text-[11px] text-faint mb-1">{label}</div>}
-      <pre className={`bg-log-bg text-log-fg font-mono text-[11.5px] leading-[1.7] rounded-2xl px-4 py-3 pr-11 overflow-x-auto scroll-soft ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}`}>{children}</pre>
+      <pre className={`bg-log-bg text-log-fg font-mono text-[11.5px] leading-[1.7] rounded-lg px-4 py-3 pr-11 overflow-x-auto scroll-soft ${wrap ? "whitespace-pre-wrap break-all" : "whitespace-pre"}`}>{children}</pre>
       <button
         type="button"
         onClick={() => copyText(children, toast)}
@@ -46,9 +46,9 @@ function Sections({ items }: { items: Section[] }) {
   return (
     <ol className="m-0 p-0 list-none flex flex-col gap-1.5">
       {items.map((s, i) => (
-        <li key={s.title} className={cx("rounded-2xl transition-colors", open === i ? "bg-surface-2" : "hover:bg-hover")}>
+        <li key={s.title} className={cx("rounded-lg transition-colors", open === i ? "bg-surface-2" : "hover:bg-hover")}>
           <button type="button" onClick={() => setOpen(open === i ? -1 : i)} className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left">
-            <span className={cx("grid place-items-center size-6 rounded-full text-[11px] font-semibold flex-none", open === i ? "bg-accent text-on-accent" : "bg-surface-2 text-muted shadow-[inset_0_0_0_1px_var(--border)]")}>
+            <span className={cx("grid place-items-center size-6 rounded-full text-[11px] font-semibold flex-none", open === i ? "bg-accent text-on-accent" : "bg-surface-2 text-muted border border-line")}>
               {i + 1}
             </span>
             <span className="flex-1 font-medium text-[13px]">{s.title}</span>

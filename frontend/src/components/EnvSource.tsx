@@ -69,11 +69,11 @@ export function EnvSource({
             read(e.dataTransfer.files[0]);
           }}
           className={cx(
-            "flex flex-col items-center gap-1.5 rounded-[18px] border-[1.5px] border-dashed p-7 text-center text-[13px] cursor-pointer transition-all duration-200",
-            over ? "border-accent bg-accent-soft text-accent scale-[1.01]" : "border-line-strong bg-surface-2 text-muted hover:border-accent hover:bg-accent-soft hover:text-accent",
+            "flex flex-col items-center gap-1.5 rounded-lg border border-dashed p-6 text-center text-[13px] cursor-pointer transition-all duration-200",
+            over ? "border-accent bg-accent-soft text-accent " : "border-line-strong bg-surface-2 text-muted hover:border-accent hover:bg-accent-soft hover:text-accent",
           )}
         >
-          <span className="grid place-items-center size-10 rounded-full bg-surface shadow-soft mb-1">
+          <span className="grid place-items-center size-9 rounded-md bg-surface border border-line mb-1">
             <Icon name="upload" />
           </span>
           <div>.env 파일을 끌어다 놓거나 눌러서 고르세요</div>

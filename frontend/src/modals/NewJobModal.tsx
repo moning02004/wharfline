@@ -252,7 +252,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
                 <Field label="배포 대상 그룹" hint={targets.length ? undefined : "그룹을 고르지 않으면 전체 서버에 배포해요."}>
                   <GroupSelect groups={groups} value={targets} onChange={setTargets} />
                 </Field>
-                <div className="rounded-2xl shadow-[inset_0_0_0_1px_var(--border)] overflow-hidden">
+                <div className="rounded-lg border border-line overflow-hidden">
                   {hosts.map((h) => (
                     <div key={h.name} className="flex items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0 text-[13px]">
                       <Chip tone="accent" mono>
@@ -327,7 +327,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
             )}
 
             {cur.id === "review" && (
-              <div className="rounded-[18px] shadow-[inset_0_0_0_1px_var(--border)] overflow-hidden">
+              <div className="rounded-lg border border-line overflow-hidden">
                 <div className="px-4 py-3 bg-surface-2 border-b border-line font-semibold">{name}</div>
                 <Row label="이미지" onEdit={() => go(0)}>
                   <span className="font-mono">
@@ -391,7 +391,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
 
 function Stepper({ step, status, reachable, onPick }: { step: number; status: Partial<Record<StepId, "done" | "skipped">>; reachable: (i: number) => boolean; onPick: (i: number) => void }) {
   return (
-    <div className="px-6 pb-3">
+    <div className="px-5 pb-3">
       <ol className="m-0 p-0 list-none flex items-center gap-1 overflow-x-auto scroll-soft">
         {STEPS.map((s, i) => {
           const st = status[s.id];
@@ -406,7 +406,7 @@ function Stepper({ step, status, reachable, onPick }: { step: number; status: Pa
                 onClick={() => onPick(i)}
                 aria-current={current ? "step" : undefined}
                 className={cx(
-                  "flex items-center gap-1.5 h-7 pl-1 pr-2.5 rounded-full text-[12px] font-medium whitespace-nowrap transition-all duration-200",
+                  "flex items-center gap-1.5 h-7 pl-1 pr-2 rounded-md text-[12px] font-medium whitespace-nowrap transition-all duration-200",
                   current ? "bg-primary-soft text-primary" : can ? "text-muted hover:bg-hover hover:text-fg" : "text-faint cursor-not-allowed",
                 )}
               >
@@ -416,7 +416,7 @@ function Stepper({ step, status, reachable, onPick }: { step: number; status: Pa
                     st === "done" && "bg-ok text-white",
                     st === "skipped" && "bg-surface-2 text-faint shadow-[inset_0_0_0_1px_var(--border-strong)]",
                     !st && current && "bg-primary text-primary-fg",
-                    !st && !current && "bg-surface-2 shadow-[inset_0_0_0_1px_var(--border)]",
+                    !st && !current && "bg-surface-2 border border-line",
                   )}
                 >
                   {st === "done" ? <Icon name="check" className="size-2.5" strokeWidth={3.5} /> : st === "skipped" ? "–" : i + 1}

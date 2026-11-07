@@ -30,7 +30,7 @@ export function Activity() {
           value={tab}
           onChange={setTab}
         />
-        <Input placeholder="사용자, 작업, IP로 찾기" className="max-w-[260px] !rounded-full" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Input placeholder="사용자, 작업, IP로 찾기" className="max-w-[260px]" value={q} onChange={(e) => setQ(e.target.value)} />
       </div>
       <Card>
         <TableWrap>
@@ -155,7 +155,7 @@ export function Members() {
                 <tr key={u.email}>
                   <td>
                     <span className="flex items-center gap-2.5">
-                      <span className="grid place-items-center size-7 rounded-full bg-gradient-to-br from-accent-soft to-surface-2 shadow-[inset_0_0_0_1px_var(--border)] text-[11px] font-semibold">{u.name[0]}</span>
+                      <span className="grid place-items-center size-7 rounded-full bg-surface-2 border border-line text-[11px] font-semibold">{u.name[0]}</span>
                       {u.name}
                     </span>
                   </td>
@@ -200,7 +200,7 @@ export function Members() {
                 <tr key={m.id}>
                   <td>
                     <div className="flex items-center gap-3">
-                      <span className="grid place-items-center size-8 rounded-xl bg-surface-2 text-muted">
+                      <span className="grid place-items-center size-8 rounded-md bg-surface-2 text-muted">
                         <Icon name={m.icon as IconName} />
                       </span>
                       <div>

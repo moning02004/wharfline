@@ -55,19 +55,19 @@ export function GroupSelect({ groups, value, onChange }: { groups: Record<string
           }
         }}
         className={cx(
-          "flex flex-wrap items-center gap-1.5 min-h-[40px] py-1 pl-1.5 pr-10 rounded-xl bg-surface border relative transition-[border-color,box-shadow] duration-200",
-          open ? "border-accent shadow-[0_0_0_4px_color-mix(in_srgb,var(--accent)_16%,transparent)]" : "border-line-strong hover:border-faint",
+          "flex flex-wrap items-center gap-1.5 min-h-8 py-[3px] pl-1 pr-10 rounded-md bg-surface border relative transition-[border-color,box-shadow] duration-200",
+          open ? "border-accent shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_18%,transparent)]" : "border-line-strong hover:border-faint",
         )}
       >
         {value.length ? (
           value.map((g) => (
-            <span key={g} className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-1 rounded-full bg-accent-soft text-accent font-mono text-xs font-medium animate-fade">
+            <span key={g} className="inline-flex items-center gap-1.5 h-6 pl-2 pr-0.5 rounded-[5px] border border-accent/20 bg-accent-soft text-accent font-mono text-xs font-medium animate-fade">
               {g}
               <small className="text-muted font-sans text-[11px] font-normal">{groups[g]?.length ?? 0}대</small>
               <button
                 type="button"
                 aria-label={`${g} 빼기`}
-                className="grid place-items-center size-5 rounded-full hover:bg-accent/20"
+                className="grid place-items-center size-5 rounded hover:bg-accent/20"
                 onClick={(e) => {
                   e.stopPropagation();
                   onChange(value.filter((x) => x !== g));
@@ -89,13 +89,13 @@ export function GroupSelect({ groups, value, onChange }: { groups: Record<string
           ref={menu}
           role="listbox"
           className={cx(
-            "absolute inset-x-0 z-20 max-h-[260px] overflow-auto scroll-soft rounded-2xl bg-surface shadow-pop p-1.5 flex flex-col animate-rise",
+            "absolute inset-x-0 z-20 max-h-[260px] overflow-auto scroll-soft rounded-lg border border-line bg-surface shadow-pop p-1 flex flex-col animate-rise",
             up ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+6px)]",
           )}
         >
           {rest.length ? (
             rest.map((g) => (
-              <button key={g} type="button" role="option" onClick={() => add(g)} className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-left text-[13px] hover:bg-hover transition-colors min-w-0">
+              <button key={g} type="button" role="option" onClick={() => add(g)} className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left text-[13px] hover:bg-hover transition-colors min-w-0">
                 <Chip tone="accent" mono>
                   {g}
                 </Chip>
@@ -113,7 +113,7 @@ export function GroupSelect({ groups, value, onChange }: { groups: Record<string
                 onChange([]);
                 setOpen(false);
               }}
-              className="flex items-center gap-2.5 px-2.5 py-2 rounded-xl text-left text-[13px] hover:bg-hover transition-colors"
+              className="flex items-center gap-2.5 px-2.5 py-2 rounded-md text-left text-[13px] hover:bg-hover transition-colors"
             >
               <Icon name="server" className="text-faint" />
               전체 서버로 되돌리기

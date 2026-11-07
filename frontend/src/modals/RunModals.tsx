@@ -146,7 +146,7 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
         >
           <GroupSelect groups={job.groups} value={sel} onChange={setSel} />
         </Field>
-        <div className="rounded-2xl shadow-[inset_0_0_0_1px_var(--border)] overflow-hidden">
+        <div className="rounded-lg border border-line overflow-hidden">
           {hosts.map((h) => (
             <div key={h.name} className="flex items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0 animate-fade">
               <Chip tone="accent" mono>
@@ -291,7 +291,7 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
               <div
                 key={i}
                 className={cx(
-                  "flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13px] font-medium whitespace-nowrap transition-all duration-300",
+                  "flex items-center gap-2.5 px-3 py-2 rounded-md text-[13px] font-medium whitespace-nowrap transition-all duration-300",
                   st === "" && "text-faint",
                   st === "run" && "text-fg bg-surface-2",
                   (st === "ok" || st === "bad") && "text-fg",

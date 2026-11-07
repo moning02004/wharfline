@@ -189,7 +189,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ))}
       <div className="fixed right-4 bottom-4 z-[80] flex flex-col gap-2 pointer-events-none">
         {toasts.map((t) => (
-          <div key={t.id} className="bg-primary text-primary-fg px-4 py-2.5 rounded-2xl text-[13px] font-medium shadow-pop animate-rise max-w-[340px]">
+          <div key={t.id} className="bg-primary text-primary-fg px-3.5 py-2 rounded-lg text-[13px] font-medium shadow-pop animate-rise max-w-[340px]">
             {t.msg}
           </div>
         ))}

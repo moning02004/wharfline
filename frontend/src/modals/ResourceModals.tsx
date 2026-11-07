@@ -357,7 +357,7 @@ export function NewHostModal({ inventories, onClose }: { inventories: Inventory[
         <ModalHead title="호스트 키 지문 확인" sub={`${ip}:${port}`} onClose={close} />
         <ModalBody>
           <Field label={`서버가 보낸 지문 (${fp.type})`}>
-            <div className="font-mono p-3 bg-surface-2 rounded-xl break-all text-[12.5px]">{fp.fingerprint}</div>
+            <div className="font-mono p-3 bg-surface-2 rounded-md break-all text-[12.5px]">{fp.fingerprint}</div>
           </Field>
           <Hint className="text-[13px]">
             서버에서 <span className="font-mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span> 결과와 같은지 확인하세요. 저장하면 이후 지문이 바뀔 때 배포가 멈춰요.

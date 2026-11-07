@@ -19,13 +19,13 @@ export function ModalShell({ size = "sm", onClose, children, top }: { size?: Mod
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade bg-[color-mix(in_srgb,var(--bg)_50%,rgba(0,0,0,.4))] backdrop-blur-[6px]"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade bg-black/45"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
         role="dialog"
         aria-modal="true"
-        className={cx("bg-surface rounded-[26px] shadow-pop w-full max-h-full flex flex-col min-h-0 animate-rise overflow-hidden", sizes[size])}
+        className={cx("bg-surface rounded-xl border border-line shadow-pop w-full max-h-full flex flex-col min-h-0 animate-rise overflow-hidden", sizes[size])}
       >
         {children}
       </div>
@@ -35,26 +35,26 @@ export function ModalShell({ size = "sm", onClose, children, top }: { size?: Mod
 
 export function ModalHead({ title, sub, onClose, border, extra }: { title: ReactNode; sub?: ReactNode; onClose: () => void; border?: boolean; extra?: ReactNode }) {
   return (
-    <div className={cx("flex items-start gap-3 px-6 pt-5 pb-4", border && "border-b border-line")}>
+    <div className={cx("flex items-start gap-3 px-5 pt-4 pb-3", border && "border-b border-line")}>
       <div className="min-w-0">
-        <h3 className="m-0 text-[17px] font-semibold tracking-[-0.02em]">{title}</h3>
-        {sub && <p className="mt-1 text-muted text-[13px]">{sub}</p>}
+        <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">{title}</h3>
+        {sub && <p className="mt-0.5 text-muted text-[12.5px]">{sub}</p>}
       </div>
-      <div className="ml-auto flex items-center gap-2.5">
+      <div className="ml-auto flex items-center gap-2">
         {extra}
-        <Button variant="ghost" iconOnly icon="x" aria-label="닫기" onClick={onClose} />
+        <Button variant="ghost" size="sm" iconOnly icon="x" aria-label="닫기" onClick={onClose} />
       </div>
     </div>
   );
 }
 
 export function ModalBody({ children, className }: { children: ReactNode; className?: string }) {
-  return <div className={cx("px-6 pt-1 pb-6 overflow-auto scroll-soft flex flex-col gap-4 min-h-0 flex-1", className)}>{children}</div>;
+  return <div className={cx("px-5 pt-1 pb-5 overflow-auto scroll-soft flex flex-col gap-3.5 min-h-0 flex-1", className)}>{children}</div>;
 }
 
 export function ModalFoot({ children, between }: { children: ReactNode; between?: boolean }) {
   return (
-    <div className={cx("flex items-center gap-2 px-6 py-3.5 border-t border-line bg-surface-2 flex-wrap", between ? "justify-between" : "justify-end")}>
+    <div className={cx("flex items-center gap-2 px-5 py-3 border-t border-line bg-surface-2 flex-wrap", between ? "justify-between" : "justify-end")}>
       {children}
     </div>
   );

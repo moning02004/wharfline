@@ -32,14 +32,14 @@ function SudoTimer() {
   return (
     <span
       title="민감 정보 열람 가능 시간"
-      className="inline-flex items-center gap-1.5 h-[30px] pl-3 pr-1 rounded-full whitespace-nowrap flex-none bg-warn-soft text-warn text-xs font-medium shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--warn)_28%,transparent)] animate-fade"
+      className="inline-flex items-center gap-1.5 h-7 pl-2.5 pr-0.5 rounded-md whitespace-nowrap flex-none bg-warn-soft text-warn text-xs font-medium border border-warn/25 animate-fade"
     >
-      <Icon name="unlock" className="size-[14px]" />
+      <Icon name="unlock" className="size-3.5" />
       <span className="tabular-nums">
         {Math.floor(s / 60)}:{String(s % 60).padStart(2, "0")}
       </span>
       <button
-        className="px-2.5 py-1 rounded-full text-[11.5px] hover:bg-warn/15 transition-colors"
+        className="px-2 h-6 rounded-[5px] text-[11.5px] hover:bg-warn/15 transition-colors"
         onClick={async () => {
           await endSudo();
           toast("잠갔어요. 다시 보려면 비밀번호가 필요해요.");
@@ -77,31 +77,32 @@ export function Layout({ children }: { children: ReactNode }) {
   };
 
   return (
-    <div className="grid h-full md:grid-cols-[248px_minmax(0,1fr)]">
+    <div className="grid h-full md:grid-cols-[232px_minmax(0,1fr)]">
       {/* sidebar */}
       <aside
         className={cx(
-          "flex flex-col min-h-0 bg-bg z-30",
-          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:w-[272px] max-md:shadow-pop max-md:transition-transform max-md:duration-300 max-md:ease-(--ease-soft)",
+          "flex flex-col min-h-0 bg-bg border-r border-line z-30",
+          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:w-[260px] max-md:shadow-pop max-md:transition-transform max-md:duration-200",
           !open && "max-md:-translate-x-full",
         )}
       >
-        <div className="flex items-center gap-2.5 px-5 pt-5 pb-3.5">
-          <div className="grid place-items-center size-8 rounded-[11px] bg-primary text-primary-fg shadow-[0_4px_12px_-4px_rgba(0,0,0,.4)]">
-            <Icon name="arrow" className="size-4" strokeWidth={2.4} />
+        <div className="h-12 flex items-center gap-2 px-4 border-b border-line flex-none">
+          <div className="grid place-items-center size-6 rounded-md bg-primary text-primary-fg">
+            <Icon name="arrow" className="size-3.5" strokeWidth={2.6} />
           </div>
-          <div>
-            <b className="font-semibold tracking-[-0.02em] text-[15px]">Wharfline</b>
-            <small className="block text-faint text-[11px] leading-tight">셀프호스팅 배포 · 프로토타입</small>
-          </div>
+          <b className="font-semibold tracking-[-0.01em] text-[14px]">Wharfline</b>
+          <span className="ml-auto text-[10.5px] text-faint border border-line rounded px-1.5 h-[18px] inline-flex items-center">beta</span>
         </div>
-        <div className="mx-3 mb-2 px-3 py-2 rounded-xl flex items-center justify-between text-[13px] font-medium text-muted hover:bg-hover transition-colors">
-          <span>acme 워크스페이스</span>
+        <div className="mx-2 mt-2 mb-1 px-2.5 h-8 rounded-md flex items-center justify-between text-[13px] font-medium hover:bg-hover transition-colors cursor-default">
+          <span className="flex items-center gap-2">
+            <span className="grid place-items-center size-5 rounded bg-surface border border-line text-[10px] font-semibold">A</span>
+            acme
+          </span>
           <Icon name="chev" className="size-3.5 text-faint" />
         </div>
-        <nav className="flex-1 overflow-auto scroll-soft px-3 pb-3 flex flex-col gap-0.5">
+        <nav className="flex-1 overflow-auto scroll-soft px-2 pb-3 flex flex-col gap-px">
           {ROUTES.filter((r) => canSee(r.id)).map((r) => {
-            const head = r.grp !== lastGrp && r.grp ? <h6 className="mt-4 mb-1.5 mx-3 text-[11px] font-medium text-faint tracking-wide">{r.grp}</h6> : null;
+            const head = r.grp !== lastGrp && r.grp ? <h6 className="mt-4 mb-1 mx-2.5 text-[11px] font-medium text-faint">{r.grp}</h6> : null;
             lastGrp = r.grp;
             return (
               <div key={r.id} className="contents">
@@ -111,16 +112,16 @@ export function Layout({ children }: { children: ReactNode }) {
                   end
                   className={({ isActive }) =>
                     cx(
-                      "group flex items-center gap-2.5 px-3 py-[7px] rounded-xl text-[13.5px] font-medium transition-all duration-200 ease-(--ease-soft)",
-                      isActive ? "bg-surface text-fg shadow-soft" : "text-muted hover:bg-hover hover:text-fg hover:translate-x-0.5",
+                      "group flex items-center gap-2.5 px-2.5 h-8 rounded-md text-[13px] font-medium transition-colors duration-100",
+                      isActive ? "bg-surface text-fg border border-line shadow-[0_1px_1px_rgba(0,0,0,.03)]" : "text-muted border border-transparent hover:bg-hover hover:text-fg",
                     )
                   }
                 >
                   {({ isActive }) => (
                     <>
-                      <Icon name={r.icon as IconName} className={cx("size-4", isActive && "text-accent")} />
+                      <Icon name={r.icon as IconName} className={cx("size-[15px]", isActive ? "text-accent" : "text-faint group-hover:text-muted")} />
                       {r.label}
-                      {counts[r.id] ? <span className="ml-auto text-[11.5px] text-faint tabular-nums">{counts[r.id]}</span> : null}
+                      {counts[r.id] ? <span className="ml-auto text-[11px] text-faint tabular-nums">{counts[r.id]}</span> : null}
                     </>
                   )}
                 </NavLink>
@@ -128,33 +129,33 @@ export function Layout({ children }: { children: ReactNode }) {
             );
           })}
         </nav>
-        <div className="m-2 mt-0 px-3 py-3 flex items-center gap-2.5 rounded-2xl">
-          <div className="grid place-items-center size-8 rounded-full bg-gradient-to-br from-accent-soft to-surface-2 shadow-[inset_0_0_0_1px_var(--border)] font-semibold text-[11px]">JY</div>
+        <div className="px-3 py-2.5 flex items-center gap-2.5 border-t border-line">
+          <div className="grid place-items-center size-7 rounded-full bg-surface border border-line font-semibold text-[10.5px]">JY</div>
           <div className="flex-1 min-w-0">
-            <b className="block font-medium text-[13px]">
-              {session?.me.name} ({session?.me.role})
+            <b className="block font-medium text-[12.5px] leading-tight">
+              {session?.me.name} <span className="text-faint font-normal">· {session?.me.role}</span>
             </b>
-            <small className="block text-faint text-[11.5px] truncate">moning·· · 2FA 사용 중</small>
+            <small className="block text-faint text-[11px] truncate">2FA 사용 중</small>
           </div>
-          <Button variant="ghost" iconOnly icon="logout" title="로그아웃" aria-label="로그아웃" onClick={logout} />
+          <Button variant="ghost" size="sm" iconOnly icon="logout" title="로그아웃" aria-label="로그아웃" onClick={logout} />
         </div>
       </aside>
-      {open && <div className="fixed inset-0 z-20 bg-black/20 backdrop-blur-[2px] md:hidden animate-fade" onClick={() => setOpen(false)} />}
+      {open && <div className="fixed inset-0 z-20 bg-black/30 md:hidden animate-fade" onClick={() => setOpen(false)} />}
 
       {/* main panel */}
-      <div className="flex flex-col min-w-0 min-h-0 bg-canvas md:my-2 md:mr-2 md:rounded-[22px] md:shadow-soft overflow-hidden relative">
-        <div className="pointer-events-none absolute -top-40 right-0 size-[520px] rounded-full bg-accent/[.05] blur-3xl" />
-        <header className="h-14 flex-none flex items-center gap-2.5 px-4 md:px-6 border-b border-line bg-canvas/80 backdrop-blur-md relative z-10">
-          <Button variant="ghost" iconOnly icon="menu" aria-label="메뉴" className="md:hidden" onClick={() => setOpen(true)} />
-          <div className="text-sm font-medium text-muted truncate min-w-0">
-            acme <span className="text-faint">/</span> <b className="text-fg font-semibold">{route.label}</b>
+      <div className="flex flex-col min-w-0 min-h-0 bg-canvas">
+        <header className="h-12 flex-none flex items-center gap-2 px-4 md:px-6 border-b border-line bg-surface">
+          <Button variant="ghost" size="sm" iconOnly icon="menu" aria-label="메뉴" className="md:hidden" onClick={() => setOpen(true)} />
+          <div className="text-[13px] text-muted truncate min-w-0">
+            acme <span className="text-faint mx-1">/</span> <b className="text-fg font-medium">{route.label}</b>
           </div>
           <div className="flex-1" />
           <SudoTimer />
-          <Button variant="ghost" iconOnly icon={dark ? "sun" : "moon"} title="테마 전환" aria-label="테마 전환" onClick={toggle} />
+          <Button variant="ghost" size="sm" iconOnly icon={dark ? "sun" : "moon"} title="테마 전환" aria-label="테마 전환" onClick={toggle} />
           {canSee("jobs") && viewAs !== "Viewer" && (
             <Button
               variant="primary"
+              size="sm"
               icon="play"
               className="max-sm:hidden"
               onClick={() => runById("j1")}
@@ -164,7 +165,7 @@ export function Layout({ children }: { children: ReactNode }) {
           )}
         </header>
         <main className="flex-1 overflow-auto scroll-soft relative" id="content">
-          <div className="max-w-[1120px] mx-auto flex flex-col gap-6 px-4 md:px-8 pt-6 md:pt-8 pb-12">
+          <div className="max-w-[1180px] mx-auto flex flex-col gap-5 px-4 md:px-8 pt-6 pb-12">
             {viewAs !== "Owner" && <PreviewBar />}
             {canSee(route.id) ? children : <Denied label={route.label} />}
           </div>
@@ -177,7 +178,7 @@ export function Layout({ children }: { children: ReactNode }) {
 function PreviewBar() {
   const { viewAs, setViewAs, toast } = useApp();
   return (
-    <div className="flex items-center justify-between gap-3 flex-wrap pl-5 pr-2 py-2 rounded-full bg-accent-soft text-accent text-[13px] font-medium animate-rise">
+    <div className="flex items-center justify-between gap-3 flex-wrap pl-3.5 pr-1.5 py-1.5 rounded-lg border border-accent/25 bg-accent-soft text-accent text-[13px] font-medium animate-fade">
       <span>{viewAs} 역할로 미리 보는 중이에요. 사이드바와 화면이 이 역할 기준으로 보여요.</span>
       <Button
         size="sm"
@@ -196,11 +197,11 @@ function Denied({ label }: { label: string }) {
   const { viewAs } = useApp();
   const nav = useNavigate();
   return (
-    <div className="bg-surface rounded-[20px] shadow-soft py-20 px-6 text-center flex flex-col items-center gap-2">
-      <div className="grid place-items-center size-12 rounded-2xl bg-surface-2 text-faint mb-2">
+    <div className="bg-surface rounded-lg border border-line py-16 px-6 text-center flex flex-col items-center gap-2">
+      <div className="grid place-items-center size-10 rounded-lg border border-line bg-surface-2 text-faint mb-2">
         <Icon name="lock" className="size-5" />
       </div>
-      <h2 className="m-0 text-[17px] font-semibold tracking-[-0.02em]">이 메뉴를 볼 권한이 없어요</h2>
+      <h2 className="m-0 text-[15px] font-semibold">이 메뉴를 볼 권한이 없어요</h2>
       <p className="m-0 text-muted max-w-[44ch]">
         {viewAs} 역할에는 "{label}" 메뉴가 꺼져 있어요. 필요하면 워크스페이스 관리자에게 요청하세요.
       </p>

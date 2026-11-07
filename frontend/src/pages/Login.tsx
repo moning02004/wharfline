@@ -38,15 +38,14 @@ export default function Login() {
 
   return (
     <div className="fixed inset-0 grid place-items-center p-6 overflow-auto bg-bg">
-      <div className="pointer-events-none absolute top-[-20%] left-1/2 -translate-x-1/2 size-[640px] rounded-full bg-accent/[.07] blur-3xl" />
       <form
         key={step}
         onSubmit={step === 1 ? first : second}
-        className="relative w-full max-w-[390px] flex flex-col gap-5 bg-surface rounded-[28px] px-7 py-8 shadow-lift animate-rise"
+        className="relative w-full max-w-[390px] flex flex-col gap-5 bg-surface rounded-xl border border-line px-6 py-7 shadow-[var(--elev-2)] animate-rise"
       >
         {step === 1 ? (
           <>
-            <div className="grid place-items-center size-11 rounded-[14px] bg-primary text-primary-fg shadow-[0_6px_16px_-6px_rgba(0,0,0,.45)]">
+            <div className="grid place-items-center size-9 rounded-md bg-primary text-primary-fg">
               <Icon name="arrow" className="size-5" strokeWidth={2.4} />
             </div>
             <div>

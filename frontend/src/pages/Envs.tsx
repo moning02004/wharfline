@@ -85,7 +85,7 @@ export default function Envs() {
                 return (
                   <div
                     key={v.key}
-                    className="grid grid-cols-1 sm:grid-cols-[minmax(120px,240px)_minmax(0,1fr)] gap-x-4 gap-y-1 items-center px-5 py-2.5 border-b border-line last:border-b-0 font-mono text-[12.5px] hover:bg-surface-2 transition-colors"
+                    className="grid grid-cols-1 sm:grid-cols-[minmax(120px,240px)_minmax(0,1fr)] gap-x-4 gap-y-1 items-center px-4 py-2 border-b border-line last:border-b-0 font-mono text-[12.5px] hover:bg-surface-2 transition-colors"
                   >
                     <span>{v.key}</span>
                     <span

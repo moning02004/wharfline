@@ -34,22 +34,22 @@ export default function Dashboard() {
         </Banner>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3.5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {[
           ["오늘 배포", stats.today, <span className="text-muted">성공 {stats.todayOk} · 실패 {stats.todayBad}</span>],
           ["최근 30일 성공률", stats.successRate, <span className="text-ok">지난달보다 {stats.successDelta}</span>],
           ["연결된 서버", `${stats.hostsOnline}/${stats.hostsTotal}`, <span className="text-muted">{stats.hostsTotal - stats.hostsOnline}대 응답 없음</span>],
           ["평균 배포 시간", stats.avgDuration, <span className="text-muted">최근 20회 기준</span>],
         ].map(([label, value, sub], i) => (
-          <Card key={i} hover className="px-5 py-[18px]">
+          <Card key={i} className="px-4 py-3.5">
             <small className="text-muted text-[12.5px] font-medium">{label}</small>
-            <b className="block text-[28px] font-semibold tracking-[-0.03em] mt-1 mb-0.5 tabular-nums leading-tight">{value}</b>
+            <b className="block text-[22px] font-semibold tracking-[-0.02em] mt-0.5 tabular-nums leading-tight">{value}</b>
             <span className="text-[12.5px]">{sub}</span>
           </Card>
         ))}
       </div>
 
-      <div className="grid lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-5 items-start">
+      <div className="grid lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-4 items-start">
         <Card>
           <CardHeader title="최근 실행">
             <Button size="sm" variant="ghost" onClick={() => nav("/runs")}>

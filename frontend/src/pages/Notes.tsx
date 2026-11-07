@@ -95,7 +95,7 @@ export default function Notes() {
             ["Komodo", "서버와 배포 단위를 나눠 관리하는 방식, 레지스트리 이미지 + Compose 배포, 권한 모델."],
             ["Coolify", "이미지 태그 webhook 자동 배포, 환경 변수 편집 경험, 깔끔한 대시보드."],
           ].map(([t, d]) => (
-            <div key={t} className="rounded-[18px] bg-surface-2 p-4 transition-transform duration-300 hover:-translate-y-0.5">
+            <div key={t} className="rounded-lg border border-line bg-surface-2 p-4">
               <b className="block mb-1">{t}</b>
               <span className="text-muted">{d}</span>
             </div>

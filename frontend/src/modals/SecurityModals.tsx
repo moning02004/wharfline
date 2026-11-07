@@ -41,7 +41,7 @@ export function OtpInput({ value, onChange, autoFocus }: { value: string; onChan
               refs.current[Math.min(p.length, 5)]?.focus();
             }
           }}
-          className="w-11 h-[52px] min-w-0 text-center text-xl font-mono rounded-2xl bg-surface border border-line-strong shadow-[0_1px_2px_rgba(0,0,0,.03)] transition-[border-color,box-shadow,transform] duration-200 focus:outline-none focus:border-accent focus:shadow-[0_0_0_4px_color-mix(in_srgb,var(--accent)_16%,transparent)] focus:-translate-y-px"
+          className="w-11 h-[52px] min-w-0 text-center text-xl font-mono rounded-lg bg-surface border border-line-strong shadow-[0_1px_2px_rgba(0,0,0,.03)] transition-[border-color,box-shadow,transform] duration-200 focus:outline-none focus:border-accent focus:shadow-[0_0_0_4px_color-mix(in_srgb,var(--accent)_16%,transparent)] focus:-translate-y-px"
         />
       ))}
     </div>
@@ -78,7 +78,7 @@ function FakeQR() {
     finder(n - 7, 0);
     finder(0, n - 7);
   }, []);
-  return <canvas ref={ref} width={296} height={296} aria-label="QR 코드 예시" className="rounded-2xl shadow-[0_0_0_1px_var(--border)] bg-white size-[148px]" />;
+  return <canvas ref={ref} width={296} height={296} aria-label="QR 코드 예시" className="rounded-lg border border-line bg-white size-[148px]" />;
 }
 
 export function TfaSetupModal({ secret, onClose }: { secret: string; onClose: () => void }) {
@@ -105,7 +105,7 @@ export function TfaSetupModal({ secret, onClose }: { secret: string; onClose: ()
             <div className="flex-1 min-w-[180px] flex flex-col gap-2">
               <b className="font-semibold">1. 인증 앱으로 QR을 찍으세요</b>
               <span className="text-muted text-[13px]">찍을 수 없다면 이 키를 직접 입력하세요.</span>
-              <span className="font-mono bg-surface-2 px-3 py-1.5 rounded-xl self-start">{secret}</span>
+              <span className="font-mono bg-surface-2 px-3 py-1.5 rounded-md self-start">{secret}</span>
             </div>
           </div>
           <Field label="2. 앱에 표시된 6자리 숫자">
@@ -130,7 +130,7 @@ export function CodesModal({ codes, onClose }: { codes: string[]; onClose: () =>
     <>
       <ModalHead title="복구 코드" sub="휴대폰을 잃어버렸을 때 한 번씩 쓸 수 있어요. 이 화면을 닫으면 다시 볼 수 없어요." onClose={onClose} />
       <ModalBody>
-        <div className="grid grid-cols-2 gap-2 font-mono text-[13px] bg-surface-2 px-5 py-4 rounded-[18px]">
+        <div className="grid grid-cols-2 gap-2 font-mono text-[13px] bg-surface-2 px-5 py-4 rounded-lg">
           {codes.map((c) => (
             <span key={c}>{c}</span>
           ))}

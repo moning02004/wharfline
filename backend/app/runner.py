@@ -238,7 +238,10 @@ def replay_events(db: Session, rec: m.Run, job: dict) -> tuple[list[str], list[d
     ok = rec.status == "ok"
     events: list[dict] = []
     for i, st in enumerate(steps):
-        for cls, text in st["lines"]:
+        lines = st["lines"]
+        if not ok and i == len(steps) - 1:
+            lines = [ln for ln in lines if "배포 성공" not in ln[1]]  # a failed run never reports success
+        for cls, text in lines:
             events.append({"t": "line", "c": cls, "text": text, "ts": "—"})
         events.append({"t": "step", "i": i, "state": "ok" if ok or i < 2 else "bad"})
     if not ok:
