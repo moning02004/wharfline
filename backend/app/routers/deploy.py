@@ -14,11 +14,13 @@ from .. import runner
 from .. import store as s
 from ..db import get_db
 from ..deps import build_scope, require_login, viewer
+from .envs import replace_vars
 
 router = APIRouter(prefix="/api", tags=["deploy"], dependencies=[Depends(require_login)])
 
 
-def job_view(db: Session, job: m.Job, scope: set[str] | None) -> dict:
+def job_view(db: Session, job: m.Job, scope: set[str] | None, who: m.Member | None) -> dict:
+    """`who` is the viewer (an Owner's X-View-As preview included); `canEdit` is shown for them."""
     j = job.to_dict()
     inv = s.inv_of(db, j)
     img = s.image_of(db, j)
@@ -34,6 +36,7 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None) -> dict:
         "latestTag": img["tags"][0]["name"] if img["tags"] else None,
         "prevTag": s.prev_tag(db, j, img),
         "build": githooks.build_for_image(db, j["image"], scope) if has_image else None,
+        "canEdit": s.can_edit(who, job),
     }
 
 
@@ -58,14 +61,15 @@ def dashboard(db: Session = Depends(get_db), who: m.Member | None = Depends(view
         },
         "hostKeyAlert": changed.to_dict() if changed else None,
         "recentRuns": [r.to_dict() for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()).limit(5))],
-        "jobs": [job_view(db, j, scope) for j in all_jobs(db)],
+        "jobs": [job_view(db, j, scope, who) for j in all_jobs(db)],
         "security": {"tfaUsers": sum(1 for x in members if x.tfa), "members": len(members)},
     }
 
 
 @router.get("/jobs")
-def list_jobs(db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
-    return [job_view(db, j, scope) for j in all_jobs(db)]
+def list_jobs(db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
+              who: m.Member | None = Depends(viewer)):
+    return [job_view(db, j, scope, who) for j in all_jobs(db)]
 
 
 class PlaybookIn(BaseModel):
@@ -74,6 +78,11 @@ class PlaybookIn(BaseModel):
     branch: str = "main"
     path: str = ""
     key: str = ""
+
+
+class EditorsIn(BaseModel):
+    groups: list[str] = []  # group ids
+    members: list[str] = []  # member emails
 
 
 class JobIn(BaseModel):
@@ -85,31 +94,67 @@ class JobIn(BaseModel):
     envMode: str = Field(default="paste", pattern="^(paste|existing|none)$")
     envName: str | None = None
     envVars: list[list[str]] = []
+    editors: EditorsIn = Field(default_factory=EditorsIn)
     hook: bool = False
     protected: bool = True
     lock: bool = True
     rollback: bool = True
 
 
+class JobUpdate(JobIn):
+    envMode: str = Field(default="keep", pattern="^(keep|paste|existing|none)$")  # keep: leave the .env as it is
+
+
 BAD_PATH = "플레이북 경로는 레포 안의 .yml 파일이에요. 예: deploy/app.yml"
+NO_EDIT = "이 작업을 고칠 권한이 없어요."
+
+# Activity log labels for PUT, in form order.
+FIELD_LABELS = {
+    "name": "이름", "playbook": "플레이북", "target": "배포 대상", "image": "이미지", "env": "환경 변수",
+    "editors": "편집 권한", "hook": "자동 배포", "protected": "운영 보호", "lock": "동시 실행 잠금", "rollback": "실패 시 되돌리기",
+}
 
 
-@router.post("/jobs")
-def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
-    name = body.name.strip()
+# ---------- shared by create and update ----------
+
+def check_name(db: Session, raw: str, self_id: str | None = None) -> str:
+    name = raw.strip()
     if not name:
         raise HTTPException(400, "이름을 넣어 주세요.")
-    if db.scalar(select(m.Job).where(m.Job.name == name)):
+    q = select(m.Job).where(m.Job.name == name)
+    if self_id:
+        q = q.where(m.Job.id != self_id)
+    if db.scalar(q):
         raise HTTPException(400, "같은 이름의 작업이 있어요.")
-    inv = db.scalar(select(m.Inventory).where(m.Inventory.name == body.inventory))
+    return name
+
+
+def check_target(db: Session, inventory: str, targets: list[str]) -> None:
+    inv = db.scalar(select(m.Inventory).where(m.Inventory.name == inventory))
     if not inv:
         raise HTTPException(400, "인벤토리를 찾을 수 없어요.")
     if not inv.hosts:
         raise HTTPException(400, "인벤토리에 서버가 없어요. 서버를 먼저 추가해 주세요.")
-    unknown = set(body.targets) - {h.grp for h in inv.hosts}
+    unknown = set(targets) - {h.grp for h in inv.hosts}
     if unknown:
         raise HTTPException(400, f"인벤토리에 없는 그룹이에요: {', '.join(sorted(unknown))}")
 
+
+def check_editors(db: Session, ed: EditorsIn) -> dict[str, list[str]]:
+    """Known group ids and member emails, de-duplicated in the order given."""
+    groups = list(dict.fromkeys(g.strip() for g in ed.groups if g.strip()))
+    members = list(dict.fromkeys(e.strip() for e in ed.members if e.strip()))
+    known_groups = set(db.scalars(select(m.Group.id).where(m.Group.id.in_(groups)))) if groups else set()
+    if missing := [g for g in groups if g not in known_groups]:
+        raise HTTPException(400, f"없는 그룹이에요: {', '.join(missing)}")
+    known_members = set(db.scalars(select(m.Member.email).where(m.Member.email.in_(members)))) if members else set()
+    if missing := [e for e in members if e not in known_members]:
+        raise HTTPException(400, f"없는 멤버예요: {', '.join(missing)}")
+    return {"groups": groups, "members": members}
+
+
+def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo, str, str | None, str]:
+    """Validate playbook + image; reuse or create the repo and register the image. Returns (repo, path, image ref, tag)."""
     pb = body.playbook
     image_text = body.image.strip()
     ref, tag = s.parse_image(image_text) if image_text else (None, "latest")
@@ -124,31 +169,114 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     repo = s.builtin_repo(db) if pb.source == "builtin" else s.ensure_git_repo(db, pb.url, pb.branch, pb.key.strip())
     if ref:
         s.ensure_image(db, ref, tag)
+    return repo, path, ref, tag
+
+
+def existing_env(db: Session, env_name: str | None) -> str:
+    if not s.env_by_name(db, env_name or ""):
+        raise HTTPException(400, "저장된 환경 변수를 찾을 수 없어요.")
+    return env_name or ""
+
+
+def new_env_set(db: Session, job_name: str, vars_: list[list[str]]) -> str:
+    """A new .env set named after the job ("api · prod" -> "api.prod")."""
+    env_name = re.sub(r"\s+", "-", re.sub(r"\s*·\s*", ".", job_name))
+    if s.env_by_name(db, env_name):
+        raise HTTPException(400, f"환경 변수 {env_name}이(가) 이미 있어요. '저장된 것 쓰기'를 골라 주세요.")
+    s.validate_vars(vars_)
+    env = m.EnvSet(id=s.new_id("e"), name=env_name, ver=1, updated=f"방금 · {s.actor_name(db)}")
+    env.set_vars(vars_)
+    db.add(env)
+    return env_name
+
+
+# ---------- endpoints ----------
+
+@router.post("/jobs")
+def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
+               who: m.Member | None = Depends(viewer)):
+    name = check_name(db, body.name)
+    check_target(db, body.inventory, body.targets)
+    editors = check_editors(db, body.editors)
+    repo, path, ref, tag = resolve_playbook(db, body)
 
     if body.envMode == "none":
         env_name = ""  # no .env for this job; one can be attached later
     elif body.envMode == "existing":
-        if not s.env_by_name(db, body.envName or ""):
-            raise HTTPException(400, "저장된 환경 변수를 찾을 수 없어요.")
-        env_name = body.envName
+        env_name = existing_env(db, body.envName)
     else:
-        env_name = re.sub(r"\s+", "-", re.sub(r"\s*·\s*", ".", name))
-        if s.env_by_name(db, env_name):
-            raise HTTPException(400, f"환경 변수 {env_name}이(가) 이미 있어요. '저장된 것 쓰기'를 골라 주세요.")
-        s.validate_vars(body.envVars)
-        env = m.EnvSet(id=s.new_id("e"), name=env_name, ver=1, updated=f"방금 · {s.actor_name(db)}")
-        env.set_vars(body.envVars)
-        db.add(env)
+        env_name = new_env_set(db, name, body.envVars)
 
+    me = s.current_member(db)
     job = m.Job(
         id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name, book=path,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, protected=body.protected,
-        lock=body.lock, rollback=body.rollback,
+        lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
     )
     db.add(job)
     s.log_act(db, "배포 작업 생성", f"{name} · {repo.name}/{path}")
     db.commit()
-    return job_view(db, job, scope)
+    return job_view(db, job, scope, who)
+
+
+@router.put("/jobs/{job_id}")
+def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
+               who: m.Member | None = Depends(viewer)):
+    job = db.get(m.Job, job_id)
+    if not job:
+        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    if not s.can_edit(s.current_member(db), job):  # the signed-in member, never the X-View-As preview
+        raise HTTPException(403, NO_EDIT)
+    name = check_name(db, body.name, self_id=job.id)
+    check_target(db, body.inventory, body.targets)
+    editors = check_editors(db, body.editors)
+
+    # Pasting over the job's current set overwrites secrets: that needs a recent password re-check.
+    current_set = db.scalar(select(m.EnvSet).where(m.EnvSet.name == job.env)) if job.env else None
+    if body.envMode == "paste" and current_set and not s.sudo_active(db):
+        raise HTTPException(403, "sudo_required")
+
+    repo, path, ref, tag = resolve_playbook(db, body)
+
+    changed: list[str] = []
+    env_name = job.env
+    if body.envMode == "none":
+        env_name = ""
+    elif body.envMode == "existing":
+        env_name = existing_env(db, body.envName)
+    elif body.envMode == "paste":
+        if current_set:
+            s.validate_vars(body.envVars)
+            if any(s.diff_vars(current_set.get_vars(), body.envVars).values()):
+                replace_vars(current_set, body.envVars, f"방금 · {s.actor_name(db)}")
+                changed.append("env")
+        else:
+            env_name = new_env_set(db, name, body.envVars)
+
+    new = {
+        "name": name, "playbook": (repo.name, path), "target": (body.inventory, list(body.targets)),
+        "image": (ref, tag), "env": env_name, "editors": editors,
+        "hook": body.hook, "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
+    }
+    old = {
+        "name": job.name, "playbook": (job.repo, job.book), "target": (job.inventory, list(job.targets or [])),
+        "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
+        "hook": job.hook, "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
+    }
+    changed += [k for k in new if new[k] != old[k] and k not in changed]
+
+    job.name, job.repo, job.book = name, repo.name, path
+    job.inventory, job.targets = body.inventory, list(body.targets)
+    job.image, job.default_tag = ref, tag
+    job.env, job.editors = env_name, editors
+    job.hook, job.protected, job.lock, job.rollback = body.hook, body.protected, body.lock, body.rollback
+
+    if changed:
+        labels = ", ".join(FIELD_LABELS[k] for k in FIELD_LABELS if k in changed)
+        s.log_act(db, "배포 작업 수정", f"{name} · {labels}")
+    db.commit()
+    db.refresh(job)  # reload playbook_repo when the repo changed
+    return job_view(db, job, scope, who)
 
 
 class RunIn(BaseModel):
