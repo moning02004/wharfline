@@ -97,9 +97,9 @@ envs[2]["history"] = [
 
 jobs: list[dict] = [
     {"id": "j1", "name": "api-server · production", "image": "ghcr.io/acme/api-server", "tagNow": "v1.8.2", "defaultTag": "latest", "repo": "infra/ansible-deploy", "book": "deploy-app.yml", "inventory": "production", "targets": ["web"], "env": "api-server.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "12분 전", "duration": "1m 42s"}},
-    {"id": "j4", "name": "batch-worker · production", "image": "git.acme.kr/acme/batch-worker", "tagNow": "v0.9.4", "defaultTag": "latest", "repo": "ops/ansible-playbooks", "book": "deploy-worker.yml", "inventory": "production", "targets": ["worker"], "env": "api-server.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "어제", "duration": "0m 52s"}},
+    {"id": "j4", "name": "batch-worker · production", "image": "git.acme.kr/acme/batch-worker", "tagNow": "v0.9.4", "defaultTag": "latest", "repo": "ops/ansible-playbooks", "book": "deploy-worker.yml", "inventory": "production", "targets": ["worker"], "env": "api-server.production", "hook": False, "protected": True, "lock": True, "rollback": True, "editors": {"groups": ["g-batch"], "members": []}, "last": {"status": "ok", "time": "어제", "duration": "0m 52s"}},
     {"id": "j2", "name": "web-front · production", "image": "ghcr.io/acme/web-front", "tagNow": "v2.3.0", "defaultTag": "latest", "repo": BUILTIN_REPO, "book": BUILTIN_BOOK, "inventory": "production", "targets": ["web"], "env": "web-front.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "어제", "duration": "2m 05s"}},
-    {"id": "j3", "name": "api-server · staging", "image": "ghcr.io/acme/api-server", "tagNow": "v1.8.1", "defaultTag": "latest", "repo": BUILTIN_REPO, "book": BUILTIN_BOOK, "inventory": "staging", "targets": [], "env": "api-server.staging", "hook": True, "protected": False, "lock": True, "rollback": False, "last": {"status": "bad", "time": "2시간 전", "duration": "0m 38s"}},
+    {"id": "j3", "name": "api-server · staging", "image": "ghcr.io/acme/api-server", "tagNow": "v1.8.1", "defaultTag": "latest", "repo": BUILTIN_REPO, "book": BUILTIN_BOOK, "inventory": "staging", "targets": [], "env": "api-server.staging", "hook": True, "protected": False, "lock": True, "rollback": False, "createdBy": "minji@acme.kr", "last": {"status": "bad", "time": "2시간 전", "duration": "0m 38s"}},
 ]
 
 runs: list[dict] = [
@@ -211,7 +211,9 @@ def seed_if_empty(db: Session) -> bool:
         db.add(m.Job(id=j["id"], name=j["name"], image=j["image"], tag_now=j["tagNow"], default_tag=j["defaultTag"],
                      repo=j["repo"], book=j["book"], inventory=j["inventory"],
                      targets=j["targets"], env=j["env"], hook=j["hook"], protected=j["protected"], lock=j["lock"], rollback=j["rollback"],
-                     last_status=j["last"]["status"], last_time=j["last"]["time"], last_duration=j["last"]["duration"]))
+                     last_status=j["last"]["status"], last_time=j["last"]["time"], last_duration=j["last"]["duration"],
+                     created_by=j.get("createdBy", "jeonghoon@acme.kr"),
+                     editors=j.get("editors", {"groups": [], "members": []})))
     db.add_all(m.Run(no=r["no"], job=r["job"], job_id=r["jobId"], target=r["target"], tag=r["tag"], status=r["status"], by=r["by"],
                      trigger=r["trigger"], time=r["time"], duration=r["duration"]) for r in runs)
     # Lists below are newest first; insert oldest first so a higher id means newer.

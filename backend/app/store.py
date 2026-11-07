@@ -113,6 +113,21 @@ def repo_allowed(scope: set[str] | None, repo: str | None) -> bool:
     return scope is None or (repo or "").lower() in scope
 
 
+def can_edit(member: m.Member | None, job: m.Job) -> bool:
+    """Owner/Admin always; Viewer never; others if they made the job or are listed as an editor (directly or by group)."""
+    if member is None or member.role == "Viewer":
+        return False
+    if member.role in ("Owner", "Admin"):
+        return True
+    if job.created_by and job.created_by == member.email:
+        return True
+    editors = job.editors or {}
+    if member.email in (editors.get("members") or []):
+        return True
+    groups = set(editors.get("groups") or [])
+    return any(g.id in groups for g in member.groups)
+
+
 # ---------- lookups (dict-shaped) ----------
 
 def inv_of(db: Session, job: dict) -> dict | None:

@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Table, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -264,6 +264,10 @@ class Job(Base):
     last_status: Mapped[str] = mapped_column(String(16), default="warn")
     last_time: Mapped[str] = mapped_column(String(64), default="아직 실행 안 함")
     last_duration: Mapped[str] = mapped_column(String(32), default="-")
+    # Who may edit besides Owner/Admin and the creator: group ids and member emails.
+    editors: Mapped[dict[str, list[str]]] = mapped_column(
+        JSONB, default=lambda: {"groups": [], "members": []}, server_default=text("""'{"groups": [], "members": []}'::jsonb"""))
+    created_by: Mapped[str | None] = mapped_column(String(255))  # member email
     playbook_repo: Mapped[Repo | None] = relationship(primaryjoin="foreign(Job.repo) == Repo.name", viewonly=True)
 
     def to_dict(self) -> dict[str, Any]:
@@ -273,7 +277,10 @@ class Job(Base):
                              "branch": r.branch if r else "-", "path": self.book},
                 "inventory": self.inventory, "targets": self.targets, "env": self.env,
                 "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
-                "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration}}
+                "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration},
+                "editors": {"groups": list((self.editors or {}).get("groups", [])),
+                            "members": list((self.editors or {}).get("members", []))},
+                "createdBy": self.created_by}
 
 
 # Run numbers continue after the sample history (#179–#184).
