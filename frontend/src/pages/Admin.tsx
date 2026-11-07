@@ -98,7 +98,7 @@ export function Activity() {
 /* ---------- members ---------- */
 
 const MENU_DESC: Record<string, string> = {
-  dashboard: "항상 보여요", setup: "처음 배포까지 단계별 등록", jobs: "배포 작업 목록과 실행", runs: "실행 기록과 로그", registries: "GitHub, Gitea 컨테이너 이미지",
+  dashboard: "항상 보여요", jobs: "배포 작업 목록과 실행", runs: "실행 기록과 로그", registries: "GitHub, Gitea 컨테이너 이미지",
   repos: "Ansible 플레이북 레포", inventory: "서버와 그룹", keys: "SSH 키", envs: ".env 열람과 수정", activity: "활동 기록, 로그인 이력",
   members: "멤버, 역할, 메뉴 권한", security: "내 계정 보안, 워크스페이스 정책", notes: "프로토타입 안내",
 };

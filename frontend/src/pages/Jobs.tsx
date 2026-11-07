@@ -1,4 +1,3 @@
-import { useNavigate } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
 import type { Job, Run } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
@@ -7,7 +6,6 @@ import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWr
 
 export function Jobs() {
   const { data } = useApi<Job[]>("/jobs");
-  const nav = useNavigate();
   const { openModal, toast } = useApp();
   const { confirm } = useRun();
   if (!data) return <Loading />;
@@ -18,11 +16,8 @@ export function Jobs() {
         title="배포 작업"
         desc="도커 이미지, Ansible 플레이북, 서버 그룹, 환경 변수를 묶은 실행 단위예요. 실행할 때 이미지 태그를 고르고, 로그는 실시간으로 보여요."
       >
-        <Button icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
-          직접 만들기
-        </Button>
-        <Button variant="primary" icon="wand" onClick={() => nav("/setup")}>
-          배포 마법사
+        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
+          새 배포 작업
         </Button>
       </PageHeader>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,340px),1fr))] gap-4">

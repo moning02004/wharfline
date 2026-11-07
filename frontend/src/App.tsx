@@ -8,7 +8,6 @@ import Envs from "./pages/Envs";
 import { Activity, Members, Security } from "./pages/Admin";
 import Notes from "./pages/Notes";
 import Login from "./pages/Login";
-import Setup from "./pages/Setup";
 
 export default function App() {
   const { session } = useApp();
@@ -19,7 +18,6 @@ export default function App() {
     <Layout>
       <Routes>
         <Route path="/" element={<Dashboard />} />
-        <Route path="/setup" element={<Setup />} />
         <Route path="/jobs" element={<Jobs />} />
         <Route path="/runs" element={<Runs />} />
         <Route path="/registries" element={<Registries />} />

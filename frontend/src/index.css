@@ -150,8 +150,6 @@
 }
 
 @layer base {
-  /* Setup wizard panel height: same for every step so the layout never jumps. */
-  :root { --wizard-h: clamp(500px, 70vh, 620px); }
   html, body, #root { height: 100%; }
   body {
     background: var(--bg);

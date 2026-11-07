@@ -142,7 +142,7 @@ sessions: list[dict] = [
 
 # Menus each role can see. Owner always sees everything; dashboard is always visible.
 access: dict[str, list[str]] = {
-    "setup": ["Owner", "Admin"], "jobs": list(ALL), "runs": list(ALL),
+    "jobs": list(ALL), "runs": list(ALL),
     "registries": ["Owner", "Admin", "Deployer"], "repos": ["Owner", "Admin", "Deployer"],
     "inventory": ["Owner", "Admin", "Deployer"], "keys": ["Owner", "Admin"], "envs": ["Owner", "Admin"],
     "activity": ["Owner", "Admin"], "members": ["Owner"],

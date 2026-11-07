@@ -7,6 +7,7 @@ import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
+import { JobManual, type JobStepId } from "./JobManual";
 import { Button, Check, Chip, ErrorText, Field, Hint, Input, Select, Seg, Textarea, cx } from "../components/ui";
 
 const COMPOSE_TPL = `services:
@@ -30,7 +31,7 @@ const RISKY: [RegExp, string][] = [
   [/cap_add:/, "cap_add"],
 ];
 
-type StepId = "basic" | "target" | "method" | "env" | "safety" | "review";
+type StepId = JobStepId;
 const STEPS: { id: StepId; label: string; desc: string; skip?: string }[] = [
   { id: "basic", label: "기본 정보", desc: "작업 이름과 배포할 이미지를 정해요." },
   { id: "target", label: "배포 대상", desc: "어느 서버 묶음의 어떤 그룹에 보낼지 골라요." },
@@ -69,6 +70,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
   const [rb, setRb] = useState(true);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
+  const [manual, setManual] = useState(false);
 
   useEffect(() => {
     if (!repo && repos[0]) setRepo(repos[0].name);
@@ -121,6 +123,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
     go(step + 1);
   };
   const skip = () => {
+    setManual(false);
     if (cur.id === "safety") {
       setHook(false);
       setProt(true);
@@ -157,17 +160,53 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    setManual(false);
     if (cur.id === "review") create();
     else next();
   };
 
   return (
     <>
-      <ModalHead title="새 배포 작업" sub={cur.desc} onClose={onClose} />
+      <ModalHead
+        title={
+          <span className="flex items-center gap-1">
+            새 배포 작업
+            <button
+              type="button"
+              onClick={() => setManual((m) => !m)}
+              aria-pressed={manual}
+              aria-label="매뉴얼 보기"
+              title="매뉴얼 보기"
+              className={cx(
+                "grid place-items-center size-7 rounded-full transition-colors",
+                manual ? "bg-accent-soft text-accent" : "text-faint hover:bg-hover hover:text-fg",
+              )}
+            >
+              <Icon name="info" className="size-4" />
+            </button>
+          </span>
+        }
+        sub={cur.desc}
+        onClose={onClose}
+      />
       <Stepper step={step} status={status} reachable={reachable} onPick={go} />
       <form id="jobForm" onSubmit={submit} className="contents">
         <ModalBody className="h-[min(400px,62vh)] flex-none">
-          <div key={cur.id} className="flex flex-col gap-4 animate-rise">
+          {manual && (
+            <div key={`manual-${cur.id}`} className="flex flex-col gap-3 animate-rise">
+              <div className="flex items-center gap-2 text-[13px] font-semibold">
+                <span className="grid place-items-center size-7 rounded-full bg-accent-soft text-accent">
+                  <Icon name="book" className="size-3.5" />
+                </span>
+                {cur.label} 매뉴얼
+                <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setManual(false)}>
+                  입력으로 돌아가기
+                </Button>
+              </div>
+              <JobManual step={cur.id} image={image} />
+            </div>
+          )}
+          <div key={cur.id} className={cx("flex flex-col gap-4 animate-rise", manual && "hidden")}>
             {cur.id === "basic" && (
               <>
                 <Field label="이름" htmlFor="jName">
@@ -317,7 +356,13 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
       <ModalFoot between>
         <span className="flex items-center gap-2">
           {step > 0 ? (
-            <Button variant="ghost" onClick={() => go(step - 1)}>
+            <Button
+              variant="ghost"
+              onClick={() => {
+                setManual(false);
+                go(step - 1);
+              }}
+            >
               ← 이전
             </Button>
           ) : (

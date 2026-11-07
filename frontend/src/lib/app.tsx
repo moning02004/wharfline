@@ -15,7 +15,6 @@ import { SudoModal } from "../modals/SudoModal";
 
 export const ROUTES = [
   { id: "dashboard", path: "/", label: "대시보드", icon: "home", grp: "" },
-  { id: "setup", path: "/setup", label: "배포 마법사", icon: "wand", grp: "배포" },
   { id: "jobs", path: "/jobs", label: "배포 작업", icon: "rocket", grp: "배포" },
   { id: "runs", path: "/runs", label: "실행 기록", icon: "history", grp: "배포" },
   { id: "registries", path: "/registries", label: "이미지 레지스트리", icon: "box", grp: "리소스" },
