@@ -171,6 +171,19 @@ export interface Key {
   usedCount: number;
   publicKey?: string;
   hasSecret?: boolean;
+  /** SSH keys: inventories that connect with this key. */
+  inventories?: string[];
+  /** One SSH key serves 2+ inventories (e.g. production and staging). */
+  sharedAcrossInventories?: boolean;
+}
+
+/** GET /keys/{id}/public */
+export interface PublicKeyInfo {
+  publicKey: string;
+  /** The line to put in authorized_keys: with from="…" and forwarding off when addresses are set. */
+  authorizedKeysLine: string;
+  restricted: boolean;
+  accessFrom: string[];
 }
 
 export interface EnvSet {
