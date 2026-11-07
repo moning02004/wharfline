@@ -17,7 +17,7 @@ import pytest
 
 # Point the app at the test database before any app module creates its engine.
 _base = urlsplit(os.environ.get("DATABASE_URL", "postgresql+psycopg://wharfline:wharfline@localhost:55432/wharfline"))
-TEST_DB = "wharfline_test"
+TEST_DB = os.environ.get("WHARFLINE_TEST_DB", "wharfline_test")
 os.environ["DATABASE_URL"] = urlunsplit(_base._replace(path=f"/{TEST_DB}"))
 ADMIN_URL = urlunsplit(_base._replace(path="/postgres"))
 
