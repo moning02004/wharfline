@@ -68,6 +68,28 @@ docker compose --profile https up -d
 docker compose up -d
 ```
 
+### Nginx Proxy Manager(NPM)를 앞에 둘 때
+
+공유기 → NPM → 이 VM 구성이면 HTTPS는 NPM이 맡으니 **Caddy와 `Caddyfile`은 필요 없어요.** `--profile https` 없이 `docker compose up -d`로 띄우면 돼요.
+
+1. NPM이 다른 VM·LXC에 있으면 `127.0.0.1`로는 닿지 않아요. `.env`에서 웹 포트를 이 VM의 내부 IP에 열어요.
+   ```
+   WEB_BIND=192.168.0.50      # 이 VM의 내부 IP
+   WEB_PORT=8080
+   WHARFLINE_URL=https://deploy.example.com
+   WHARFLINE_COOKIE_SECURE=1
+   ```
+2. 그 포트는 **NPM만** 들어오게 막아요. Docker가 연 포트는 VM 안의 ufw 규칙을 건너뛰니, Proxmox 방화벽(VM → Firewall)에서 8080은 NPM의 IP만 허용하세요.
+3. NPM에서 Proxy Host 추가
+   - Domain: `deploy.example.com` → Scheme `http`, Forward `192.168.0.50`, Port `8080`
+   - SSL 탭: 인증서 발급, Force SSL, HTTP/2, HSTS 켜기
+   - Advanced 탭에 아래를 넣어요. 배포 로그를 실시간으로 받는 연결(SSE)이 끊기거나 늦게 오지 않게 해요.
+     ```
+     proxy_buffering off;
+     proxy_read_timeout 1h;
+     ```
+4. 사용자 IP: NPM이 보내는 `X-Forwarded-For`를 Wharfline의 nginx가 받아요(내부망 주소에서 온 것만 믿어요). 활동 기록과 로그인 잠금에 실제 사용자 IP가 남아요.
+
 확인:
 
 ```bash
