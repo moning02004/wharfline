@@ -2,6 +2,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ROUTES, useApi, useApp } from "../lib/app";
 import type { Job } from "../lib/types";
+import { EditJobModal } from "../modals/NewJobModal";
 import { shortImage, useRun } from "../modals/RunModals";
 import { Icon, type IconName } from "./Icon";
 import { cx } from "./ui";
@@ -15,9 +16,9 @@ interface Item {
   run: () => void;
 }
 
-/** ⌘K: jump to a page, open a job's run dialog, or roll a job back. */
+/** ⌘K: jump to a page, open a job's run dialog, or edit a job. */
 export function QuickNav({ onClose }: { onClose: () => void }) {
-  const { canSee, role } = useApp();
+  const { canSee, role, openModal } = useApp();
   const nav = useNavigate();
   const { confirm } = useRun();
   const jobs = useApi<Job[]>("/jobs").data ?? [];
@@ -50,17 +51,17 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
               confirm(j);
             },
           },
-          ...(j.prevTag
+          ...(j.canEdit
             ? [
                 {
-                  key: `rb:${j.id}`,
-                  kind: "되돌리기",
+                  key: `edit:${j.id}`,
+                  kind: "편집",
                   label: j.name,
-                  hint: `→ ${j.prevTag}`,
-                  icon: "undo" as IconName,
+                  hint: j.playbook.kind === "builtin" ? "기본 플레이북" : j.playbook.path,
+                  icon: "edit" as IconName,
                   run: () => {
                     onClose();
-                    confirm(j, { tag: j.prevTag!, rollback: true });
+                    openModal((c) => <EditJobModal job={j} onClose={c} />, "md");
                   },
                 },
               ]
@@ -70,7 +71,7 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
     const all = [...actions, ...pages];
     const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return words.length ? all.filter((i) => words.every((w) => `${i.kind} ${i.label} ${i.hint ?? ""}`.toLowerCase().includes(w))) : all;
-  }, [jobs, q, canSee, role, nav, confirm, onClose]);
+  }, [jobs, q, canSee, role, nav, confirm, onClose, openModal]);
 
   const active = Math.min(sel, Math.max(0, items.length - 1));
 
@@ -100,7 +101,7 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
               items[active]?.run();
             }
           }}
-          placeholder="페이지, 배포, 되돌리기… 예: 배포 api"
+          placeholder="페이지, 배포, 편집… 예: 배포 api"
           aria-label="빠른 이동"
           className="flex-1 min-w-0 bg-transparent outline-none text-[14px] placeholder:text-faint"
         />

@@ -1,7 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import { useApi, useApp } from "../lib/app";
 import type { Job, Run } from "../lib/types";
-import { NewJobModal } from "../modals/NewJobModal";
+import { EditJobModal, NewJobModal } from "../modals/NewJobModal";
 import { PlaybookLine, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
@@ -14,7 +14,7 @@ export function Jobs() {
   useEffect(() => {
     setPoll(data?.some((j) => j.build?.active || j.last.status === "run") ? 3000 : 0);
   }, [data]);
-  const { openModal, toast } = useApp();
+  const { openModal } = useApp();
   const { confirm } = useRun();
   const [open, setOpen] = useState<string | null>(null);
   if (!data) return <Loading />;
@@ -25,6 +25,9 @@ export function Jobs() {
         title="배포 작업"
         desc="플레이북, 서버 그룹, 도커 이미지, 환경 변수를 묶은 실행 단위예요. 행을 누르면 자세한 설정이 보여요."
       >
+        <Button icon="wand" onClick={() => openModal((c) => <NewJobModal onClose={c} guide />, "md")}>
+          배포를 도와드릴까요?
+        </Button>
         <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
           새 배포 작업
         </Button>
@@ -101,9 +104,9 @@ export function Jobs() {
                       </td>
                       <td className="text-right" onClick={(e) => e.stopPropagation()}>
                         <span className="inline-flex gap-1">
-                          {j.prevTag && (
-                            <Button size="sm" variant="ghost" icon="undo" title={`${j.prevTag}로 되돌리기`} onClick={() => confirm(j, { tag: j.prevTag!, rollback: true })}>
-                              되돌리기
+                          {j.canEdit && (
+                            <Button size="sm" variant="ghost" icon="edit" onClick={() => openModal((c) => <EditJobModal job={j} onClose={c} />, "md")}>
+                              편집
                             </Button>
                           )}
                           <Button size="sm" icon="play" onClick={() => confirm(j)}>
@@ -130,11 +133,6 @@ export function Jobs() {
                                 ["안전장치", [j.protected && "실행 전 확인", j.lock && "동시 실행 금지", j.rollback && "실패 시 롤백"].filter(Boolean).join(" · ") || "없음", "text-muted"],
                               ]}
                             />
-                          </div>
-                          <div className="pl-[22px] mt-3">
-                            <Button size="sm" variant="ghost" icon="edit" onClick={() => toast("편집 화면은 새 작업 만들기와 같은 양식을 써요")}>
-                              편집
-                            </Button>
                           </div>
                         </td>
                       </tr>

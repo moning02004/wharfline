@@ -42,7 +42,7 @@ export function useRun() {
   );
 
   const confirm = useCallback(
-    (job: Job, opt: { tag?: string; rollback?: boolean } = {}) =>
+    (job: Job, opt: { tag?: string } = {}) =>
       app.openModal(
         (close) => (
           <ConfirmRun
@@ -78,7 +78,7 @@ export function useRun() {
 
 /* ---------- "배포하시겠습니까?" ---------- */
 
-function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: string; rollback?: boolean }; onClose: () => void; onStarted: (no: number) => void }) {
+function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: string }; onClose: () => void; onStarted: (no: number) => void }) {
   const { toast } = useApp();
   const hasImage = job.image !== null;
   const [tag, setTag] = useState(opt.tag ?? job.defaultTag ?? "latest");
@@ -112,7 +112,7 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
   const go = async (useTag = tag) => {
     setBusy(true);
     try {
-      const r = await api.post<{ no: number }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel, rollback: !!opt.rollback });
+      const r = await api.post<{ no: number }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel });
       onStarted(r.no);
     } catch (e) {
       toast(errMsg(e));
@@ -136,12 +136,12 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
   return (
     <>
       <ModalHead
-        title={opt.rollback ? "이전 버전으로 되돌리시겠습니까?" : "배포하시겠습니까?"}
-        sub={opt.rollback ? `${job.name} · 지금 ${job.tagNow} → ${opt.tag}` : job.name}
+        title="배포하시겠습니까?"
+        sub={job.name}
         onClose={onClose}
       />
       <ModalBody>
-        {hasImage && showBuild && latest && !opt.rollback && (
+        {hasImage && showBuild && latest && (
           <BuildPanel
             build={latest}
             selected={resolved === latest.tag}
