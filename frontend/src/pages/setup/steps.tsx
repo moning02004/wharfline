@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Children, isValidElement, useEffect, useMemo, useState, type ReactNode } from "react";
 import { api, ApiError, errMsg, parseEnv } from "../../lib/api";
 import { useApi, useApp } from "../../lib/app";
 import type { EnvSet, Image, Inventory, Job, Key, Registry, Repo } from "../../lib/types";
@@ -55,7 +55,7 @@ function Footer({ back, skip, skipOf, primary, busy, disabled, hint }: {
   hint?: ReactNode;
 }) {
   return (
-    <div className="flex items-center gap-2 flex-wrap pt-5 mt-1 border-t border-line">
+    <div className="flex-none px-6 py-3.5 bg-surface border-t border-line flex items-center gap-2 flex-wrap">
       {back && (
         <Button variant="ghost" onClick={back}>
           ← 뒤로
@@ -75,16 +75,20 @@ function Footer({ back, skip, skipOf, primary, busy, disabled, hint }: {
   );
 }
 
+/** Fixed-height step: the body scrolls on its own and the Footer stays below it, never on top of content. */
 function Form({ onSubmit, children }: { onSubmit: () => void; children: ReactNode }) {
+  const all = Children.toArray(children);
+  const isFooter = (c: ReactNode) => isValidElement(c) && c.type === Footer;
   return (
     <form
-      className="flex flex-col gap-4"
+      className="flex-1 min-h-0 flex flex-col"
       onSubmit={(e) => {
         e.preventDefault();
         onSubmit();
       }}
     >
-      {children}
+      <div className="flex-1 min-h-0 overflow-y-auto scroll-soft flex flex-col gap-4 px-6 py-5">{all.filter((c) => !isFooter(c))}</div>
+      {all.filter(isFooter)}
     </form>
   );
 }

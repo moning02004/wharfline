@@ -29,16 +29,16 @@ export default function Dashboard() {
       <button
         type="button"
         onClick={() => nav("/setup")}
-        className="group flex items-center gap-4 text-left p-5 rounded-[20px] bg-gradient-to-r from-accent-soft to-surface shadow-soft hover:shadow-lift hover:-translate-y-0.5 transition-all duration-300 ease-(--ease-soft)"
+        className="group flex items-center gap-4 text-left p-5 rounded-[20px] bg-gradient-to-r from-primary-soft to-surface shadow-soft hover:shadow-lift hover:-translate-y-0.5 transition-all duration-300 ease-(--ease-soft)"
       >
-        <span className="grid place-items-center size-11 rounded-2xl bg-accent text-on-accent flex-none">
+        <span className="grid place-items-center size-11 rounded-2xl bg-primary text-primary-fg flex-none">
           <Icon name="wand" className="size-5" />
         </span>
         <span className="flex-1 min-w-0">
           <b className="block text-[15px] font-semibold">배포 마법사로 시작하기</b>
           <span className="text-muted text-[13px]">SSH 키 → 서버 → 이미지 → .env 순서로 등록하면 배포 작업이 만들어지고 바로 시작할 수 있어요. 단계마다 매뉴얼이 있어요.</span>
         </span>
-        <Icon name="arrow" className="size-5 text-accent transition-transform group-hover:translate-x-1" />
+        <Icon name="arrow" className="size-5 text-primary transition-transform group-hover:translate-x-1" />
       </button>
 
       {alert && (

@@ -16,10 +16,12 @@
   --fg: #17171a;
   --muted: #686873;
   --faint: #a0a0a9;
-  --primary: #17171a;
+  /* Twilight: indigo main (buttons, logo, progress), rose pink sub (selection, highlights, chips) */
+  --primary: #4f46e5;
   --primary-fg: #ffffff;
-  --accent: #5753d9;
-  --accent-soft: #f1f0fe;
+  --primary-soft: #eef0ff;
+  --accent: #db2777;
+  --accent-soft: #fdf0f6;
   --on-accent: #ffffff;
   --ok: #17a35a;
   --warn: #d9890b;
@@ -48,11 +50,12 @@
     --fg: #ededf0;
     --muted: #9d9da7;
     --faint: #66666f;
-    --primary: #ededf0;
-    --primary-fg: #121214;
-    --accent: #8f8cf7;
-    --accent-soft: #1e1d36;
-    --on-accent: #121214;
+    --primary: #818cf8;
+    --primary-fg: #12112a;
+    --primary-soft: #1d1b3a;
+    --accent: #f472b6;
+    --accent-soft: #2d1424;
+    --on-accent: #1f0a16;
     --ok: #3dd68c;
     --warn: #f5b041;
     --bad: #f2666b;
@@ -79,11 +82,12 @@
   --fg: #ededf0;
   --muted: #9d9da7;
   --faint: #66666f;
-  --primary: #ededf0;
-  --primary-fg: #121214;
-  --accent: #8f8cf7;
-  --accent-soft: #1e1d36;
-  --on-accent: #121214;
+  --primary: #818cf8;
+  --primary-fg: #12112a;
+  --primary-soft: #1d1b3a;
+  --accent: #f472b6;
+  --accent-soft: #2d1424;
+  --on-accent: #1f0a16;
   --ok: #3dd68c;
   --warn: #f5b041;
   --bad: #f2666b;
@@ -111,6 +115,7 @@
   --color-faint: var(--faint);
   --color-primary: var(--primary);
   --color-primary-fg: var(--primary-fg);
+  --color-primary-soft: var(--primary-soft);
   --color-accent: var(--accent);
   --color-accent-soft: var(--accent-soft);
   --color-on-accent: var(--on-accent);
@@ -145,6 +150,8 @@
 }
 
 @layer base {
+  /* Setup wizard panel height: same for every step so the layout never jumps. */
+  :root { --wizard-h: clamp(500px, 70vh, 620px); }
   html, body, #root { height: 100%; }
   body {
     background: var(--bg);

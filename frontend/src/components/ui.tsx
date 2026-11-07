@@ -20,7 +20,7 @@ const btnBase =
   "active:scale-[.97] disabled:opacity-40 disabled:pointer-events-none";
 const btnVariants: Record<BtnVariant, string> = {
   default: "bg-surface text-fg shadow-[0_0_0_1px_var(--border-strong),0_1px_2px_rgba(0,0,0,.04)] hover:bg-hover hover:shadow-[0_0_0_1px_var(--faint)]",
-  primary: "bg-primary text-primary-fg shadow-[0_1px_2px_rgba(0,0,0,.12),0_6px_14px_-6px_rgba(0,0,0,.35)] hover:opacity-90 hover:-translate-y-px",
+  primary: "bg-primary text-primary-fg shadow-[0_1px_2px_rgba(0,0,0,.1),0_8px_18px_-8px_color-mix(in_srgb,var(--primary)_70%,transparent)] hover:opacity-90 hover:-translate-y-px",
   ghost: "text-fg hover:bg-hover",
   danger: "bg-surface text-bad shadow-[0_0_0_1px_var(--border-strong)] hover:bg-bad-soft hover:shadow-[0_0_0_1px_color-mix(in_srgb,var(--bad)_30%,transparent)]",
   dangerGhost: "text-bad hover:bg-bad-soft",

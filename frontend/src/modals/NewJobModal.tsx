@@ -354,7 +354,7 @@ function Stepper({ step, status, reachable, onPick }: { step: number; status: Pa
           const can = reachable(i);
           return (
             <li key={s.id} className="flex items-center gap-1 flex-none">
-              {i > 0 && <span className={cx("w-4 h-px", st || current ? "bg-accent/40" : "bg-line-strong")} />}
+              {i > 0 && <span className={cx("w-4 h-px", st || current ? "bg-primary/40" : "bg-line-strong")} />}
               <button
                 type="button"
                 disabled={!can}
@@ -362,7 +362,7 @@ function Stepper({ step, status, reachable, onPick }: { step: number; status: Pa
                 aria-current={current ? "step" : undefined}
                 className={cx(
                   "flex items-center gap-1.5 h-7 pl-1 pr-2.5 rounded-full text-[12px] font-medium whitespace-nowrap transition-all duration-200",
-                  current ? "bg-accent-soft text-accent" : can ? "text-muted hover:bg-hover hover:text-fg" : "text-faint cursor-not-allowed",
+                  current ? "bg-primary-soft text-primary" : can ? "text-muted hover:bg-hover hover:text-fg" : "text-faint cursor-not-allowed",
                 )}
               >
                 <span
@@ -370,7 +370,7 @@ function Stepper({ step, status, reachable, onPick }: { step: number; status: Pa
                     "grid place-items-center size-5 rounded-full text-[10.5px] font-semibold",
                     st === "done" && "bg-ok text-white",
                     st === "skipped" && "bg-surface-2 text-faint shadow-[inset_0_0_0_1px_var(--border-strong)]",
-                    !st && current && "bg-accent text-on-accent",
+                    !st && current && "bg-primary text-primary-fg",
                     !st && !current && "bg-surface-2 shadow-[inset_0_0_0_1px_var(--border)]",
                   )}
                 >

@@ -1,10 +1,9 @@
-import { useState, type ReactNode } from "react";
+import type { ReactNode } from "react";
 import { useApp } from "../../lib/app";
 import { copyText } from "../../modals/ResourceModals";
 import { Icon } from "../../components/Icon";
-import { cx } from "../../components/ui";
 import type { StepId, WizardState } from "./model";
-import { imageShort } from "./model";
+import { imageShort, STEPS } from "./model";
 
 /* ---------- building blocks ---------- */
 
@@ -40,20 +39,17 @@ interface Section {
   body: ReactNode;
 }
 
+/** All sections open side by side: the manual sits below the form with room to spare. */
 function Sections({ items }: { items: Section[] }) {
-  const [open, setOpen] = useState(0);
   return (
-    <ol className="m-0 p-0 list-none flex flex-col gap-1.5">
+    <ol className="m-0 p-0 list-none grid md:grid-cols-2 gap-3 items-start">
       {items.map((s, i) => (
-        <li key={s.title} className={cx("rounded-2xl transition-colors", open === i ? "bg-surface-2" : "hover:bg-hover")}>
-          <button type="button" onClick={() => setOpen(open === i ? -1 : i)} className="w-full flex items-center gap-2.5 px-3 py-2.5 text-left">
-            <span className={cx("grid place-items-center size-6 rounded-full text-[11px] font-semibold flex-none", open === i ? "bg-accent text-on-accent" : "bg-surface-2 text-muted shadow-[inset_0_0_0_1px_var(--border)]")}>
-              {i + 1}
-            </span>
-            <span className="flex-1 font-medium text-[13px]">{s.title}</span>
-            <Icon name="chev" className={cx("size-4 text-faint transition-transform", open === i && "rotate-180")} />
-          </button>
-          {open === i && <div className="px-3 pb-3 pl-[46px] text-[12.5px] text-muted leading-relaxed animate-fade [&_p]:my-1.5">{s.body}</div>}
+        <li key={s.title} className="rounded-[18px] bg-surface-2 p-4 min-w-0 animate-fade" style={{ animationDelay: `${i * 40}ms` }}>
+          <div className="flex items-center gap-2.5 mb-1.5">
+            <span className="grid place-items-center size-6 rounded-full bg-primary text-primary-fg text-[11px] font-semibold flex-none">{i + 1}</span>
+            <span className="font-semibold text-[13.5px]">{s.title}</span>
+          </div>
+          <div className="text-[12.5px] text-muted leading-relaxed pl-[34px] [&_p]:my-1.5">{s.body}</div>
         </li>
       ))}
     </ol>
@@ -353,15 +349,18 @@ export JWT_SECRET="따옴표와 export는 자동으로 정리돼요"`}</Code>
 
 export function Manual({ step, state }: { step: StepId; state: WizardState }) {
   const { intro, sections } = manualFor(step, state);
+  const title = STEPS.find((s) => s.id === step)?.short;
   return (
-    <div className="flex flex-col gap-3">
-      <div className="flex items-center gap-2 text-[13px] font-semibold">
-        <span className="grid place-items-center size-7 rounded-full bg-accent-soft text-accent">
-          <Icon name="book" className="size-3.5" />
+    <div className="flex flex-col gap-4">
+      <div className="flex items-start gap-3">
+        <span className="grid place-items-center size-9 rounded-2xl bg-accent-soft text-accent flex-none">
+          <Icon name="book" className="size-4" />
         </span>
-        매뉴얼
+        <div className="min-w-0">
+          <h3 className="m-0 text-[15px] font-semibold tracking-[-0.01em]">매뉴얼 · {title}</h3>
+          <p className="m-0 mt-0.5 text-[13px] text-muted leading-relaxed max-w-[80ch]">{intro}</p>
+        </div>
       </div>
-      <p className="m-0 text-[12.5px] text-muted leading-relaxed">{intro}</p>
       <Sections key={step} items={sections} />
     </div>
   );
