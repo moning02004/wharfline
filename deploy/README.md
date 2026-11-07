@@ -2,13 +2,13 @@
 
 GitHub 릴리스로 만들어진 이미지(`ghcr.io/moning02004/wharfline-*`)를 받아서 실행해요. 서버에서 빌드하지 않고, 샘플 데이터도 넣지 않아요. 처음 띄우면 `.env`에 적은 Owner 한 명만 만들어져요.
 
-필요한 것: Docker Engine과 Compose 플러그인(`docker compose version`), 이 폴더의 파일(`docker-compose.yml`, `.env.example`, 그리고 서버 한 대로 HTTPS까지 할 때만 `Caddyfile`).
+필요한 것: Docker Engine과 Compose 플러그인(`docker compose version`), 이 폴더의 파일(`docker-compose.yml`, `.env.example`, `Makefile`, 그리고 서버 한 대로 HTTPS까지 할 때만 `Caddyfile`). 저장소 맨 위의 Makefile은 개발용이라 서버에서는 쓰지 않아요.
 
 ## 1. 폴더 만들기
 
 ```bash
 sudo mkdir -p /opt/wharfline && sudo chown "$USER" /opt/wharfline && cd /opt/wharfline
-# 이 폴더의 docker-compose.yml, .env.example (필요하면 Caddyfile)을 여기로 복사해요
+# 이 폴더의 docker-compose.yml, .env.example, Makefile (필요하면 Caddyfile)을 여기로 복사해요
 cp .env.example .env && chmod 600 .env
 ```
 
@@ -24,18 +24,11 @@ GHCR 패키지는 처음에 비공개예요. 둘 중 하나를 고르세요.
 
 비밀 값(SSH 키, 토큰, 환경 변수)을 암호화하는 키예요. **잃어버리면 저장된 비밀 값을 영영 못 읽어요.**
 
-```bash
-mkdir -p secrets && chmod 700 secrets
-docker run --rm ghcr.io/moning02004/wharfline-backend:<버전> \
-  python -c 'from app.crypto import generate_key_line; import time; print(generate_key_line(time.strftime("k%Y%m%d%H%M%S")))' \
-  > secrets/master_keys
-chmod 644 secrets/master_keys   # 컨테이너 안의 일반 사용자가 읽어야 해서 644, 대신 폴더를 700으로 막아요
-```
-
-바로 암호를 걸어 다른 곳에 백업해 두세요(DB 백업과 **다른 곳**에).
+`.env`에 `WHARFLINE_VERSION`을 먼저 적고:
 
 ```bash
-openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -in secrets/master_keys -out master_keys-$(date +%Y%m%d).enc
+make keygen       # secrets/master_keys를 만들어요 (이미 있으면 덮어쓰지 않아요)
+make key-backup   # 암호를 걸어 backups/에 복사본을 만들어요. 이 파일은 DB 백업과 다른 곳에 옮겨 두세요
 ```
 
 ## 4. `.env` 채우기
@@ -48,24 +41,30 @@ openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -in secrets/master_keys -out maste
 | `WHARFLINE_OWNER_EMAIL` / `_NAME` / `_PASSWORD` | 처음 만들 Owner. 비밀번호는 10자 이상, 첫 로그인 때 바꾸게 돼요 |
 | `WHARFLINE_COOKIE_SECURE` | HTTPS면 `1`(기본). HTTP로만 시험할 때만 `0` |
 | `WEB_BIND`, `WEB_PORT` | 웹 포트. 기본은 `127.0.0.1:8080`. 프록시가 다른 VM이면 이 VM의 내부 IP |
-| `WHARFLINE_DOMAIN` | 함께 든 Caddy(자동 HTTPS)를 쓸 때만. 이 서버를 가리키는 도메인 |
+| `COMPOSE_PROFILES`, `WHARFLINE_DOMAIN` | 서버 한 대로 HTTPS까지 할 때만. `COMPOSE_PROFILES=https`면 Caddy가 함께 떠요 |
 
 Owner가 생긴 뒤에는 `WHARFLINE_OWNER_PASSWORD`를 `.env`에서 지워도 돼요(빈 DB일 때만 쓰여요).
 
 ## 5. 띄우기
 
-Wharfline은 HTTP 포트 하나만 열어요. HTTPS를 누가 붙이느냐에 따라 둘 중 하나로 띄워요.
+```bash
+make up           # = docker compose up -d
+```
 
-| 상황 | 명령 | 필요한 파일 |
+Wharfline은 HTTP 포트 하나만 열어요. HTTPS는 둘 중 하나가 맡아요.
+
+| 상황 | `.env` | 필요한 파일 |
 |---|---|---|
-| 앞에 리버스 프록시가 이미 있음 (NPM, 회사 nginx, 로드밸런서) | `docker compose up -d` | `docker-compose.yml`, `.env` |
-| 공인 IP가 붙은 서버 한 대뿐 (예: NCP 서버) | `docker compose --profile https up -d` | 위 둘 + `Caddyfile` |
+| 앞에 리버스 프록시가 이미 있음 (NPM, 회사 nginx, 로드밸런서) | 그대로 | `docker-compose.yml`, `.env`, `Makefile` |
+| 공인 IP가 붙은 서버 한 대뿐 (예: NCP 서버) | `COMPOSE_PROFILES=https`, `WHARFLINE_DOMAIN=…` | 위 셋 + `Caddyfile` |
 
 두 번째는 함께 든 **Caddy**가 앞단을 맡아요. Caddy는 Let's Encrypt 인증서를 알아서 받고 갱신해요. `Caddyfile`은 그 설정 파일이에요.
 
+`make`만 치면 쓸 수 있는 명령이 다 나와요: `up`, `down`, `restart`, `ps`, `logs`, `upgrade`, `backup`, `restore`, `keygen`, `key-status`, `key-verify`, `key-rotate`, `key-backup`.
+
 ### Nginx Proxy Manager(NPM)를 앞에 둘 때
 
-공유기 → NPM → 이 VM 구성 예시예요.
+공유기 → NPM → 이 VM 구성 예시예요. `COMPOSE_PROFILES`는 비워 두고 `make up`으로 띄워요.
 
 1. NPM이 다른 VM·LXC에 있으면 `127.0.0.1`로는 닿지 않아요. `.env`에서 웹 포트를 이 VM의 내부 IP에 열어요.
    ```
@@ -95,12 +94,13 @@ Wharfline은 HTTP 포트 하나만 열어요. HTTPS를 누가 붙이느냐에 �
 3. **도메인**: 쓸 도메인의 A 레코드를 이 서버의 공인 IP로 맞춰요. DNS가 퍼지기 전에 띄우면 인증서 발급이 실패해요(퍼진 뒤 Caddy가 다시 시도해요).
 4. **`.env`**
    ```
+   COMPOSE_PROFILES=https
    WHARFLINE_DOMAIN=deploy.example.com
    WHARFLINE_URL=https://deploy.example.com
    WHARFLINE_COOKIE_SECURE=1
    WEB_BIND=127.0.0.1
    ```
-5. **띄우기**: `docker compose --profile https up -d`. `docker compose logs caddy`에서 `certificate obtained successfully`가 보이면 끝이에요.
+5. **띄우기**: `.env`에 `COMPOSE_PROFILES=https`를 넣고 `make up`. `make logs s=caddy`에서 `certificate obtained successfully`가 보이면 끝이에요.
 6. **접속 허용 주소**: Wharfline이 배포 대상 서버에 SSH로 접속할 때 나가는 주소는 이 서버의 공인 IP예요. 키 저장소의 **접속 허용 주소**에 그 IP를 넣고, 대상 서버들의 `authorized_keys`를 그 줄로 바꿔요. (대상 서버가 같은 VPC 안이면 사설 IP로 접속하니 사설 IP도 함께 넣어요.)
 7. **백업**: DB 덤프는 서버 밖(예: Object Storage)에 두고, 마스터 키 백업은 그와 **다른 곳**에 둬요.
 
@@ -109,8 +109,8 @@ Wharfline은 HTTP 포트 하나만 열어요. HTTPS를 누가 붙이느냐에 �
 확인:
 
 ```bash
-docker compose ps                 # backend, frontend가 healthy, migrate는 exited (0)
-docker compose logs migrate       # "created the first Owner (no sample data)"
+make ps           # backend, frontend가 healthy, migrate는 exited (0)
+make logs s=migrate   # "created the first Owner (no sample data)"
 ```
 
 `WHARFLINE_URL`로 들어가 Owner로 로그인하면 새 비밀번호를 정하라고 나와요. 그다음 **보안** 탭에서 2단계 인증을 켜는 걸 권해요.
@@ -118,28 +118,19 @@ docker compose logs migrate       # "created the first Owner (no sample data)"
 ## 업데이트
 
 ```bash
-# .env의 WHARFLINE_VERSION을 새 태그로 바꾼 뒤
-docker compose pull
-docker compose up -d              # migrate가 DB를 새 버전으로 올린 뒤 백엔드가 다시 떠요
+make upgrade v=2026.11.09-1   # DB를 먼저 백업하고, .env의 버전을 바꾸고, 새 이미지를 받아 다시 띄워요
 ```
 
-업데이트 전에는 DB 백업을 먼저 하세요.
+migrate가 DB를 새 버전으로 올린 뒤 백엔드가 떠요.
 
 ## 백업
 
 ```bash
-docker compose exec -T db pg_dump -U wharfline -Fc wharfline > wharfline-$(date +%Y%m%d).dump
+make backup                                   # backups/wharfline-<시각>.dump
+make restore f=backups/wharfline-....dump     # 되살리기
 ```
 
 DB 덤프와 마스터 키 백업은 **따로** 두세요. 둘이 같이 털리면 비밀 값이 다 풀려요.
-
-되살리기:
-
-```bash
-docker compose stop backend frontend
-docker compose exec -T db pg_restore -U wharfline -d wharfline --clean --if-exists < wharfline-YYYYMMDD.dump
-docker compose up -d
-```
 
 ## 운영 전에 확인할 것
 

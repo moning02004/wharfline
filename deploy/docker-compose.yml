@@ -2,8 +2,9 @@
 #
 #   cp .env.example .env        # fill in every value
 #   (create secrets/master_keys, see README.md)
-#   docker compose up -d                    # HTTPS from your own reverse proxy (e.g. Nginx Proxy Manager)
-#   docker compose --profile https up -d    # or a server on its own: bundled Caddy gets the certificate
+#   docker compose up -d        # or `make up`
+# HTTPS: your own reverse proxy (e.g. Nginx Proxy Manager), or on a server of its own set
+# COMPOSE_PROFILES=https in .env so the bundled Caddy runs too and gets the certificate.
 #
 # Upgrade: change WHARFLINE_VERSION in .env, then `docker compose pull && docker compose up -d`.
 
@@ -79,7 +80,7 @@ services:
     logging: *logging
 
   # Optional, for a server on its own (e.g. a cloud VM with a public IP): automatic HTTPS with
-  # Let's Encrypt. `docker compose --profile https up -d`. Needs WHARFLINE_DOMAIN pointing at this
+  # Let's Encrypt. Runs when .env has COMPOSE_PROFILES=https. Needs WHARFLINE_DOMAIN pointing at this
   # server and ports 80/443 open to the internet.
   caddy:
     image: caddy:2.8-alpine

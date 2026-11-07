@@ -1,4 +1,4 @@
-# Used only with `docker compose --profile https up -d`.
+# Used only when .env has COMPOSE_PROFILES=https.
 # Caddy gets and renews the certificate for WHARFLINE_DOMAIN by itself.
 {$WHARFLINE_DOMAIN} {
 	encode zstd gzip
