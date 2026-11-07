@@ -42,7 +42,7 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
 
     head_lines: list[Line] = [
         ("h", f"▶ 실행 #{no} · {job['name']}"),
-        ("y", f"트리거: {trigger} · {s.ME['name']}") if trigger != "수동 실행" else ("", f"트리거: 수동 실행 · {s.ME['name']}"),
+        ("y", f"트리거: {trigger} · {s.actor_name(db)}") if trigger != "수동 실행" else ("", f"트리거: 수동 실행 · {s.actor_name(db)}"),
         ("", f"방식: {METHODS[job['method']]}"),
         ("", f"이미지: {job['image']}:{tag} (sha256:{ti['digest']}…)"),
         ("", f"대상: {job['inventory']} / {s.target_label(groups, inv)} → {', '.join(h['ip'] for h in all_hosts)}"),
@@ -204,11 +204,11 @@ def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, tri
     if requested_tag == "latest":
         steps[0]["lines"].insert(3, ("", f"latest → {tag} (digest로 고정해서 배포)"))
     if trigger == "되돌리기":
-        steps[0]["lines"][1] = ("y", f"트리거: 되돌리기 · {s.ME['name']} · {job['tagNow']} → {tag}")
+        steps[0]["lines"][1] = ("y", f"트리거: 되돌리기 · {s.actor_name(db)} · {job['tagNow']} → {tag}")
 
     step_names = [st["name"] for st in steps]
     db.add(m.Run(no=no, job=job["name"], job_id=job["id"], target=s.target_label(groups, s.inv_of(db, job)), tag=tag,
-                 status="run", by=s.ME["name"], trigger=trigger, time="방금", duration="-", steps=step_names, started_at=time.time()))
+                 status="run", by=s.actor_name(db), trigger=trigger, time="방금", duration="-", steps=step_names, started_at=time.time()))
     db.commit()
 
     live[no] = {"events": [], "done": False, "cancelled": False, "t0": time.time(),
@@ -217,13 +217,13 @@ def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, tri
     return {"no": no, "tag": tag, "steps": step_names}
 
 
-def cancel_run(no: int) -> bool:
+def cancel_run(no: int, by: str) -> bool:
     run = live.get(no)
     if not run or run["done"]:
         return False
     run["cancelled"] = True
     _emit(no, {"t": "cancel"})
-    _emit(no, {"t": "line", "c": "y", "text": f"! {s.ME['name']}님이 실행을 취소했어요. 진행 중이던 단계를 정리하고 잠금을 풀었어요.", "ts": s.now_hms()})
+    _emit(no, {"t": "line", "c": "y", "text": f"! {by}님이 실행을 취소했어요. 진행 중이던 단계를 정리하고 잠금을 풀었어요.", "ts": s.now_hms()})
     _finish(no, "cancel")
     return True
 

@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from . import models as m
 from . import sshkeys
-from .store import ALL, CLIENT_IP, COMPOSE_TPL
+from .store import CLIENT_IP, COMPOSE_TPL
 
 keys: list[dict] = [
     {"id": "k1", "kind": "ssh", "name": "prod-deploy", "type": "ED25519", "fingerprint": "SHA256:9fK2mQx7Lr0aZp4c1VtY8sNw3bHdE6uJ", "createdBy": "정훈", "createdAt": "2026-09-14", "lastUsed": "12분 전", "usedCount": 3},
@@ -130,7 +130,7 @@ logins: list[dict] = [
 ]
 
 members: list[dict] = [
-    {"name": "정훈", "email": "moning·····@gmail.com", "role": "Owner", "tfa": True, "last": "방금"},
+    {"name": "정훈", "email": "jeonghoon@acme.kr", "role": "Owner", "tfa": True, "last": "방금"},
     {"name": "민지", "email": "minji@acme.kr", "role": "Deployer", "tfa": True, "last": "3시간 전"},
     {"name": "서준", "email": "seojun@acme.kr", "role": "Viewer", "tfa": False, "last": "6일 전"},
 ]
@@ -140,14 +140,18 @@ sessions: list[dict] = [
     {"agent": "Safari 19 · iOS", "ip": CLIENT_IP, "location": "서울", "time": "어제 18:20", "current": False},
 ]
 
-# Menus each role can see. Owner always sees everything; dashboard is always visible.
-access: dict[str, list[str]] = {
-    "jobs": list(ALL), "runs": list(ALL),
-    "registries": ["Owner", "Admin", "Deployer"], "repos": ["Owner", "Admin", "Deployer"],
-    "inventory": ["Owner", "Admin", "Deployer"], "keys": ["Owner", "Admin"], "envs": ["Owner", "Admin"],
-    "activity": ["Owner", "Admin"], "members": ["Owner"],
-    "security": list(ALL), "notes": list(ALL),
-}
+# Groups decide which menus and builds their members see. Owners always see everything; the dashboard is always visible.
+_COMMON = ["jobs", "runs", "security", "notes"]
+groups: list[dict] = [
+    {"id": "g-admin", "name": "Admin 기본", "menus": _COMMON + ["registries", "repos", "inventory", "keys", "envs", "activity"],
+     "all_builds": True, "repos": [], "members": []},
+    {"id": "g-deployer", "name": "Deployer 기본", "menus": _COMMON + ["registries", "repos", "inventory"],
+     "all_builds": True, "repos": [], "members": ["minji@acme.kr"]},
+    {"id": "g-viewer", "name": "Viewer 기본", "menus": list(_COMMON), "all_builds": True, "repos": [], "members": []},
+    # Sees only the batch worker's builds.
+    {"id": "g-batch", "name": "배치팀", "menus": _COMMON + ["registries"], "all_builds": False, "repos": ["acme/batch-worker"],
+     "members": ["seojun@acme.kr"]},
+]
 
 policy: dict[str, Any] = {
     "enforce2fa": True,
@@ -164,7 +168,7 @@ def seed_if_empty(db: Session) -> bool:
         return False
 
     db.add_all([
-        m.Setting(key="session", value={"logged_in": True, "pending_login": False, "sudo_until": 0.0}),
+        m.Setting(key="session", value={"logged_in": True, "email": "jeonghoon@acme.kr", "pending_login": False, "sudo_until": 0.0}),
         m.Setting(key="policy", value=policy),
     ])
     for k in keys:
@@ -211,8 +215,11 @@ def seed_if_empty(db: Session) -> bool:
     # Lists below are newest first; insert oldest first so a higher id means newer.
     db.add_all(m.Activity(**a) for a in reversed(activity))
     db.add_all(m.Login(**x) for x in reversed(logins))
-    db.add_all(m.Member(**x) for x in members)
+    by_email = {x["email"]: m.Member(**x) for x in members}
+    db.add_all(by_email.values())
     db.add_all(m.DeviceSession(**x) for x in sessions)
-    db.add_all(m.MenuAccess(menu=k, roles=v) for k, v in access.items())
+    for g in groups:
+        db.add(m.Group(id=g["id"], name=g["name"], menus=g["menus"], all_builds=g["all_builds"], repos=g["repos"],
+                       members=[by_email[e] for e in g["members"]]))
     db.commit()
     return True

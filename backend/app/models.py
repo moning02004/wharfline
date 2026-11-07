@@ -10,7 +10,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Text, UniqueConstraint
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Table, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -341,7 +341,17 @@ class Login(Base):
                 "agent": self.agent, "result": self.result}
 
 
+member_groups = Table(
+    "member_groups",
+    Base.metadata,
+    Column("member_email", ForeignKey("members.email", ondelete="CASCADE", onupdate="CASCADE"), primary_key=True),
+    Column("group_id", ForeignKey("groups.id", ondelete="CASCADE"), primary_key=True),
+)
+
+
 class Member(Base):
+    """`role` decides what a member can do; their groups decide which menus and builds they see."""
+
     __tablename__ = "members"
     email: Mapped[str] = mapped_column(String(255), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
@@ -349,9 +359,31 @@ class Member(Base):
     role: Mapped[str] = mapped_column(String(16))
     tfa: Mapped[bool] = mapped_column(Boolean, default=False)
     last: Mapped[str] = mapped_column(String(64))
+    groups: Mapped[list[Group]] = relationship(secondary=member_groups, back_populates="members", order_by="Group.ord")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "email": self.email, "role": self.role, "tfa": self.tfa, "last": self.last}
+        return {"name": self.name, "email": self.email, "role": self.role, "tfa": self.tfa, "last": self.last,
+                "groups": [g.id for g in self.groups]}
+
+
+class Group(Base):
+    """A set of members who see the same menus and the builds of the same repos.
+
+    `all_builds` grants every build repo, including ones added later; otherwise only `repos` (owner/name, lower case).
+    """
+
+    __tablename__ = "groups"
+    id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    ord: Mapped[int] = mapped_column(Integer, Identity())
+    name: Mapped[str] = mapped_column(String(64), unique=True)
+    menus: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    all_builds: Mapped[bool] = mapped_column(Boolean, default=False)
+    repos: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    members: Mapped[list[Member]] = relationship(secondary=member_groups, back_populates="groups", order_by="Member.ord")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "name": self.name, "menus": self.menus, "allBuilds": self.all_builds, "repos": self.repos,
+                "members": [x.email for x in self.members]}
 
 
 class DeviceSession(Base):
@@ -365,14 +397,6 @@ class DeviceSession(Base):
 
     def to_dict(self) -> dict[str, Any]:
         return {"agent": self.agent, "ip": self.ip, "location": self.location, "time": self.time, "current": self.current}
-
-
-class MenuAccess(Base):
-    """Roles that can see each menu. Owner and the dashboard are always allowed."""
-
-    __tablename__ = "menu_access"
-    menu: Mapped[str] = mapped_column(String(32), primary_key=True)
-    roles: Mapped[list[str]] = mapped_column(JSONB, default=list)
 
 
 class Build(Base):

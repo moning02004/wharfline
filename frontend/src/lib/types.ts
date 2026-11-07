@@ -5,6 +5,8 @@ export interface Me {
   name: string;
   role: Role;
   email: string;
+  /** Group names */
+  groups: string[];
 }
 
 export interface Session {
@@ -203,6 +205,19 @@ export interface Member {
   role: Role;
   tfa: boolean;
   last: string;
+  /** Group ids */
+  groups: string[];
+}
+
+/** Members of a group see its menus and the builds of its repos. */
+export interface Group {
+  id: string;
+  name: string;
+  menus: string[];
+  allBuilds: boolean;
+  repos: string[];
+  /** Member emails */
+  members: string[];
 }
 
 export interface Policy {

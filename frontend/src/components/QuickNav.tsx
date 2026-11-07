@@ -17,7 +17,7 @@ interface Item {
 
 /** ⌘K: jump to a page, open a job's run dialog, or roll a job back. */
 export function QuickNav({ onClose }: { onClose: () => void }) {
-  const { canSee, viewAs } = useApp();
+  const { canSee, role } = useApp();
   const nav = useNavigate();
   const { confirm } = useRun();
   const jobs = useApi<Job[]>("/jobs").data ?? [];
@@ -36,7 +36,7 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
         nav(r.path);
       },
     }));
-    const canRun = canSee("jobs") && viewAs !== "Viewer";
+    const canRun = canSee("jobs") && role !== "Viewer";
     const actions: Item[] = canRun
       ? jobs.flatMap((j) => [
           {
@@ -70,7 +70,7 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
     const all = [...actions, ...pages];
     const words = q.trim().toLowerCase().split(/\s+/).filter(Boolean);
     return words.length ? all.filter((i) => words.every((w) => `${i.kind} ${i.label} ${i.hint ?? ""}`.toLowerCase().includes(w))) : all;
-  }, [jobs, q, canSee, viewAs, nav, confirm, onClose]);
+  }, [jobs, q, canSee, role, nav, confirm, onClose]);
 
   const active = Math.min(sel, Math.max(0, items.length - 1));
 

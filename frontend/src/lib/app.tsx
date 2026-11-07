@@ -8,8 +8,8 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, ApiError, errMsg } from "./api";
-import type { Role, Session } from "./types";
+import { api, ApiError, errMsg, setViewAsHeader } from "./api";
+import type { Member, Role, Session } from "./types";
 import { ModalShell, type ModalSize } from "../components/Modal";
 import { SudoModal } from "../modals/SudoModal";
 
@@ -50,11 +50,15 @@ interface AppCtx {
   endSudo: () => Promise<void>;
   /** Runs fn after a password re-check (skipped while sudo is active). Retries once if the server asks again. */
   withSudo: (reason: string, fn: () => unknown | Promise<unknown>) => void;
-  viewAs: Role;
-  setViewAs: (r: Role) => void;
-  access: Record<string, string[]>;
-  setAccess: (a: Record<string, string[]>) => void;
-  canSee: (id: string, role?: Role) => boolean;
+  /** Member an Owner is previewing as; null shows my own view. */
+  viewAs: Member | null;
+  setViewAs: (m: Member | null) => void;
+  /** Role of whoever is being shown (me, or the previewed member). */
+  role: Role;
+  /** Menus from my groups (or the previewed member's); null means all. */
+  menus: string[] | null;
+  reloadAccess: () => void;
+  canSee: (id: string) => boolean;
   toast: (msg: string) => void;
   openModal: (render: ModalRender, size?: ModalSize, onClose?: () => void) => void;
   closeModal: () => void;
@@ -70,8 +74,10 @@ export const useApp = () => useContext(Ctx);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [session, setSession] = useState<Session | null>(null);
   const [now, setNow] = useState(Date.now());
-  const [viewAs, setViewAs] = useState<Role>("Owner");
-  const [access, setAccess] = useState<Record<string, string[]>>({});
+  const [viewAs, setViewAsState] = useState<Member | null>(null);
+  const [access, setAccess] = useState<{ menus: string[] | null; role: Role | null }>({ menus: [], role: null });
+  const [accessSeq, setAccessSeq] = useState(0);
+  const reloadAccess = useCallback(() => setAccessSeq((x) => x + 1), []);
   const [toasts, setToasts] = useState<Toast[]>([]);
   const [modals, setModals] = useState<ModalEntry[]>([]);
   const [version, setVersion] = useState(0);
@@ -82,8 +88,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (session?.loggedIn) api.get<Record<string, string[]>>("/access").then(setAccess).catch(() => {});
-  }, [session?.loggedIn]);
+    if (session?.loggedIn) api.get<{ menus: string[] | null; role: Role | null }>("/access").then(setAccess).catch(() => {});
+  }, [session?.loggedIn, session?.me?.email, viewAs, accessSeq]);
 
   useEffect(() => {
     const t = setInterval(() => setNow(Date.now()), 1000);
@@ -111,6 +117,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(() => setVersion((v) => v + 1), []);
 
+  const setViewAs = useCallback(
+    (m: Member | null) => {
+      setViewAsHeader(m?.email ?? null);
+      setViewAsState(m);
+      refresh(); // pages refetch, so builds follow the previewed member's groups
+    },
+    [refresh],
+  );
+
+  // Leaving the session (logout, another member signs in) ends any preview.
+  useEffect(() => {
+    setViewAsHeader(null);
+    setViewAsState(null);
+  }, [session?.me?.email]);
   const sessionRef = useRef(session);
   sessionRef.current = session;
 
@@ -151,10 +171,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     setSession(await api.del<Session>("/auth/sudo"));
   }, []);
 
-  const canSee = useCallback(
-    (id: string, role: Role = viewAs) => id === "dashboard" || role === "Owner" || (access[id] ?? []).includes(role),
-    [access, viewAs],
-  );
+  const role: Role = viewAs?.role ?? access.role ?? session?.me?.role ?? "Viewer";
+  const canSee = useCallback((id: string) => id === "dashboard" || access.menus === null || access.menus.includes(id), [access]);
 
   const runAction = useCallback(
     async (fn: () => Promise<unknown>, ok?: string) => {
@@ -173,10 +191,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AppCtx>(
     () => ({
-      session, setSession, sudoActive, endSudo, withSudo, viewAs, setViewAs, access, setAccess, canSee,
+      session, setSession, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, menus: access.menus, reloadAccess, canSee,
       toast, openModal, closeModal, version, refresh, runAction,
     }),
-    [session, sudoActive, endSudo, withSudo, viewAs, access, canSee, toast, openModal, closeModal, version, refresh, runAction],
+    [session, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, access, reloadAccess, canSee, toast, openModal, closeModal, version, refresh, runAction],
   );
 
   return (

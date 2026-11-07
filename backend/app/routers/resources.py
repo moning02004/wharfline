@@ -278,7 +278,7 @@ def add_key(body: KeyIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "키 이름은 영문, 숫자, . _ - 로 넣어 주세요.")
     if db.scalar(select(m.Key).where(m.Key.name == name)):
         raise HTTPException(400, "같은 이름의 키가 있어요.")
-    k = m.Key(id=s.new_id("k"), name=name, created_by=s.ME["name"], created_at=time.strftime("%Y-%m-%d"), last_used="사용 안 함", used_count=0)
+    k = m.Key(id=s.new_id("k"), name=name, created_by=s.actor_name(db), created_at=time.strftime("%Y-%m-%d"), last_used="사용 안 함", used_count=0)
     if body.mode == "token":
         tok = body.token.strip()
         if len(tok) < 8:

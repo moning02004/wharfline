@@ -62,7 +62,7 @@ const SECTIONS = [
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { session, setSession, canSee, viewAs, version, openModal } = useApp();
+  const { session, setSession, canSee, viewAs, role, version, openModal } = useApp();
   const { runById } = useRun();
   const { dark, toggle } = useTheme();
   const loc = useLocation();
@@ -143,7 +143,7 @@ export function Layout({ children }: { children: ReactNode }) {
           </button>
           <SudoTimer />
           <Button variant="ghost" size="sm" iconOnly icon={dark ? "sun" : "moon"} title="테마 전환" aria-label="테마 전환" onClick={toggle} />
-          {canSee("jobs") && viewAs !== "Viewer" && (
+          {canSee("jobs") && role !== "Viewer" && (
             <Button variant="primary" size="sm" icon="play" className="max-sm:hidden" onClick={() => runById("j1")}>
               배포 실행
             </Button>
@@ -151,9 +151,9 @@ export function Layout({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-1 flex-none">
             <span
               className="grid place-items-center size-[30px] rounded-full bg-primary-soft text-primary font-semibold text-[11px] shadow-[0_0_0_2px_var(--surface),0_0_0_3px_color-mix(in_srgb,var(--primary)_25%,transparent)]"
-              title={`${session?.me.name} · ${session?.me.role} · 2FA 사용 중`}
+              title={`${session?.me.name} · ${session?.me.role}${session?.me.groups.length ? ` · ${session.me.groups.join(", ")}` : ""} · 2FA 사용 중`}
             >
-              JY
+              {session?.me.name.slice(0, 2)}
             </span>
             <Button variant="ghost" size="sm" iconOnly icon="logout" title="로그아웃" aria-label="로그아웃" onClick={logout} />
           </div>
@@ -183,7 +183,7 @@ export function Layout({ children }: { children: ReactNode }) {
 
       <main className="flex-1" id="content">
         <div className="max-w-[1280px] mx-auto flex flex-col gap-6 px-4 md:px-8 pt-7 pb-14">
-          {viewAs !== "Owner" && <PreviewBar />}
+          {viewAs && <PreviewBar />}
           {canSee(route.id) ? children : <Denied label={route.label} />}
         </div>
       </main>
@@ -195,11 +195,13 @@ function PreviewBar() {
   const { viewAs, setViewAs, toast } = useApp();
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap pl-3.5 pr-1.5 py-1.5 rounded-lg border border-accent/25 bg-accent-soft text-accent text-[13px] font-medium animate-fade">
-      <span>{viewAs} 역할로 미리 보는 중이에요. 메뉴와 화면이 이 역할 기준으로 보여요.</span>
+      <span>
+        {viewAs?.name}님({viewAs?.role})으로 미리 보는 중이에요. 메뉴와 빌드가 이 멤버의 그룹 기준으로 보여요.
+      </span>
       <Button
         size="sm"
         onClick={() => {
-          setViewAs("Owner");
+          setViewAs(null);
           toast("내 권한으로 돌아왔어요");
         }}
       >
@@ -219,7 +221,7 @@ function Denied({ label }: { label: string }) {
       </div>
       <h2 className="m-0 text-[15px] font-semibold">이 메뉴를 볼 권한이 없어요</h2>
       <p className="m-0 text-muted max-w-[44ch]">
-        {viewAs} 역할에는 "{label}" 메뉴가 꺼져 있어요. 필요하면 워크스페이스 관리자에게 요청하세요.
+        {viewAs ? `${viewAs.name}님의 그룹` : "내 그룹"}에는 "{label}" 메뉴가 없어요. 필요하면 워크스페이스 Owner에게 그룹 추가를 요청하세요.
       </p>
       <Button size="sm" className="mt-2" onClick={() => nav("/")}>
         대시보드로 가기

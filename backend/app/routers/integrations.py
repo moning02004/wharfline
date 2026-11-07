@@ -15,7 +15,7 @@ from .. import models as m
 from .. import runner
 from .. import store as s
 from ..db import SessionLocal, get_db
-from ..deps import require_login, require_sudo
+from ..deps import build_scope, require_login, require_sudo
 
 MAX_BODY = 1024 * 1024
 
@@ -107,10 +107,14 @@ def set_source_repo(body: SourceRepoIn, db: Session = Depends(get_db)):
 
 
 @router.get("/builds")
-def list_builds(image: str | None = None, db: Session = Depends(get_db)):
+def list_builds(image: str | None = None, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
+    """Builds the viewer's groups allow (all for Owners and groups with every build)."""
     if image:
-        return gitea.builds_for_image(db, image)
-    return [b.to_dict() for b in db.scalars(select(m.Build).order_by(m.Build.updated_at.desc()).limit(30))]
+        return gitea.builds_for_image(db, image, scope=scope)
+    q = select(m.Build).order_by(m.Build.updated_at.desc()).limit(30)
+    if scope is not None:
+        q = q.where(m.Build.repo.in_(scope))
+    return [b.to_dict() for b in db.scalars(q)]
 
 
 # ---------- test event (no real Gitea needed) ----------

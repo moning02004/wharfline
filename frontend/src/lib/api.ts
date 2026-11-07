@@ -7,11 +7,20 @@ export class ApiError extends Error {
   }
 }
 
+/** While an Owner previews another member, the server shows that member's menus and builds. */
+let viewAsEmail: string | null = null;
+export function setViewAsHeader(email: string | null) {
+  viewAsEmail = email;
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
+  const headers: Record<string, string> = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (viewAsEmail) headers["X-View-As"] = viewAsEmail;
   const res = await fetch(`/api${path}`, {
     method,
     credentials: "include",
-    headers: body !== undefined ? { "Content-Type": "application/json" } : undefined,
+    headers,
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   if (!res.ok) {

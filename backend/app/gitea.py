@@ -168,10 +168,13 @@ def handle_package(db: Session, payload: dict) -> list[tuple[m.Image, str]]:
     return released
 
 
-def build_for_image(db: Session, image_ref: str) -> dict[str, Any] | None:
-    """The build worth showing next to a job: running now, succeeded in the last 15 minutes, or failed in the last day."""
+def build_for_image(db: Session, image_ref: str, scope: set[str] | None = None) -> dict[str, Any] | None:
+    """The build worth showing next to a job: running now, succeeded in the last 15 minutes, or failed in the last day.
+
+    `scope` limits which build repos may be shown (None = all).
+    """
     img = db.get(m.Image, image_ref)
-    if not img or not img.source_repo:
+    if not img or not img.source_repo or not s.repo_allowed(scope, img.source_repo):
         return None
     b = db.scalar(select(m.Build).where(m.Build.repo == img.source_repo).order_by(m.Build.updated_at.desc()).limit(1))
     if not b:
@@ -182,19 +185,26 @@ def build_for_image(db: Session, image_ref: str) -> dict[str, Any] | None:
     return None
 
 
-def builds_for_image(db: Session, image_ref: str, limit: int = 5) -> list[dict[str, Any]]:
+def builds_for_image(db: Session, image_ref: str, limit: int = 5, scope: set[str] | None = None) -> list[dict[str, Any]]:
     img = db.get(m.Image, image_ref)
-    if not img or not img.source_repo:
+    if not img or not img.source_repo or not s.repo_allowed(scope, img.source_repo):
         return []
     return [b.to_dict() for b in db.scalars(select(m.Build).where(m.Build.repo == img.source_repo).order_by(m.Build.updated_at.desc()).limit(limit))]
 
 
-def build_for_tag(db: Session, image_ref: str, tag: str) -> m.Build | None:
+def build_for_tag(db: Session, image_ref: str, tag: str, scope: set[str] | None = None) -> m.Build | None:
     """The CI run that pushed this tag, if Gitea told us about it."""
     img = db.get(m.Image, image_ref)
-    if not img or not img.source_repo:
+    if not img or not img.source_repo or not s.repo_allowed(scope, img.source_repo):
         return None
     return db.scalar(select(m.Build).where(m.Build.repo == img.source_repo, m.Build.tag == tag).order_by(m.Build.updated_at.desc()).limit(1))
+
+
+def build_repos(db: Session) -> list[str]:
+    """Every build repo Wharfline knows about: linked to an image, or seen in a build event."""
+    linked = db.scalars(select(m.Image.source_repo).where(m.Image.source_repo.is_not(None)))
+    seen = db.scalars(select(m.Build.repo).distinct())
+    return sorted({*linked, *seen})
 
 
 def build_line(b: m.Build) -> str:

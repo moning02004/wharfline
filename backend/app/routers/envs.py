@@ -61,7 +61,7 @@ def create_env(body: EnvIn, db: Session = Depends(get_db)):
     if db.scalar(select(m.EnvSet).where(m.EnvSet.name == name)):
         raise HTTPException(400, "같은 이름이 있어요.")
     s.validate_vars(body.vars)
-    e = m.EnvSet(id=s.new_id("e"), name=name, ver=1, updated=f"방금 · {s.ME['name']}")
+    e = m.EnvSet(id=s.new_id("e"), name=name, ver=1, updated=f"방금 · {s.actor_name(db)}")
     e.set_vars(body.vars)
     db.add(e)
     s.log_act(db, "환경 변수 추가", name)
@@ -97,7 +97,7 @@ def update_env(env_id: str, body: EnvUpdate, db: Session = Depends(get_db)):
     d = s.diff_vars(e.get_vars(), body.vars)
     if not any(d.values()):
         raise HTTPException(400, "바뀐 내용이 없어요.")
-    replace_vars(e, body.vars, f"방금 · {s.ME['name']}")
+    replace_vars(e, body.vars, f"방금 · {s.actor_name(db)}")
     parts = " / ".join(p for p in [
         d["add"] and "추가 " + ", ".join(d["add"]),
         d["chg"] and "수정 " + ", ".join(d["chg"]),
@@ -136,7 +136,7 @@ def restore(env_id: str, body: RestoreIn, db: Session = Depends(get_db)):
     src = next((v for v in e.versions if v.ver == body.ver), None)
     if not src:
         raise HTTPException(404, "그 버전을 찾을 수 없어요.")
-    replace_vars(e, src.get_vars(), f"방금 · {s.ME['name']} (v{body.ver}로 되돌림)")
+    replace_vars(e, src.get_vars(), f"방금 · {s.actor_name(db)} (v{body.ver}로 되돌림)")
     s.log_act(db, "환경 변수 되돌리기", f"{e.name} v{body.ver} 내용으로 v{e.ver} 생성", "warn")
     db.commit()
     return masked(db, e)

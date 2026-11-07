@@ -17,7 +17,6 @@ from sqlalchemy.orm import Session
 
 from . import models as m
 
-ME = {"name": "정훈", "role": "Owner", "email": "moning·····@gmail.com"}
 CLIENT_IP = "211.234.10.8"
 
 COMPOSE_TPL = (
@@ -34,7 +33,9 @@ COMPOSE_TPL = (
 )
 
 ROLES = ["Owner", "Admin", "Deployer", "Viewer"]
-ALL = list(ROLES)
+
+# Menus a group can be given. The dashboard is always visible; Owners see everything.
+MENUS = ["jobs", "runs", "registries", "repos", "inventory", "keys", "envs", "activity", "members", "security", "notes"]
 
 
 def now_hms() -> str:
@@ -74,7 +75,47 @@ def sudo_active(db: Session) -> bool:
 
 
 def log_act(db: Session, action: str, obj: str, result: str = "ok") -> None:
-    db.add(m.Activity(time=now_hms(), user=ME["name"], action=action, object=obj, ip=CLIENT_IP, result=result))
+    db.add(m.Activity(time=now_hms(), user=actor_name(db), action=action, object=obj, ip=CLIENT_IP, result=result))
+
+
+# ---------- who is signed in, and what they can see ----------
+
+def current_member(db: Session) -> m.Member | None:
+    """The signed-in member, from the session's email. None when signed out or the member was removed."""
+    st = session_state(db)
+    email = st.get("email")
+    return db.get(m.Member, email) if st.get("logged_in") and email else None
+
+
+def actor_name(db: Session) -> str:
+    me = current_member(db)
+    return me.name if me else "시스템"
+
+
+def me_dict(member: m.Member) -> dict[str, Any]:
+    return {"name": member.name, "role": member.role, "email": member.email, "groups": [g.name for g in member.groups]}
+
+
+def visible_menus(member: m.Member | None) -> list[str] | None:
+    """Menus from all of the member's groups. None means every menu (Owner)."""
+    if member is None:
+        return []
+    if member.role == "Owner":
+        return None
+    return [x for x in MENUS if any(x in g.menus for g in member.groups)]
+
+
+def build_scope(member: m.Member | None) -> set[str] | None:
+    """Build repos (owner/name) the member may see. None means every repo."""
+    if member is None:
+        return set()
+    if member.role == "Owner" or any(g.all_builds for g in member.groups):
+        return None
+    return {r for g in member.groups for r in g.repos}
+
+
+def repo_allowed(scope: set[str] | None, repo: str | None) -> bool:
+    return scope is None or (repo or "").lower() in scope
 
 
 # ---------- lookups (dict-shaped) ----------

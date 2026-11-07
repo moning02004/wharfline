@@ -70,6 +70,19 @@ export default function Login() {
               <br />
               5회 실패하면 15분 동안 잠겨요.
             </div>
+            <div className="text-xs text-muted rounded-md border border-line bg-surface-2 px-3 py-2.5 leading-relaxed">
+              <b className="text-fg font-medium">예시 계정</b> (비밀번호와 인증 코드는 아무 값이나 돼요)
+              {[
+                ["jeonghoon@acme.kr", "Owner · 전체"],
+                ["minji@acme.kr", "Deployer · 모든 빌드"],
+                ["seojun@acme.kr", "Viewer · 배치팀, batch-worker 빌드만"],
+              ].map(([e, d]) => (
+                <button key={e} type="button" className="flex w-full justify-between gap-2 mt-1 text-left hover:text-fg" onClick={() => setEmail(e)}>
+                  <span className="font-mono">{e}</span>
+                  <span className="text-faint">{d}</span>
+                </button>
+              ))}
+            </div>
           </>
         ) : (
           <>

@@ -13,12 +13,12 @@ from .. import models as m
 from .. import runner
 from .. import store as s
 from ..db import get_db
-from ..deps import require_login
+from ..deps import build_scope, require_login, viewer
 
 router = APIRouter(prefix="/api", tags=["deploy"], dependencies=[Depends(require_login)])
 
 
-def job_view(db: Session, job: m.Job) -> dict:
+def job_view(db: Session, job: m.Job, scope: set[str] | None) -> dict:
     j = job.to_dict()
     inv = s.inv_of(db, j)
     img = s.image_of(db, j)
@@ -32,7 +32,7 @@ def job_view(db: Session, job: m.Job) -> dict:
         "imageTags": img["tags"],
         "latestTag": img["tags"][0]["name"] if img["tags"] else None,
         "prevTag": s.prev_tag(db, j, img),
-        "build": gitea.build_for_image(db, j["image"]),
+        "build": gitea.build_for_image(db, j["image"], scope),
     }
 
 
@@ -41,13 +41,14 @@ def all_jobs(db: Session) -> list[m.Job]:
 
 
 @router.get("/dashboard")
-def dashboard(db: Session = Depends(get_db)):
+def dashboard(db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
+    scope = s.build_scope(who)
     hosts = list(db.scalars(select(m.Host)))
     online = sum(1 for h in hosts if h.status == "on")
     changed = next((h for h in hosts if h.host_key == "changed"), None)
     members = list(db.scalars(select(m.Member)))
     return {
-        "me": s.ME,
+        "me": s.me_dict(who) if who else None,
         "stats": {
             "today": 7, "todayOk": 6, "todayBad": 1,
             "successRate": "96.4%", "successDelta": "+2.1%p",
@@ -56,14 +57,14 @@ def dashboard(db: Session = Depends(get_db)):
         },
         "hostKeyAlert": changed.to_dict() if changed else None,
         "recentRuns": [r.to_dict() for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()).limit(5))],
-        "jobs": [job_view(db, j) for j in all_jobs(db)],
+        "jobs": [job_view(db, j, scope) for j in all_jobs(db)],
         "security": {"tfaUsers": sum(1 for x in members if x.tfa), "members": len(members)},
     }
 
 
 @router.get("/jobs")
-def list_jobs(db: Session = Depends(get_db)):
-    return [job_view(db, j) for j in all_jobs(db)]
+def list_jobs(db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
+    return [job_view(db, j, scope) for j in all_jobs(db)]
 
 
 class JobIn(BaseModel):
@@ -87,7 +88,7 @@ class JobIn(BaseModel):
 
 
 @router.post("/jobs")
-def create_job(body: JobIn, db: Session = Depends(get_db)):
+def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
     name = body.name.strip()
     if not name:
         raise HTTPException(400, "이름을 넣어 주세요.")
@@ -125,7 +126,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db)):
         if s.env_by_name(db, env_name):
             raise HTTPException(400, f"환경 변수 {env_name}이(가) 이미 있어요. '저장된 것 쓰기'를 골라 주세요.")
         s.validate_vars(body.envVars)
-        env = m.EnvSet(id=s.new_id("e"), name=env_name, ver=1, updated=f"방금 · {s.ME['name']}")
+        env = m.EnvSet(id=s.new_id("e"), name=env_name, ver=1, updated=f"방금 · {s.actor_name(db)}")
         env.set_vars(body.envVars)
         db.add(env)
 
@@ -141,7 +142,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db)):
     db.add(job)
     s.log_act(db, "배포 작업 생성", f"{name} · {runner.METHODS[body.method]}")
     db.commit()
-    return job_view(db, job)
+    return job_view(db, job, scope)
 
 
 class RunIn(BaseModel):
@@ -168,7 +169,7 @@ def list_runs(db: Session = Depends(get_db)):
 
 
 @router.get("/runs/{no}")
-def get_run(no: int, db: Session = Depends(get_db)):
+def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
     rec = db.get(m.Run, no)
     if not rec:
         raise HTTPException(404, "실행 기록을 찾을 수 없어요.")
@@ -176,7 +177,7 @@ def get_run(no: int, db: Session = Depends(get_db)):
     base = rec.to_dict()
     if job:
         base.update(method=runner.METHODS[job.method], image=job.image, inventory=job.inventory)
-        built = gitea.build_for_tag(db, job.image, rec.tag)
+        built = gitea.build_for_tag(db, job.image, rec.tag, scope)
         base["build"] = built.to_dict() if built else None
     if no in runner.live:
         return {**base, "live": not runner.live[no]["done"], "events": runner.live[no]["events"]}
@@ -209,7 +210,7 @@ async def stream_run(no: int, since: int = 0):
 
 
 @router.post("/runs/{no}/cancel")
-def cancel(no: int):
-    if not runner.cancel_run(no):
+def cancel(no: int, db: Session = Depends(get_db)):
+    if not runner.cancel_run(no, s.actor_name(db)):
         raise HTTPException(400, "이미 끝난 실행이에요.")
     return {"ok": True}
