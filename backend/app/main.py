@@ -38,8 +38,6 @@ def check_keys() -> None:
         if hook_secret:
             used.add(hook_secret.kek_id)
     missing = used - set(ring.ids)
-    if ring.vault:
-        ring.vault.latest_version()  # fail fast if Vault is unreachable or the token lacks access
     if missing:
         raise RuntimeError(f"encrypted data uses master key(s) {sorted(missing)} that are not loaded")
     log.info("master keys ok (active: %s)", ring.active_id)

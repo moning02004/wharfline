@@ -106,7 +106,7 @@ export default function Notes() {
           title="제가 더한 것"
           items={[
             ["단계별 매뉴얼", "새 배포 작업의 제목 옆 (i) 버튼을 누르면 지금 단계에 맞는 매뉴얼이 보여요. 서버 준비, 토큰 발급, 플레이북 변수 등을 복사해서 바로 쓸 수 있어요."],
-            ["비밀 값 봉투 암호화", "환경 변수, SSH 비공개 키, 토큰을 레코드마다 새 데이터 키로 암호화해요. 마스터 키는 키 파일이나 Vault/OpenBao(KMS)에 둬요."],
+            ["비밀 값 봉투 암호화", "환경 변수, SSH 비공개 키, 토큰을 레코드마다 새 데이터 키로 암호화해요. 마스터 키는 DB 밖의 키 파일에 둬요."],
             ["역할 기반 권한", "Owner, Admin, Deployer, Viewer. 역할은 할 수 있는 일을 정하고, production 작업은 승인 필요."],
             ["그룹별 메뉴와 빌드", <><L to="/members">멤버와 권한</L>에서 Owner가 그룹을 만들고 그룹마다 보일 메뉴와 빌드 레포를 정해요. 멤버는 속한 그룹들의 권한을 합쳐서 받고, 빌드 목록은 서버에서 걸러서 내려줘요. 숨긴 메뉴는 아직 화면에서만 막혀요(서버 API도 같이 막아야 해요).</>],
             ["호스트 키 고정", "처음 접속 때 지문을 저장하고, 바뀌면 배포를 막아요."],
@@ -134,7 +134,7 @@ export default function Notes() {
           <CardHeader title="서버 쪽에서 지킬 것 (화면에 안 보이는 부분)" />
           <div className="p-5">
             <ul className="m-0 pl-[18px] flex flex-col gap-2.5 text-muted marker:text-faint">
-              <li>비밀 값은 봉투 암호화(AES-256-GCM)로 저장하고, 마스터 키는 DB가 아닌 Docker secret 파일이나 KMS(Vault/OpenBao Transit)에 둬요. (구현됨)</li>
+              <li>비밀 값은 봉투 암호화(AES-256-GCM)로 저장하고, 마스터 키는 DB가 아닌 Docker secret 파일에 둬요. (구현됨)</li>
               <li>비밀번호는 Argon2id로 해시, TOTP 비밀값도 암호화 저장.</li>
               <li>세션 쿠키는 HttpOnly, Secure, SameSite=Strict. 모든 변경 요청에 CSRF 토큰.</li>
               <li>배포 실행기는 웹 서버와 분리된 워커 프로세스에서 돌리고, 키는 실행 중 메모리에만 풀어요.</li>

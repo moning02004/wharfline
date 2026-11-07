@@ -3,14 +3,9 @@
     python -m app.keys status       # which master key wraps each encrypted row
     python -m app.keys verify       # decrypt every row to prove the loaded keys work
     python -m app.keys rotate       # re-wrap every data key with the active master key
-    python -m app.keys vault-setup  # enable Transit and create the derived key (needs an admin token)
 
-Local key rotation: put a new key first in the key file, restart, run `rotate`,
+Key rotation: put a new key first in the key file, restart, run `rotate`,
 check `status`, then remove the old key.
-Vault: rotate the Transit key in Vault (`bao write -f transit/keys/wharfline/rotate`),
-then run `rotate` to re-wrap onto the newest key version.
-Moving from a local key file to Vault: set WHARFLINE_KMS=vault (keep the key
-file), run `rotate`, check `status`, then the key file can be retired.
 """
 
 import sys
@@ -32,8 +27,6 @@ def encrypted_rows(db, model, lock: bool = False):
 
 
 def _label(row) -> str:
-    if row.kek_id.startswith(crypto.VAULT_PREFIX):
-        return f"{row.kek_id} v{crypto.VaultTransit.version_of(row.wrapped_dek)}"
     return row.kek_id
 
 
@@ -47,7 +40,7 @@ def status() -> int:
         if hook:
             counts[_label(hook)] += 1
             stale += ring.needs_rewrap(hook.kek_id, hook.wrapped_dek)
-    print(f"active key: {ring.active_id}" + (f" (latest version v{ring.vault.latest_version()})" if ring.vault else ""))
+    print(f"active key: {ring.active_id}")
     print(f"loaded keys: {', '.join(ring.ids)}")
     for label, n in sorted(counts.items()):
         kid = label.split(" ")[0]
@@ -94,27 +87,9 @@ def rotate() -> int:
     return 0
 
 
-def vault_setup(vault: crypto.VaultTransit | None = None) -> int:
-    """Idempotent: enable the Transit engine and create a derived AES-256-GCM key."""
-    vault = vault or crypto.VaultTransit.from_env()
-    mounts = vault.call("GET", "sys/mounts")
-    mounts = mounts.get("data", mounts)
-    if f"{vault.mount}/" not in mounts:
-        vault.call("POST", f"sys/mounts/{vault.mount}", {"type": "transit"})
-    try:
-        vault.call("GET", f"{vault.mount}/keys/{vault.key}")
-    except crypto.CryptoError:
-        vault.call("POST", f"{vault.mount}/keys/{vault.key}", {"type": "aes256-gcm96", "derived": True})
-    info = vault.call("GET", f"{vault.mount}/keys/{vault.key}")["data"]
-    if not info.get("derived"):
-        raise crypto.CryptoError(f"Transit key {vault.key!r} exists but is not derived; create a new key with derived=true")
-    print(f"Transit key {vault.mount}/{vault.key} ready (derived, latest v{info['latest_version']})")
-    return 0
-
-
 def main() -> int:
     cmd = sys.argv[1] if len(sys.argv) > 1 else "status"
-    commands = {"status": status, "verify": verify, "rotate": rotate, "vault-setup": vault_setup}
+    commands = {"status": status, "verify": verify, "rotate": rotate}
     if cmd not in commands:
         print(__doc__)
         return 2
