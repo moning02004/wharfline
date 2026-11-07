@@ -7,11 +7,12 @@
 ```
 backend/
   app/                FastAPI + SQLAlchemy, 실행 로그는 SSE로 스트리밍
+    authn.py          비밀번호(bcrypt), TOTP, 세션 토큰, CSRF 미들웨어
     crypto.py         봉투 암호화 (마스터 키 파일)
     keys.py           마스터 키 상태 확인, 검증, 교체
     sshkeys.py        SSH 키 생성·가져오기, 지문
   migrations/         Alembic 마이그레이션
-  tests/              pytest (암호화, SSH 키, 권한·배포·웹훅 흐름)
+  tests/              pytest (암호화, SSH 키, TOTP, 로그인·권한·배포·웹훅 흐름)
   alembic.ini
 frontend/             Vite + React + TypeScript + Tailwind v4, nginx로 서빙
 docker-compose.yml       db + backend + frontend
@@ -33,6 +34,18 @@ make up                  # 마스터 키가 없으면 만들고, docker compose 
   backend는 migrate가 성공해야 시작해서, backend를 여러 개 띄워도 마이그레이션이 겹치지 않아요. migrate를 동시에 여러 번 돌려도 Postgres advisory lock으로 하나만 실행돼요.
 - API는 DB가 최신 마이그레이션이 아니거나, 마스터 키가 없거나, 저장된 데이터에 필요한 키가 빠져 있으면 시작하지 않아요.
 - 데이터는 `pgdata` 볼륨에 남아요. 처음부터 다시 시작하려면 `make db-reset`.
+
+## 로그인
+
+- **예시 계정**: `jeonghoon@acme.kr`(Owner), `minji@acme.kr`(Deployer), `seojun@acme.kr`(Viewer). 비밀번호는 `WHARFLINE_SEED_PASSWORD`(기본 `wharfline`)예요. 처음 DB를 만들 때만 쓰이니, 공유하는 곳에 띄우기 전에 `.env`에서 바꾸고 로그인 뒤 **보안 → 비밀번호 바꾸기**로 각자 바꿔요.
+  예전 데모 DB를 마이그레이션하면 기존 멤버도 이 비밀번호를 받고, 다음 로그인 때 새 비밀번호를 정해야 해요.
+- **세션**: 브라우저마다 따로예요. 쿠키 `wharfline_session`(HttpOnly, SameSite=Lax)에는 임의 토큰만 있고 DB에는 그 SHA-256만 저장해요. 만료는 보안 정책의 세션 길이(예: 8시간, 활동 없으면 30분). **보안 → 로그인된 기기**에서 다른 기기를 로그아웃할 수 있어요.
+- **HTTPS로 띄우면** `WHARFLINE_COOKIE_SECURE=1`을 줘서 쿠키에 Secure를 붙여요(HTTP에서 켜면 로그인이 안 돼요).
+- **비밀번호**: bcrypt 해시. 틀리면 이메일이 있든 없든 같은 메시지이고, 정책의 잠금 규칙(기본 5회 실패 → 15분)을 서버가 지켜요. 비밀번호 재확인(민감 정보 열람 등)도 실제 비밀번호를 확인해요.
+- **비밀번호를 잊었을 때**: Owner가 **멤버와 권한**에서 비밀번호 재설정 → 임시 비밀번호를 한 번만 보여 줘요. 그 멤버는 다음 로그인 때 새 비밀번호를 정하고, 잠금도 풀려요.
+- **2단계 인증은 선택**이에요. **보안 → 인증 앱 켜기**로 각자 켜면 그때부터 로그인 두 번째 단계에서 TOTP(30초, 6자리)를 물어요. 비밀값은 봉투 암호화, 복구 코드는 해시로 저장해요. 정책 "모든 멤버에게 2단계 인증 강제"(기본 꺼짐)를 켜면 2단계 인증이 없는 멤버는 로그인 직후 설정 화면으로 가요.
+- **CSRF**: `/api/hooks/*`를 뺀 모든 변경 요청(POST/PUT/PATCH/DELETE)은 `X-Requested-With: wharfline` 헤더가 있어야 해요. 프론트(`lib/api.ts`)가 붙여요. API를 스크립트로 부를 때도 넣어 주세요.
+- 접속 IP는 nginx가 넘기는 `X-Real-IP`로 기록해요. backend 포트를 밖에 열면 이 값은 믿을 수 없어요.
 
 ## 마이그레이션
 
@@ -140,13 +153,14 @@ cd frontend && npm install && npm run dev     # http://localhost:5173 (/api는 :
 | `jobs`, `runs` | 배포 작업, 실행 기록 (끝난 실행의 로그 포함). 실행 번호는 `run_no_seq` 시퀀스 |
 | `builds` | Gitea Actions 빌드 기록 (레포, 실행 번호, 상태, 현재 단계, 푸시한 태그) |
 | `activity`, `logins` | 활동 기록, 로그인 이력 |
-| `members`, `device_sessions`, `menu_access` | 멤버, 로그인된 기기, 역할별 메뉴 |
-| `settings` | 보안 정책, 데모 사용자 세션 상태 |
+| `members`, `groups`, `member_groups` | 멤버(비밀번호 해시, 암호화된 TOTP 비밀값, 복구 코드 해시), 그룹 |
+| `sessions` | 로그인 세션 (브라우저마다 하나, 토큰의 SHA-256으로 찾아요) |
+| `settings` | 보안 정책 등 |
 | `alembic_version` | 적용된 마이그레이션 리비전 |
 
 ## 프로토타입 한계
 
 - 실제 SSH 접속, 레지스트리 조회(태그·digest), 호스트 키 지문 받기는 아직 흉내예요. 키와 토큰은 진짜로 만들어지고 암호화 저장돼서, 실행기를 붙이면 그대로 쓸 수 있어요.
 - Python에서는 복호화한 값을 메모리에서 확실히 지울 수 없어요. 서버 프로세스 메모리에 접근할 수 있으면 복호화된 값을 볼 수 있어요.
-- 로그인, 비밀번호 재확인, TOTP는 아무 값이나 통과하고, 사용자는 한 명(데모)이에요.
+- 패스키(WebAuthn)와 "이 기기 기억"은 아직 없어요. 2단계 인증 설정 화면은 QR 대신 설정 키와 `otpauth://` 링크를 보여 줘요.
 - 실제 SSH 접속이나 배포는 하지 않고 로그를 흉내 내요. 실행 중이던 배포는 backend가 재시작되면 "실패"로 표시돼요.

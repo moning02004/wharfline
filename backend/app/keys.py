@@ -18,7 +18,7 @@ from . import githooks
 from . import models as m
 from .db import SessionLocal
 
-ENCRYPTED = (m.EnvSet, m.EnvVersion, m.Key, m.Registry)
+ENCRYPTED = (m.EnvSet, m.EnvVersion, m.Key, m.Registry, m.Member)
 
 
 def encrypted_rows(db, model, lock: bool = False):

@@ -24,6 +24,10 @@ services:
     environment: &backend-env
       DATABASE_URL: postgresql+psycopg://wharfline:${POSTGRES_PASSWORD:-wharfline}@db:5432/wharfline
       WHARFLINE_MASTER_KEYS_FILE: /run/secrets/master_keys
+      # Password of the sample members (seed and the login migration only).
+      WHARFLINE_SEED_PASSWORD: ${WHARFLINE_SEED_PASSWORD:-wharfline}
+      # 1 behind HTTPS: the session cookie gets the Secure flag.
+      WHARFLINE_COOKIE_SECURE: ${WHARFLINE_COOKIE_SECURE:-0}
     secrets: [master_keys]
     depends_on:
       db:

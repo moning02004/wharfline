@@ -7,6 +7,7 @@ JSONB columns must be reassigned (not mutated in place) to be saved.
 
 from __future__ import annotations
 
+import json
 import time
 from typing import Any
 
@@ -19,7 +20,7 @@ from .db import Base
 
 
 class Setting(Base):
-    """Key/value settings: workspace policy and the demo user's session state."""
+    """Key/value settings such as the workspace security policy."""
 
     __tablename__ = "settings"
     key: Mapped[str] = mapped_column(String(64), primary_key=True)
@@ -351,8 +352,13 @@ member_groups = Table(
 )
 
 
-class Member(Base):
-    """`role` decides what a member can do; their groups decide which menus and builds they see."""
+class Member(EncryptedSecret, Base):
+    """`role` decides what a member can do; their groups decide which menus and builds they see.
+
+    The TOTP secret (and a not-yet-confirmed one during setup) is envelope-encrypted as JSON
+    `{"secret": ..., "pending": ...}`; `tfa` is true only when a confirmed secret exists.
+    Recovery codes are stored as bcrypt hashes.
+    """
 
     __tablename__ = "members"
     email: Mapped[str] = mapped_column(String(255), primary_key=True)
@@ -361,11 +367,34 @@ class Member(Base):
     role: Mapped[str] = mapped_column(String(16))
     tfa: Mapped[bool] = mapped_column(Boolean, default=False)
     last: Mapped[str] = mapped_column(String(64))
+    password_hash: Mapped[str | None] = mapped_column(String(255))
+    must_change_password: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0, server_default=text("0"))
+    locked_until: Mapped[float | None] = mapped_column(Float)
+    recovery_codes: Mapped[list[str]] = mapped_column(JSONB, default=list, server_default=text("'[]'::jsonb"))
+    tfa_last_step: Mapped[int | None] = mapped_column(BigInteger)  # last TOTP step used, so a code works only once
     groups: Mapped[list[Group]] = relationship(secondary=member_groups, back_populates="members", order_by="Group.ord")
+
+    def crypto_context(self) -> str:
+        return f"member_tfa:{self.email}"
+
+    def tfa_state(self) -> dict[str, str | None]:
+        raw = self.get_secret()
+        return json.loads(raw) if raw else {}
+
+    def set_tfa_state(self, secret: str | None, pending: str | None) -> None:
+        if secret is None and pending is None:
+            self.kek_id = self.wrapped_dek = self.nonce = self.ciphertext = None
+        else:
+            self.set_secret(json.dumps({"secret": secret, "pending": pending}))
+        self.tfa = secret is not None
+
+    def is_locked(self, now: float | None = None) -> bool:
+        return bool(self.locked_until and self.locked_until > (time.time() if now is None else now))
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "email": self.email, "role": self.role, "tfa": self.tfa, "last": self.last,
-                "groups": [g.id for g in self.groups]}
+                "groups": [g.id for g in self.groups], "locked": self.is_locked(), "mustChangePassword": self.must_change_password}
 
 
 class Group(Base):
@@ -388,17 +417,24 @@ class Group(Base):
                 "members": [x.email for x in self.members]}
 
 
-class DeviceSession(Base):
-    __tablename__ = "device_sessions"
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    agent: Mapped[str] = mapped_column(String(255))
-    ip: Mapped[str] = mapped_column(String(64))
-    location: Mapped[str] = mapped_column(String(128))
-    time: Mapped[str] = mapped_column(String(64))
-    current: Mapped[bool] = mapped_column(Boolean, default=False)
+class LoginSession(Base):
+    """One signed-in browser. The cookie holds a random token; only its SHA-256 is stored.
 
-    def to_dict(self) -> dict[str, Any]:
-        return {"agent": self.agent, "ip": self.ip, "location": self.location, "time": self.time, "current": self.current}
+    `stage` is "ok" for a full login; "totp", "password" or "tfa_setup" while a login still
+    needs the second factor, a new password, or 2FA setup (required by policy).
+    """
+
+    __tablename__ = "sessions"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    member_email: Mapped[str] = mapped_column(ForeignKey("members.email", ondelete="CASCADE", onupdate="CASCADE"), index=True)
+    stage: Mapped[str] = mapped_column(String(16), default="ok")
+    created_at: Mapped[float] = mapped_column(Float)
+    last_seen: Mapped[float] = mapped_column(Float)
+    expires_at: Mapped[float] = mapped_column(Float)
+    sudo_until: Mapped[float] = mapped_column(Float, default=0.0)
+    user_agent: Mapped[str] = mapped_column(String(512), default="")
+    ip: Mapped[str] = mapped_column(String(64), default="")
+    member: Mapped[Member] = relationship()
 
 
 class Build(Base):

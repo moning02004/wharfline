@@ -9,11 +9,31 @@ export interface Me {
   groups: string[];
 }
 
+/** What still stands between a login and being signed in. */
+export type LoginStep = "totp" | "password" | "tfa_setup";
+
 export interface Session {
   loggedIn: boolean;
   me: Me;
+  /** Set while a login is half done; `me` is null then. */
+  step: LoginStep | null;
+  pendingEmail: string | null;
+  /** Whether I have 2-step verification on, and how many recovery codes are left. */
+  tfa: boolean;
+  recoveryCodes: number;
+  enforce2fa: boolean;
   sudoUntil: number;
   sudoMinutes: number;
+}
+
+/** One signed-in browser of mine. Times are epoch ms. */
+export interface DeviceSession {
+  id: string;
+  agent: string;
+  ip: string;
+  createdAt: number;
+  lastSeen: number;
+  current: boolean;
 }
 
 export interface Host {
@@ -221,6 +241,10 @@ export interface Member {
   last: string;
   /** Group ids */
   groups: string[];
+  /** Too many failed logins; an Owner's password reset unlocks. */
+  locked?: boolean;
+  /** Signed in next with a temporary password and must pick a new one. */
+  mustChangePassword?: boolean;
 }
 
 /** Members of a group see its menus and the builds of its repos. */

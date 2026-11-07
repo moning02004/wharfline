@@ -72,22 +72,44 @@ def client():
     with SessionLocal() as db:
         seed_if_empty(db)
     runner.PACE = 0
-    with TestClient(app) as c:
+    with TestClient(app, headers=CSRF) as c:
         yield c
     engine.dispose()
     _drop_db()
 
 
-@pytest.fixture
-def login(client):
-    """login("minji@acme.kr", sudo=True): become that member for the next requests."""
-    from app import store as s
+CSRF = {"X-Requested-With": "wharfline"}  # the browser app sends this on every write
+COOKIE_DOMAIN = "testserver.local"  # how the cookie jar stores cookies the TestClient's "testserver" host sets
+
+
+def set_session_cookie(client, token: str | None) -> None:
+    from app import authn
+
+    client.cookies.clear()
+    if token:
+        client.cookies.set(authn.COOKIE, token, domain=COOKIE_DOMAIN, path="/")
+
+
+def make_session(email: str, sudo: bool = False) -> str:
+    """A signed-in session row for that member, as if they had logged in. Returns the cookie token."""
+    from app import authn
+    from app import models as m
     from app.db import SessionLocal
 
+    token, now = authn.new_token(), time.time()
+    with SessionLocal() as db:
+        db.add(m.LoginSession(token_hash=authn.token_hash(token), member_email=email, stage="ok", created_at=now, last_seen=now,
+                              expires_at=now + 3600, sudo_until=now + 300 if sudo else 0.0, user_agent="pytest", ip="testclient"))
+        db.commit()
+    return token
+
+
+@pytest.fixture
+def login(client):
+    """login("minji@acme.kr", sudo=True): become that member for the next requests (a real session and cookie)."""
+
     def as_member(email: str, sudo: bool = False) -> None:
-        with SessionLocal() as db:
-            s.set_setting(db, "session", logged_in=True, email=email, pending_login=False, sudo_until=time.time() + 300 if sudo else 0.0)
-            db.commit()
+        set_session_cookie(client, make_session(email, sudo))
 
     as_member("jeonghoon@acme.kr")  # each test starts as the Owner
     return as_member

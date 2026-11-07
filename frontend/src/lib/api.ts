@@ -7,6 +7,8 @@ export class ApiError extends Error {
   }
 }
 
+export const SIGNED_OUT_EVENT = "wharfline:signed-out";
+
 /** While an Owner previews another member, the server shows that member's menus and builds. */
 let viewAsEmail: string | null = null;
 export function setViewAsHeader(email: string | null) {
@@ -14,7 +16,8 @@ export function setViewAsHeader(email: string | null) {
 }
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
-  const headers: Record<string, string> = {};
+  // The server rejects writes without this header (CSRF): other sites cannot add it to a cross-site request.
+  const headers: Record<string, string> = { "X-Requested-With": "wharfline" };
   if (body !== undefined) headers["Content-Type"] = "application/json";
   if (viewAsEmail) headers["X-View-As"] = viewAsEmail;
   const res = await fetch(`/api${path}`, {
@@ -31,6 +34,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     } catch {
       /* not JSON */
     }
+    // Session ended (expired, logged out elsewhere, password changed): the app goes back to the login screen.
+    if (res.status === 401 && detail === "login_required") window.dispatchEvent(new Event(SIGNED_OUT_EVENT));
     throw new ApiError(res.status, detail);
   }
   return res.json() as Promise<T>;

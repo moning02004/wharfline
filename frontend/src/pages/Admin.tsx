@@ -2,8 +2,8 @@ import { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { ROLES, useApi, useApp } from "../lib/app";
-import type { Activity as Act, Group, Login, Member, Policy, Role, Session } from "../lib/types";
-import { CodesModal, TfaSetupModal } from "../modals/SecurityModals";
+import type { Activity as Act, DeviceSession, Group, Login, Member, Policy, Role, Session } from "../lib/types";
+import { CodesModal, DisableTfaModal, PasswordModal, ResetPasswordModal, TfaSetupModal } from "../modals/SecurityModals";
 import { draftOf, effectiveAccess, GroupDetail, GroupModal, GroupPicker } from "../modals/AccessModals";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Icon } from "../components/Icon";
@@ -211,7 +211,7 @@ function InviteNote({ onClose }: { onClose: () => void }) {
 }
 
 function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: Group[]; canEdit: boolean }) {
-  const { session, setSession, viewAs, setViewAs, toast, refresh, reloadAccess } = useApp();
+  const { session, setSession, viewAs, setViewAs, toast, refresh, reloadAccess, openModal } = useApp();
   const [q, setQ] = useState("");
   const [groupFilter, setGroupFilter] = useState("");
   const isOwner = session?.me.role === "Owner";
@@ -300,12 +300,25 @@ function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: G
                 <td className="text-[12.5px] text-muted">
                   메뉴 {eff.menus}개 · {eff.builds}
                 </td>
-                <td>{u.tfa ? <Dot tone="ok">사용</Dot> : <Dot tone="warn">미설정</Dot>}</td>
-                <td className="text-right">
+                <td>
+                  <span className="flex items-center gap-1.5 flex-wrap">
+                    {u.tfa ? <Dot tone="ok">사용</Dot> : <Dot tone="neutral">안 씀</Dot>}
+                    {u.locked && <Chip tone="bad">잠김</Chip>}
+                    {u.mustChangePassword && <Chip tone="warn">새 비밀번호 대기</Chip>}
+                  </span>
+                </td>
+                <td className="text-right whitespace-nowrap">
                   {isOwner && u.email !== session?.me.email && (
-                    <Button size="sm" variant="ghost" icon="eye" onClick={() => preview(u)} disabled={viewAs?.email === u.email}>
-                      미리보기
-                    </Button>
+                    <>
+                      <Button size="sm" variant="ghost" icon="eye" onClick={() => preview(u)} disabled={viewAs?.email === u.email}>
+                        미리보기
+                      </Button>
+                      {canEdit && (
+                        <Button size="sm" variant="ghost" icon="key" onClick={() => openModal((c) => <ResetPasswordModal member={u} onClose={c} onDone={refresh} />)}>
+                          비밀번호 재설정
+                        </Button>
+                      )}
+                    </>
                   )}
                 </td>
               </tr>
@@ -420,22 +433,41 @@ function RolesTab() {
 
 /* ---------- security ---------- */
 
+function ago(ms: number): string {
+  const s = Math.max(0, Math.round((Date.now() - ms) / 1000));
+  if (s < 90) return "방금";
+  if (s < 3600) return `${Math.round(s / 60)}분 전`;
+  if (s < 86400) return `${Math.round(s / 3600)}시간 전`;
+  return `${Math.round(s / 86400)}일 전`;
+}
+
 export function Security() {
-  const data = useApi<{ sessions: { agent: string; ip: string; location: string; time: string; current: boolean }[]; policy: Policy }>("/security").data;
+  const data = useApi<{ sessions: DeviceSession[]; policy: Policy }>("/security");
   const { toast, withSudo, openModal, setSession, session, refresh } = useApp();
   const [p, setP] = useState<Policy | null>(null);
   useEffect(() => {
-    if (data && !p) setP(data.policy);
-  }, [data, p]);
-  if (!data || !p) return <Loading />;
+    if (data.data && !p) setP(data.data.policy);
+  }, [data.data, p]);
+  if (!data.data || !p || !session) return <Loading />;
+  const sessions = data.data.sessions;
 
   const save = async () => {
     try {
       const r = await api.put<Policy>("/security/policy", p);
       setP(r);
-      if (session) setSession({ ...session, sudoMinutes: r.sudoMinutes });
+      setSession({ ...session, sudoMinutes: r.sudoMinutes, enforce2fa: r.enforce2fa });
       refresh();
       toast("정책을 저장했어요. 활동 기록에 남았어요.");
+    } catch (e) {
+      toast(errMsg(e));
+    }
+  };
+  const endSession = async (id?: string) => {
+    try {
+      if (id) await api.del(`/auth/sessions/${id}`);
+      else await api.post("/auth/sessions/logout-others");
+      toast(id ? "그 기기를 로그아웃했어요" : "이 기기를 뺀 모든 기기를 로그아웃했어요");
+      data.reload();
     } catch (e) {
       toast(errMsg(e));
     }
@@ -447,53 +479,65 @@ export function Security() {
       <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-5 items-start">
         <div className="flex flex-col gap-4">
           <Card>
-            <CardHeader title="2단계 인증">
-              <Dot tone="ok">사용 중</Dot>
+            <CardHeader title="로그인">
+              {session.tfa ? <Dot tone="ok">2단계 인증 사용 중</Dot> : <Dot tone="warn">비밀번호만 사용</Dot>}
             </CardHeader>
-            <ListItem icon="shield" title="인증 앱 (TOTP)" sub="2026-09-14에 등록 · Google Authenticator, 1Password 등">
-              <Button
-                size="sm"
-                onClick={() =>
-                  withSudo("2단계 인증 다시 설정", async () => {
-                    const r = await api.post<{ secret: string }>("/security/tfa");
-                    openModal((c) => <TfaSetupModal secret={r.secret} onClose={c} />);
-                  })
-                }
-              >
-                다시 설정
+            <ListItem icon="lock" title="비밀번호" sub="바꾸면 이 기기를 뺀 다른 기기는 모두 로그아웃돼요.">
+              <Button size="sm" onClick={() => openModal((c) => <PasswordModal onClose={c} />)}>
+                바꾸기
               </Button>
             </ListItem>
-            <ListItem icon="key" title="복구 코드" sub="10개 중 9개 남음 · 어제 1개 사용">
-              <Button
-                size="sm"
-                onClick={() =>
-                  withSudo("복구 코드 새로 발급", async () => {
-                    const r = await api.post<{ codes: string[] }>("/security/codes");
-                    openModal((c) => <CodesModal codes={r.codes} onClose={c} />);
-                  })
-                }
-              >
-                새로 발급
-              </Button>
+            <ListItem
+              icon="shield"
+              title="인증 앱 (TOTP)"
+              sub={session.tfa ? "로그인할 때 비밀번호 다음에 6자리 숫자를 물어요." : "켜면 비밀번호가 새도 휴대폰 없이는 로그인할 수 없어요. 선택 사항이에요."}
+            >
+              <span className="flex gap-1.5">
+                {session.tfa && !session.enforce2fa && (
+                  <Button size="sm" variant="dangerGhost" onClick={() => openModal((c) => <DisableTfaModal onClose={c} />)}>
+                    끄기
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant={session.tfa ? "default" : "primary"}
+                  onClick={() =>
+                    withSudo(session.tfa ? "2단계 인증 다시 설정" : "2단계 인증 켜기", () => openModal((c) => <TfaSetupModal again={session.tfa} onClose={c} />))
+                  }
+                >
+                  {session.tfa ? "다시 설정" : "켜기"}
+                </Button>
+              </span>
             </ListItem>
-            <ListItem icon="lock" title="패스키 (WebAuthn)" sub="지문, Face ID, 보안 키로 로그인">
-              <Button size="sm" onClick={() => toast("패스키 등록은 브라우저 인증 창으로 진행돼요")}>
-                추가
-              </Button>
-            </ListItem>
+            {session.tfa && (
+              <ListItem icon="key" title="복구 코드" sub={`10개 중 ${session.recoveryCodes}개 남음 · 휴대폰을 잃어버렸을 때 한 번씩 써요`}>
+                <Button
+                  size="sm"
+                  onClick={() =>
+                    withSudo("복구 코드 새로 발급", async () => {
+                      const r = await api.post<{ codes: string[]; session: Session }>("/auth/tfa/codes");
+                      setSession(r.session);
+                      openModal((c) => <CodesModal codes={r.codes} onClose={c} />);
+                    })
+                  }
+                >
+                  새로 발급
+                </Button>
+              </ListItem>
+            )}
           </Card>
           <Card>
             <CardHeader title="로그인된 기기">
-              <Button size="sm" variant="danger" onClick={() => toast("현재 기기를 제외한 세션을 모두 끊었어요")}>
+              <Button size="sm" variant="danger" disabled={sessions.length < 2} onClick={() => endSession()}>
                 다른 기기 모두 로그아웃
               </Button>
             </CardHeader>
-            {data.sessions.map((s) => (
-              <ListItem key={s.agent} title={s.agent} sub={`${s.ip} · ${s.location} · ${s.time}`}>
+            {sessions.map((s) => (
+              <ListItem key={s.id} title={s.agent} sub={`${s.ip} · 마지막 활동 ${ago(s.lastSeen)} · 로그인 ${ago(s.createdAt)}`}>
                 {s.current ? (
                   <Dot tone="ok">이 기기</Dot>
                 ) : (
-                  <Button size="sm" onClick={() => toast("세션을 끊었어요")}>
+                  <Button size="sm" onClick={() => endSession(s.id)}>
                     로그아웃
                   </Button>
                 )}
