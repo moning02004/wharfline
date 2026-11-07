@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, GitProvider, Image, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
-import { HostKeyModal, NewHostModal, NewKeyModal, NewRegistryModal, NewRepoModal, PubKeyModal, copyText } from "../modals/ResourceModals";
+import { HostKeyModal, NewHostModal, NewImageModal, NewKeyModal, NewRegistryModal, NewRepoModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, Seg, TableWrap } from "../components/ui";
@@ -54,14 +54,14 @@ export function Registries() {
           </table>
         </TableWrap>
       </Card>
-      <ImagesCard images={data.images} provider={provider} />
+      <ImagesCard images={data.images} registries={data.registries} provider={provider} />
       <GitCard settings={git} provider={provider} onProvider={setProvider} />
     </>
   );
 }
 
-function ImagesCard({ images, provider }: { images: Image[]; provider: GitProvider }) {
-  const { runAction, toast } = useApp();
+function ImagesCard({ images, registries, provider }: { images: Image[]; registries: Registry[]; provider: GitProvider }) {
+  const { runAction, toast, openModal } = useApp();
   const [editing, setEditing] = useState<string | null>(null);
   const [repo, setRepo] = useState("");
 
@@ -74,7 +74,11 @@ function ImagesCard({ images, provider }: { images: Image[]; provider: GitProvid
 
   return (
     <Card>
-      <CardHeader title="이미지" sub="빌드 레포를 연결하면 Git 호스트(Gitea, GitHub, GitLab)에서 빌드하는 동안 배포 작업에 '빌드 중'이 표시돼요." />
+      <CardHeader title="이미지" sub="빌드 레포를 연결하면 Git 호스트(Gitea, GitHub, GitLab)에서 빌드하는 동안 배포 작업에 '빌드 중'이 표시돼요.">
+        <Button icon="plus" onClick={() => openModal((c) => <NewImageModal registries={registries} onClose={c} />)}>
+          이미지 추가
+        </Button>
+      </CardHeader>
       <TableWrap>
         <table className="tbl">
           <thead>
@@ -87,6 +91,13 @@ function ImagesCard({ images, provider }: { images: Image[]; provider: GitProvid
             </tr>
           </thead>
           <tbody>
+            {!images.length && (
+              <tr>
+                <td colSpan={5} className="text-center text-muted py-6">
+                  아직 등록한 이미지가 없어요. 이미지 추가로 배포할 이미지를 등록하세요.
+                </td>
+              </tr>
+            )}
             {images.map((i) => {
               const t = i.tags[0];
               return (

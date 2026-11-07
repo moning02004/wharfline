@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { Host, Inventory, Key } from "../lib/types";
+import type { Host, Image, Inventory, Key, Registry } from "../lib/types";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
 
@@ -332,6 +332,108 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
         <Button onClick={onClose}>취소</Button>
         <Button variant="primary" type="submit" form="regForm">
           연결 테스트 후 저장
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+/* ---------- images ---------- */
+
+const OTHER = "__other__";
+
+/** Register an image to deploy: pick a registry, then the image name under it. */
+export function NewImageModal({ registries, onClose }: { registries: Registry[]; onClose: () => void }) {
+  const { refresh, toast } = useApp();
+  const [registry, setRegistry] = useState(registries[0]?.id ?? OTHER);
+  const [name, setName] = useState("");
+  const [full, setFull] = useState("");
+  const [tags, setTags] = useState("");
+  const [repo, setRepo] = useState("");
+  const [repoTouched, setRepoTouched] = useState(false);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const reg = registries.find((r) => r.id === registry);
+  const prefix = reg ? `${reg.host}/${reg.namespace ? `${reg.namespace}/` : ""}` : "";
+  const cleanName = name.trim().toLowerCase().replace(/^\/+/, "");
+  const ref = reg ? (cleanName ? prefix + cleanName : "") : full.trim().toLowerCase();
+  // Most CI pushes the image from the repo of the same path: suggest it until the user edits it.
+  const suggested = ref.split(":")[0].split("/").slice(1).join("/");
+  const repoValue = repoTouched ? repo : suggested;
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!ref) return setErr(reg ? "이미지 이름을 넣어 주세요." : "이미지 주소를 넣어 주세요.");
+    setBusy(true);
+    setErr("");
+    try {
+      const r = await api.post<Image & { created: boolean; addedTags: string[] }>("/images", {
+        ref,
+        registry: reg?.id ?? null,
+        tags: tags.split(/[\s,]+/).filter(Boolean),
+        sourceRepo: repoValue,
+      });
+      onClose();
+      refresh();
+      toast(r.created ? "이미지를 등록했어요" : r.addedTags.length ? `이미 있는 이미지라 태그 ${r.addedTags.length}개만 더했어요` : "이미 등록된 이미지예요");
+    } catch (e) {
+      setErr(errMsg(e));
+      setBusy(false);
+    }
+  };
+
+  return (
+    <>
+      <ModalHead title="이미지 추가" sub="배포할 도커 이미지를 등록해요. 등록한 뒤 새 태그는 Git 연동으로 들어와요." onClose={onClose} />
+      <form id="imgForm" onSubmit={submit} className="contents">
+        <ModalBody>
+          <Field label="레지스트리" htmlFor="iReg" hint={reg ? `받을 때 ${reg.auth === "없음 · 공개 이미지" ? "로그인 없이 받아요" : `${reg.user} 계정 토큰을 써요`}` : "등록하지 않은 레지스트리의 공개 이미지예요."}>
+            <Select id="iReg" value={registry} onChange={(e) => setRegistry(e.target.value)}>
+              {registries.map((r) => (
+                <option key={r.id} value={r.id}>
+                  {r.name} · {r.host}/{r.namespace}
+                </option>
+              ))}
+              <option value={OTHER}>다른 주소 직접 입력</option>
+            </Select>
+          </Field>
+          {reg ? (
+            <Field label="이미지 이름" htmlFor="iName" hint={ref ? <>등록될 주소: <span className="font-mono">{ref}</span></> : "예: api-server"}>
+              <div className="flex min-w-0">
+                <span className="flex-none flex items-center px-2.5 rounded-l-lg border border-r-0 border-line-strong bg-surface-2 font-mono text-[12.5px] text-muted whitespace-nowrap">
+                  {prefix}
+                </span>
+                <Input id="iName" mono autoFocus spellCheck={false} className="!rounded-l-none" placeholder="api-server" value={name} onChange={(e) => setName(e.target.value)} />
+              </div>
+            </Field>
+          ) : (
+            <Field label="이미지 주소" htmlFor="iFull" hint="호스트부터 전부 넣어요. 예: docker.io/library/nginx">
+              <Input id="iFull" mono autoFocus spellCheck={false} placeholder="registry.example.com/team/app" value={full} onChange={(e) => setFull(e.target.value)} />
+            </Field>
+          )}
+          <Field label="태그" htmlFor="iTags" hint="지금 레지스트리에 있는 버전 태그예요. 쉼표나 띄어쓰기로 여러 개, 앞에 쓴 것이 가장 최신이에요. latest는 가장 최신 태그로 정해져서 따로 넣지 않아요.">
+            <Input id="iTags" mono spellCheck={false} placeholder="v1.0.0, v0.9.0" value={tags} onChange={(e) => setTags(e.target.value)} />
+          </Field>
+          <Field label="빌드 레포 (선택)" htmlFor="iRepo" hint="이 이미지를 빌드하는 Git 레포예요. 연결하면 빌드 진행이 보이고 새 태그가 자동으로 들어와요.">
+            <Input
+              id="iRepo"
+              mono
+              spellCheck={false}
+              placeholder="owner/name"
+              value={repoValue}
+              onChange={(e) => {
+                setRepoTouched(true);
+                setRepo(e.target.value);
+              }}
+            />
+          </Field>
+          <ErrorText>{err}</ErrorText>
+        </ModalBody>
+      </form>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" type="submit" form="imgForm" disabled={busy || !ref || !tags.trim()}>
+          등록
         </Button>
       </ModalFoot>
     </>

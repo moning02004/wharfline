@@ -84,3 +84,7 @@ def test_release_tags():
     assert githooks.RELEASE_TAG.match("v1.2.3")
     assert not githooks.RELEASE_TAG.match("sha-77d1e0b")
     assert not githooks.RELEASE_TAG.match("latest")
+
+
+def test_latest_is_not_recorded_as_a_tag():
+    assert githooks.record_tag(None, [object()], "latest") == []  # returns before touching the DB or images

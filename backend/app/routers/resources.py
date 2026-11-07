@@ -74,35 +74,60 @@ def add_registry(body: RegistryIn, db: Session = Depends(get_db)):
 class ImageIn(BaseModel):
     ref: str
     registry: str | None = None
-    tags: list[str] = ["latest"]
+    tags: list[str] = []
+    sourceRepo: str = ""
+
+
+REPO_RE = re.compile(r"^[^/\s]+(/[^/\s]+)+$")  # owner/name, or group/subgroup/name on GitLab
 
 
 @router.post("/images")
 def add_image(body: ImageIn, db: Session = Depends(get_db)):
-    """Register an image to deploy. Tags are entered by hand here; digests are pinned at deploy time."""
-    ref = body.ref.strip().split("@")[0]
+    """Register an image to deploy. Tags are entered by hand here; digests are pinned at deploy time.
+
+    Registering an image that already exists only adds the new tags (and the build repo if it had none).
+    """
+    ref = body.ref.strip().lower().removeprefix("https://").split("@")[0]
+    tags = list(body.tags)
     if ":" in ref.split("/")[-1]:
         ref, tag = ref.rsplit(":", 1)
-        body.tags = [tag, *body.tags]
+        tags = [tag, *tags]
     if not IMAGE_RE.match(ref):
         raise HTTPException(400, "이미지 주소는 ghcr.io/조직/이름처럼 소문자로 넣어 주세요.")
-    tags = list(dict.fromkeys(t.strip() for t in body.tags if t.strip()))
-    if not tags or any(not TAG_RE.match(t) for t in tags):
+    # "latest" is not stored: Wharfline treats the newest known tag as latest.
+    tags = list(dict.fromkeys(t.strip() for t in tags if t.strip() and t.strip() != "latest"))
+    if not tags:
+        raise HTTPException(400, "버전 태그를 하나 이상 넣어 주세요. 예: v1.2.0 (latest는 가장 최신 태그로 정해져요)")
+    if any(not TAG_RE.match(t) for t in tags):
         raise HTTPException(400, "태그는 영문, 숫자, . _ - 만 쓸 수 있어요. 예: v1.2.0")
-    if body.registry and not db.get(m.Registry, body.registry):
-        raise HTTPException(400, "레지스트리를 찾을 수 없어요.")
+    host = ref.split("/")[0]
+    if body.registry:
+        reg = db.get(m.Registry, body.registry)
+        if not reg:
+            raise HTTPException(400, "레지스트리를 찾을 수 없어요.")
+        if reg.host != host:
+            raise HTTPException(400, f"이미지 주소가 고른 레지스트리({reg.host})로 시작하지 않아요.")
+    else:  # no registry picked: use the one on the same host, if any
+        reg = db.scalar(select(m.Registry).where(m.Registry.host == host).order_by(m.Registry.ord).limit(1))
+    repo = body.sourceRepo.strip().lower().removesuffix(".git")
+    if repo and not REPO_RE.match(repo):
+        raise HTTPException(400, "빌드 레포는 owner/name 형식으로 넣어 주세요. GitLab 하위 그룹은 group/sub/name도 돼요.")
     img = db.get(m.Image, ref)
+    created = img is None
     if not img:
-        img = m.Image(ref=ref, registry_id=body.registry)
+        img = m.Image(ref=ref, registry_id=reg.id if reg else None)
         db.add(img)
+    if repo and not img.source_repo:
+        img.source_repo = repo
     known = {t.name for t in img.tags}
     # The first tag given is the newest: give it the latest timestamp.
     now = time.time()
-    for i, t in enumerate(t for t in tags if t not in known):
+    added = [t for t in tags if t not in known]
+    for i, t in enumerate(added):
         img.tags.append(m.ImageTag(name=t, digest="", pushed="방금 등록", pushed_at=now - i * 0.001))
-    s.log_act(db, "이미지 등록", f"{ref} ({', '.join(tags)})")
+    s.log_act(db, "이미지 등록" if created else "이미지 태그 추가", f"{ref} ({', '.join(added) or '새 태그 없음'})")
     db.commit()
-    return img.to_dict()
+    return {**img.to_dict(), "created": created, "addedTags": added}
 
 
 # ---------- playbook repos ----------

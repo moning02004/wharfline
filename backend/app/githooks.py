@@ -290,6 +290,8 @@ def images_for_package(db: Session, owner: str, name: str) -> list[m.Image]:
 def record_tag(db: Session, images: list[m.Image], tag: str) -> list[tuple[m.Image, str]]:
     """Add a pushed tag to each image. Returns (image, tag) pairs that are new release tags (candidates for auto-deploy)."""
     released: list[tuple[m.Image, str]] = []
+    if tag == "latest":  # a moving pointer, not a version: the newest known tag already plays this role
+        return released
     for img in images:
         if any(t.name == tag for t in img.tags):
             continue
