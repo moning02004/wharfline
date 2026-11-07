@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { Build, Image, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
+import type { Build, GitProvider, Image, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
 import { HostKeyModal, NewHostModal, NewKeyModal, NewRegistryModal, NewRepoModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, TableWrap } from "../components/ui";
+import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, Seg, TableWrap } from "../components/ui";
+import { PROVIDER_NAME } from "../components/BuildBadge";
 
 const Mono = ({ children }: { children: React.ReactNode }) => <span className="font-mono">{children}</span>;
 
@@ -14,10 +15,13 @@ const Mono = ({ children }: { children: React.ReactNode }) => <span className="f
 export function Registries() {
   const { data } = useApi<{ registries: Registry[]; images: Image[] }>("/registries");
   const { openModal } = useApp();
+  const git = useApi<GitSettings>("/integrations/git").data;
+  const [picked, setProvider] = useState<GitProvider | null>(null);
+  const provider = picked ?? lastSeenProvider(git) ?? "gitea";
   if (!data) return <Loading />;
   return (
     <>
-      <PageHeader title="이미지 레지스트리" desc="배포할 도커 이미지를 가져오는 곳이에요. GitHub Container Registry와 Gitea 패키지 레지스트리를 지원해요.">
+      <PageHeader title="이미지 레지스트리" desc="배포할 도커 이미지를 가져오는 곳이에요. GitHub Container Registry, GitLab Container Registry, Gitea 패키지 레지스트리를 지원해요.">
         <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
           레지스트리 추가
         </Button>
@@ -50,13 +54,13 @@ export function Registries() {
           </table>
         </TableWrap>
       </Card>
-      <ImagesCard images={data.images} />
-      <GiteaCard />
+      <ImagesCard images={data.images} provider={provider} />
+      <GitCard settings={git} provider={provider} onProvider={setProvider} />
     </>
   );
 }
 
-function ImagesCard({ images }: { images: Image[] }) {
+function ImagesCard({ images, provider }: { images: Image[]; provider: GitProvider }) {
   const { runAction, toast } = useApp();
   const [editing, setEditing] = useState<string | null>(null);
   const [repo, setRepo] = useState("");
@@ -66,11 +70,11 @@ function ImagesCard({ images }: { images: Image[] }) {
     if (ok) setEditing(null);
   };
   const test = (ref: string, fail: boolean) =>
-    runAction(() => api.post("/integrations/gitea/test", { ref, fail }), fail ? "실패하는 시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요." : "시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요.").catch(() => toast("시험 빌드를 보내지 못했어요"));
+    runAction(() => api.post("/integrations/git/test", { ref, fail, provider }), fail ? "실패하는 시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요." : "시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요.").catch(() => toast("시험 빌드를 보내지 못했어요"));
 
   return (
     <Card>
-      <CardHeader title="이미지" sub="빌드 레포를 연결하면 Gitea에서 빌드하는 동안 배포 작업에 '빌드 중'이 표시돼요." />
+      <CardHeader title="이미지" sub="빌드 레포를 연결하면 Git 호스트(Gitea, GitHub, GitLab)에서 빌드하는 동안 배포 작업에 '빌드 중'이 표시돼요." />
       <TableWrap>
         <table className="tbl">
           <thead>
@@ -127,7 +131,7 @@ function ImagesCard({ images }: { images: Image[] }) {
                   <td className="text-right">
                     {i.sourceRepo && (
                       <span className="inline-flex gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => test(i.ref, false)}>
+                        <Button size="sm" variant="ghost" onClick={() => test(i.ref, false)} title={`${PROVIDER_NAME[provider]} 형식으로 보내요`}>
                           시험 빌드
                         </Button>
                         <Button size="sm" variant="dangerGhost" onClick={() => test(i.ref, true)}>
@@ -146,31 +150,70 @@ function ImagesCard({ images }: { images: Image[] }) {
   );
 }
 
-function GiteaCard() {
+interface GitSettings {
+  path: string;
+  secretSet: boolean;
+  secretCreated: number | null;
+  lastSeen: Record<GitProvider, number | null>;
+}
+
+/** The host that sent a build most recently, so the card opens on the guide people actually use. */
+function lastSeenProvider(s: GitSettings | null | undefined): GitProvider | null {
+  if (!s) return null;
+  const seen = (Object.entries(s.lastSeen) as [GitProvider, number | null][]).filter(([, t]) => t);
+  return seen.length ? seen.sort((a, b) => (b[1] ?? 0) - (a[1] ?? 0))[0][0] : null;
+}
+
+const B = ({ children }: { children: React.ReactNode }) => <b className="text-fg">{children}</b>;
+
+/** Where to click on each host. The webhook address and secret are the same for all three. */
+const GUIDE: Record<GitProvider, React.ReactNode[]> = {
+  gitea: [
+    <>이미지를 빌드하는 <B>저장소(또는 조직)의 설정 → 웹훅 → 웹훅 추가 → Gitea</B>를 고르세요. Forgejo도 같아요.</>,
+    <><B>대상 URL</B>에 위 웹훅 주소, <B>HTTP 메서드</B>는 POST, <B>POST 콘텐츠 유형</B>은 <Mono>application/json</Mono>.</>,
+    <><B>비밀</B>에 위에서 만든 비밀값을 넣어요.</>,
+    <><B>트리거</B>는 "사용자 지정 이벤트"에서 <B>Workflow run</B>, <B>Workflow job</B>, <B>패키지</B>를 체크하고 저장해요.</>,
+  ],
+  github: [
+    <>이미지를 빌드하는 <B>저장소(또는 조직)의 Settings → Webhooks → Add webhook</B>으로 가세요.</>,
+    <><B>Payload URL</B>에 위 웹훅 주소, <B>Content type</B>은 <Mono>application/json</Mono>.</>,
+    <><B>Secret</B>에 위에서 만든 비밀값을 넣어요.</>,
+    <>"Let me select individual events"에서 <B>Workflow runs</B>, <B>Workflow jobs</B>, <B>Registry packages</B>를 체크해요. 이미지는 ghcr.io에 올라가고 저장소에 연결돼 있어야 태그 알림이 와요.</>,
+  ],
+  gitlab: [
+    <>이미지를 빌드하는 <B>프로젝트의 Settings → Webhooks → Add new webhook</B>으로 가세요.</>,
+    <><B>URL</B>에 위 웹훅 주소를 넣어요.</>,
+    <><B>Secret token</B>에 위에서 만든 비밀값을 넣어요. GitLab은 서명 대신 이 값을 그대로 보내요.</>,
+    <><B>Trigger</B>에서 <B>Pipeline events</B>와 <B>Job events</B>를 체크하고 저장해요.</>,
+    <>GitLab은 이미지 푸시 알림이 없어서 <B>파이프라인 성공</B>으로 새 태그를 알아요. Git 태그 파이프라인은 그 태그, 기본 브랜치는 커밋 SHA 앞 8자리예요(레포의 <Mono>.gitlab-ci.yml</Mono>과 같은 규칙).</>,
+  ],
+};
+
+function GitCard({ settings, provider, onProvider }: { settings: GitSettings | null | undefined; provider: GitProvider; onProvider: (p: GitProvider) => void }) {
   const { withSudo, openModal, refresh, toast } = useApp();
-  const settings = useApi<{ path: string; secretSet: boolean; secretCreated: number | null }>("/integrations/gitea").data;
   const [poll, setPoll] = useState(0);
   const builds = useApi<Build[]>("/builds", poll).data ?? [];
   useEffect(() => {
     setPoll(builds.some((b) => b.active) ? 3000 : 0);
   }, [builds]);
-  const url = `${window.location.origin}${settings?.path ?? "/api/hooks/gitea"}`;
+  const url = `${window.location.origin}${settings?.path ?? "/api/hooks/git"}`;
+  const name = PROVIDER_NAME[provider];
 
   const makeSecret = () =>
-    withSudo("Gitea 웹훅 비밀값 만들기", async () => {
-      const r = await api.post<{ secret: string }>("/integrations/gitea/secret");
+    withSudo("Git 웹훅 비밀값 만들기", async () => {
+      const r = await api.post<{ secret: string }>("/integrations/git/secret");
       refresh();
       openModal((c) => <SecretModal secret={r.secret} onClose={c} />);
     });
 
   return (
     <Card>
-      <CardHeader title="Gitea 연동" sub="Gitea Actions의 빌드 진행과 새 이미지 푸시를 실시간으로 받아요.">
+      <CardHeader title="Git 연동" sub="Gitea, GitHub, GitLab의 CI 빌드 진행과 새 이미지 푸시를 실시간으로 받아요.">
         {settings?.secretSet ? <Dot tone="ok">연결 준비됨</Dot> : <Dot tone="warn">비밀값 필요</Dot>}
       </CardHeader>
       <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-x-8 gap-y-5 p-4">
         <div className="flex flex-col gap-3.5">
-          <Field label="웹훅 주소 (대상 URL)">
+          <Field label="웹훅 주소 (세 곳 모두 같아요)">
             <div className="flex gap-1.5">
               <Input mono readOnly value={url} aria-label="웹훅 주소" />
               <Button icon="copy" onClick={() => copyText(url, toast)}>
@@ -180,7 +223,7 @@ function GiteaCard() {
           </Field>
           <Field
             label="비밀값"
-            hint={settings?.secretSet ? "새로 만들면 이전 값은 바로 쓸 수 없게 돼요. Gitea 쪽 값도 같이 바꿔 주세요." : "Gitea가 보낸 요청인지 확인하는 서명 키예요. 암호화해 저장하고 한 번만 보여줘요."}
+            hint={settings?.secretSet ? "새로 만들면 이전 값은 바로 쓸 수 없게 돼요. 연결한 Git 호스트 쪽 값도 같이 바꿔 주세요." : "Git 호스트가 보낸 요청인지 확인하는 키예요. 암호화해 저장하고 한 번만 보여줘요."}
           >
             <div className="flex items-center gap-2">
               <span className="text-muted">{settings?.secretSet ? `설정됨 · ${new Date((settings.secretCreated ?? 0) * 1000).toLocaleString("ko-KR")}` : "아직 없어요"}</span>
@@ -193,9 +236,10 @@ function GiteaCard() {
             <div className="text-[12.5px] font-medium mb-1.5">최근 빌드</div>
             <div className="rounded-md border border-line overflow-hidden">
               {builds.slice(0, 5).map((b) => (
-                <div key={b.id} className="flex items-center gap-2.5 px-3 py-2 border-b border-line last:border-b-0 text-[12.5px]">
+                <div key={b.id} className="flex items-center gap-2.5 px-3 py-2 border-b border-line last:border-b-0 text-[12.5px] min-w-0">
                   <StatusPillForBuild b={b} />
-                  <span className="font-mono">{b.repo}</span>
+                  <span className="text-faint text-[11.5px]">{PROVIDER_NAME[b.provider]}</span>
+                  <span className="font-mono truncate">{b.repo}</span>
                   <span className="text-muted">#{b.runNumber ?? b.runId}</span>
                   {b.tag && <Chip mono>{b.tag}</Chip>}
                   <span className="ml-auto text-faint truncate">{b.active ? b.step ?? "대기" : b.title}</span>
@@ -205,25 +249,37 @@ function GiteaCard() {
             </div>
           </div>
         </div>
-        <ol className="m-0 pl-5 flex flex-col gap-2 text-[12.5px] text-muted marker:text-faint">
-          <li>
-            Gitea에서 이미지를 빌드하는 <b className="text-fg">저장소(또는 조직)의 설정 → 웹훅 → 웹훅 추가 → Gitea</b>를 고르세요.
-          </li>
-          <li>
-            <b className="text-fg">대상 URL</b>에 위 웹훅 주소, <b className="text-fg">HTTP 메서드</b>는 POST, <b className="text-fg">POST 콘텐츠 유형</b>은 <span className="font-mono">application/json</span>.
-          </li>
-          <li>
-            <b className="text-fg">비밀</b>에 위에서 만든 비밀값을 넣어요.
-          </li>
-          <li>
-            <b className="text-fg">트리거</b>는 "사용자 지정 이벤트"에서 <b className="text-fg">Workflow run</b>, <b className="text-fg">Workflow job</b>, <b className="text-fg">패키지</b>를 체크하고 저장해요.
-          </li>
-          <li>
-            위 이미지 표에서 이미지마다 <b className="text-fg">빌드 레포</b>(owner/name)를 연결하면 끝이에요. 자동 배포가 켜진 작업은 <span className="font-mono">v</span>로 시작하는 새 태그가
-            올라오면 바로 배포돼요.
-          </li>
-          <li className="text-faint">Gitea 서버가 이 주소로 접속할 수 있어야 해요(localhost는 안 돼요). 사설망이면 Gitea에서 Wharfline 주소가 보이게 해 주세요.</li>
-        </ol>
+        <div className="flex flex-col gap-3 min-w-0">
+          <div className="flex items-center gap-2.5 flex-wrap">
+            <Seg<GitProvider>
+              options={[
+                { value: "gitea", label: "Gitea" },
+                { value: "github", label: "GitHub" },
+                { value: "gitlab", label: "GitLab" },
+              ]}
+              value={provider}
+              onChange={onProvider}
+            />
+            {settings?.lastSeen[provider] ? (
+              <span className="text-[12px] text-muted">마지막 수신 {new Date(settings.lastSeen[provider]! * 1000).toLocaleString("ko-KR")}</span>
+            ) : (
+              <span className="text-[12px] text-faint">아직 받은 이벤트 없음</span>
+            )}
+          </div>
+          <ol className="m-0 pl-5 flex flex-col gap-2 text-[12.5px] text-muted marker:text-faint">
+            {GUIDE[provider].map((step, i) => (
+              <li key={`${provider}-${i}`}>{step}</li>
+            ))}
+            <li>
+              위 이미지 표에서 이미지마다 <B>빌드 레포</B>({provider === "gitlab" ? "group/project" : "owner/name"})를 연결하면 끝이에요. 자동 배포가 켜진 작업은{" "}
+              <Mono>v</Mono>로 시작하는 새 태그가 올라오면 바로 배포돼요.
+            </li>
+            <li className="text-faint">
+              {name} 서버가 이 주소로 접속할 수 있어야 해요(localhost는 안 돼요).{" "}
+              {provider === "gitea" ? "사설망이면 Gitea에서 Wharfline 주소가 보이게 해 주세요." : `${name}.com을 쓰면 Wharfline이 인터넷에서 보여야 해요. 사내 ${name}면 사설망 주소도 돼요.`}
+            </li>
+          </ol>
+        </div>
       </div>
     </Card>
   );
@@ -240,7 +296,7 @@ function SecretModal({ secret, onClose }: { secret: string; onClose: () => void 
   const { toast } = useApp();
   return (
     <>
-      <ModalHead title="웹훅 비밀값" sub="이 창을 닫으면 다시 볼 수 없어요. Gitea 웹훅의 '비밀' 칸에 넣어 주세요." onClose={onClose} />
+      <ModalHead title="웹훅 비밀값" sub="이 창을 닫으면 다시 볼 수 없어요. 웹훅의 비밀값 칸(Gitea '비밀', GitHub 'Secret', GitLab 'Secret token')에 넣어 주세요." onClose={onClose} />
       <ModalBody>
         <div className="flex gap-1.5">
           <Input mono readOnly value={secret} aria-label="비밀값" />
@@ -248,7 +304,7 @@ function SecretModal({ secret, onClose }: { secret: string; onClose: () => void 
             복사
           </Button>
         </div>
-        <Banner icon="lock">봉투 암호화로 저장돼요. 잃어버리면 새로 만들고 Gitea 쪽 값도 바꾸면 돼요.</Banner>
+        <Banner icon="lock">봉투 암호화로 저장돼요. 잃어버리면 새로 만들고 Git 호스트 쪽 값도 바꾸면 돼요.</Banner>
       </ModalBody>
       <ModalFoot>
         <Button variant="primary" onClick={onClose}>

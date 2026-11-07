@@ -278,6 +278,7 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
   const [tok, setTok] = useState("");
   const [err, setErr] = useState("");
   const isGh = /(^|\.)ghcr\.io$/.test(host.trim());
+  const isGl = /gitlab/.test(host.trim());
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -311,7 +312,13 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
           <Field
             label="토큰"
             htmlFor="gTok"
-            hint={isGh ? "GitHub Container Registry예요. 토큰에는 read:packages 권한만 주세요." : "Gitea 레지스트리로 연결해요. 토큰에는 read:package 권한만 주세요."}
+            hint={
+              isGh
+                ? "GitHub Container Registry예요. 토큰에는 read:packages 권한만 주세요."
+                : isGl
+                  ? "GitLab Container Registry예요. 토큰에는 read_registry 권한만 주세요."
+                  : "Gitea 레지스트리로 연결해요. 토큰에는 read:package 권한만 주세요."
+            }
           >
             <Input id="gTok" mono type="password" placeholder="ghp_… 또는 Gitea 토큰" autoComplete="off" value={tok} onChange={(e) => setTok(e.target.value)} />
           </Field>

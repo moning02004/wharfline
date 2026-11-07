@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from .. import gitea
+from .. import githooks
 from .. import models as m
 from .. import runner
 from .. import store as s
@@ -32,7 +32,7 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None) -> dict:
         "imageTags": img["tags"],
         "latestTag": img["tags"][0]["name"] if img["tags"] else None,
         "prevTag": s.prev_tag(db, j, img),
-        "build": gitea.build_for_image(db, j["image"], scope),
+        "build": githooks.build_for_image(db, j["image"], scope),
     }
 
 
@@ -177,7 +177,7 @@ def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Dep
     base = rec.to_dict()
     if job:
         base.update(method=runner.METHODS[job.method], image=job.image, inventory=job.inventory)
-        built = gitea.build_for_tag(db, job.image, rec.tag, scope)
+        built = githooks.build_for_tag(db, job.image, rec.tag, scope)
         base["build"] = built.to_dict() if built else None
     if no in runner.live:
         return {**base, "live": not runner.live[no]["done"], "events": runner.live[no]["events"]}

@@ -19,7 +19,7 @@ from collections import Counter
 from sqlalchemy import select
 
 from . import crypto
-from . import gitea
+from . import githooks
 from . import models as m
 from .db import SessionLocal
 
@@ -43,7 +43,7 @@ def status() -> int:
         rows = [row for model in ENCRYPTED for row in encrypted_rows(db, model)]
         counts = Counter(_label(r) for r in rows)
         stale = sum(1 for r in rows if ring.needs_rewrap(r.kek_id, r.wrapped_dek))
-        hook = gitea.secret_envelope(db)
+        hook = githooks.secret_envelope(db)
         if hook:
             counts[_label(hook)] += 1
             stale += ring.needs_rewrap(hook.kek_id, hook.wrapped_dek)
@@ -68,10 +68,10 @@ def verify() -> int:
                     bad += 1
                     print(f"  {row.crypto_context()}: {e}")
         try:
-            gitea.load_secret(db)
+            githooks.load_secret(db)
         except crypto.CryptoError as e:
             bad += 1
-            print(f"  {gitea.CONTEXT}: {e}")
+            print(f"  {githooks.CONTEXT}: {e}")
     print("all encrypted rows decrypt" if not bad else f"{bad} rows failed")
     return 1 if bad else 0
 
@@ -85,9 +85,9 @@ def rotate() -> int:
                 if ring.needs_rewrap(row.kek_id, row.wrapped_dek):
                     row.envelope = crypto.rewrap(row.envelope, row.crypto_context(), ring)
                     moved += 1
-        hook = gitea.secret_envelope(db)
+        hook = githooks.secret_envelope(db)
         if hook and ring.needs_rewrap(hook.kek_id, hook.wrapped_dek):
-            gitea.set_secret_envelope(db, crypto.rewrap(hook, gitea.CONTEXT, ring))
+            githooks.set_secret_envelope(db, crypto.rewrap(hook, githooks.CONTEXT, ring))
             moved += 1
         db.commit()
     print(f"re-wrapped {moved} data keys with {ring.active_id}")

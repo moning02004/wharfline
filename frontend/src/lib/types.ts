@@ -69,8 +69,11 @@ export interface Job {
   build: Build | null;
 }
 
+export type GitProvider = "gitea" | "github" | "gitlab";
+
 export interface Build {
   id: number;
+  provider: GitProvider;
   repo: string;
   runId: number;
   runNumber: number | null;

@@ -6,7 +6,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import gitea
+from .. import githooks
 from .. import models as m
 from .. import store as s
 from ..db import get_db
@@ -85,7 +85,7 @@ def get_access(who: m.Member | None = Depends(viewer)):
 
 @router.get("/groups")
 def list_groups(db: Session = Depends(get_db)):
-    return {"groups": [g.to_dict() for g in db.scalars(select(m.Group).order_by(m.Group.ord))], "repos": gitea.build_repos(db),
+    return {"groups": [g.to_dict() for g in db.scalars(select(m.Group).order_by(m.Group.ord))], "repos": githooks.build_repos(db),
             "menus": s.MENUS}
 
 

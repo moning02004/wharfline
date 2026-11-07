@@ -46,6 +46,8 @@ def registry_name(host: str) -> str:
         return "GitHub Container Registry"
     if host in ("docker.io", "registry-1.docker.io", "index.docker.io"):
         return "Docker Hub"
+    if host == "registry.gitlab.com" or "gitlab" in host:
+        return "GitLab Container Registry"
     return "Gitea"
 
 

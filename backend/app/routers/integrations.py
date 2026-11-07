@@ -1,16 +1,18 @@
-"""Gitea webhook receiver, integration settings, and the build list."""
+"""Git webhook receiver (Gitea, GitHub, GitLab), integration settings, and the build list."""
 
 import asyncio
 import json
 import random
+import re
 import time
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import gitea
+from .. import githooks
 from .. import models as m
 from .. import runner
 from .. import store as s
@@ -19,7 +21,7 @@ from ..deps import build_scope, require_login, require_sudo
 
 MAX_BODY = 1024 * 1024
 
-hooks = APIRouter(prefix="/api/hooks", tags=["hooks"])  # called by Gitea: no session, HMAC instead
+hooks = APIRouter(prefix="/api/hooks", tags=["hooks"])  # called by the Git host: no session, the webhook secret instead
 router = APIRouter(prefix="/api", tags=["integrations"], dependencies=[Depends(require_login)])
 
 
@@ -35,56 +37,83 @@ def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[int]:
     return started
 
 
-def process(db: Session, event: str, payload: dict) -> dict:
-    if event == "workflow_run":
-        b = gitea.handle_workflow_run(db, payload)
-        db.commit()
-        return {"build": b.id if b else None}
-    if event == "workflow_job":
-        b = gitea.handle_workflow_job(db, payload)
-        db.commit()
-        return {"build": b.id if b else None}
-    if event == "package":
-        released = gitea.handle_package(db, payload)
-        db.commit()
-        return {"tags": [f"{i.ref}:{t}" for i, t in released], "runs": auto_deploy(db, released)}
-    return {"ignored": event}
+def process(db: Session, provider: str, event: str, payload: dict) -> dict:
+    """Apply one webhook event. `event` is the provider's own event name."""
+    released: list[tuple[m.Image, str]] = []
+    build: m.Build | None = None
+    if provider == "gitlab":
+        if event == "Pipeline Hook":
+            build, released = githooks.handle_gitlab_pipeline(db, payload)
+        elif event == "Job Hook":
+            build = githooks.handle_gitlab_job(db, payload)
+        else:
+            return {"ignored": event}
+    elif event == "workflow_run":
+        build = githooks.handle_workflow_run(db, payload, provider)
+    elif event == "workflow_job":
+        build = githooks.handle_workflow_job(db, payload, provider)
+    elif event in ("package", "registry_package"):
+        released = githooks.handle_package(db, payload)
+    elif event == "ping":  # GitHub and Gitea send this when the webhook is saved
+        return {"pong": True}
+    else:
+        return {"ignored": event}
+    db.commit()
+    out: dict = {"build": build.id if build else None}
+    if released:
+        out |= {"tags": [f"{i.ref}:{t}" for i, t in released], "runs": auto_deploy(db, released)}
+    return out
 
 
-@hooks.post("/gitea")
-async def gitea_hook(request: Request, db: Session = Depends(get_db)):
+@hooks.post("/git")
+@hooks.post("/gitea", include_in_schema=False)  # the first address; Gitea webhooks set up before keep working
+async def git_hook(request: Request, db: Session = Depends(get_db)):
     body = await request.body()
     if len(body) > MAX_BODY:
         raise HTTPException(413, "payload too large")
-    secret = gitea.load_secret(db)
-    if not secret:
-        raise HTTPException(503, "Gitea webhook secret is not configured")
     headers = {k.lower(): v for k, v in request.headers.items()}
-    if not gitea.verify_signature(secret, body, headers):
-        raise HTTPException(401, "bad signature")
-    event = headers.get("x-gitea-event") or headers.get("x-github-event") or ""
+    sender = githooks.detect(headers)
+    if not sender:
+        raise HTTPException(400, "unknown sender: expected a Gitea, GitHub or GitLab webhook")
+    provider, event = sender
+    secret = githooks.load_secret(db)
+    if not secret:
+        raise HTTPException(503, "Git webhook secret is not configured")
+    if not githooks.verify(provider, secret, body, headers):
+        raise HTTPException(401, "bad signature" if provider != "gitlab" else "bad token")
     try:
         payload = json.loads(body)
     except ValueError as e:
         raise HTTPException(400, "invalid JSON") from e
-    return {"ok": True, **process(db, event, payload)}
+    return {"ok": True, "provider": provider, **process(db, provider, event, payload)}
 
 
 # ---------- settings ----------
 
-@router.get("/integrations/gitea")
-def gitea_settings(db: Session = Depends(get_db)):
-    v = s.get_setting(db, gitea.SETTING)
-    return {"path": "/api/hooks/gitea", "secretSet": bool(v.get("ciphertext")), "secretCreated": v.get("created"),
-            "events": ["workflow_run", "workflow_job", "package"]}
+EVENTS = {
+    "gitea": ["workflow_run", "workflow_job", "package"],
+    "github": ["workflow_run", "workflow_job", "registry_package"],
+    "gitlab": ["Pipeline Hook", "Job Hook"],
+}
 
 
-@router.post("/integrations/gitea/secret", dependencies=[Depends(require_sudo)])
-def gitea_new_secret(db: Session = Depends(get_db)):
-    value = gitea.new_secret(db)
-    s.log_act(db, "Gitea 웹훅 비밀값 발급", "이전 비밀값은 더 이상 쓸 수 없어요", "warn")
+@router.get("/integrations/git")
+def git_settings(db: Session = Depends(get_db)):
+    v = s.get_setting(db, githooks.SETTING)
+    seen = {p: db.scalar(select(func.max(m.Build.updated_at)).where(m.Build.provider == p)) for p in githooks.PROVIDERS}
+    return {"path": "/api/hooks/git", "secretSet": bool(v.get("ciphertext")), "secretCreated": v.get("created"), "events": EVENTS,
+            "lastSeen": seen}
+
+
+@router.post("/integrations/git/secret", dependencies=[Depends(require_sudo)])
+def git_new_secret(db: Session = Depends(get_db)):
+    value = githooks.new_secret(db)
+    s.log_act(db, "Git 웹훅 비밀값 발급", "이전 비밀값은 더 이상 쓸 수 없어요", "warn")
     db.commit()
     return {"secret": value}
+
+
+REPO_RE = re.compile(r"^[^/\s]+(/[^/\s]+)+$")  # owner/name, or group/subgroup/name on GitLab
 
 
 class SourceRepoIn(BaseModel):
@@ -98,8 +127,8 @@ def set_source_repo(body: SourceRepoIn, db: Session = Depends(get_db)):
     if not img:
         raise HTTPException(404, "이미지를 찾을 수 없어요.")
     repo = body.sourceRepo.strip().lower().removesuffix(".git")
-    if repo and (repo.count("/") != 1 or not all(repo.split("/"))):
-        raise HTTPException(400, "레포는 owner/name 형식으로 넣어 주세요. 예: acme/batch-worker")
+    if repo and not REPO_RE.match(repo):
+        raise HTTPException(400, "레포는 owner/name 형식으로 넣어 주세요. GitLab 하위 그룹은 group/sub/name도 돼요.")
     img.source_repo = repo or None
     s.log_act(db, "빌드 레포 연결", f"{img.ref} ← {repo or '없음'}")
     db.commit()
@@ -110,18 +139,19 @@ def set_source_repo(body: SourceRepoIn, db: Session = Depends(get_db)):
 def list_builds(image: str | None = None, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
     """Builds the viewer's groups allow (all for Owners and groups with every build)."""
     if image:
-        return gitea.builds_for_image(db, image, scope=scope)
+        return githooks.builds_for_image(db, image, scope=scope)
     q = select(m.Build).order_by(m.Build.updated_at.desc()).limit(30)
     if scope is not None:
         q = q.where(m.Build.repo.in_(scope))
     return [b.to_dict() for b in db.scalars(q)]
 
 
-# ---------- test event (no real Gitea needed) ----------
+# ---------- test event (no real Git host needed) ----------
 
 class TestIn(BaseModel):
     ref: str
     fail: bool = False
+    provider: Literal["gitea", "github", "gitlab"] = "gitea"
 
 
 def next_tag(img: m.Image) -> str:
@@ -132,40 +162,73 @@ def next_tag(img: m.Image) -> str:
     return "v0.1.0"
 
 
-async def _simulate(ref: str, fail: bool) -> None:
-    """Feeds the same handlers Gitea's webhooks reach, with a realistic sequence of payloads."""
+STEPS = ["Set up job", "Checkout", "Login to registry", "Build and push", "Post job"]
+
+
+def actions_sequence(provider: str, repo: str, owner: str, name: str, tag: str, fail: bool) -> list[tuple[float, str, dict]]:
+    """Gitea Actions / GitHub Actions payloads for one image build."""
+    run_id = random.randint(10_000, 99_999)
+    host = "github.com" if provider == "github" else "gitea.example"
+    base = {"repository": {"full_name": repo}}
+    run = {"id": run_id, "run_number": run_id % 1000, "name": "image", "display_title": f"release {tag}",
+           "head_branch": "main", "head_sha": f"{random.getrandbits(40):010x}", "html_url": f"https://{host}/{repo}/actions/runs/{run_id % 1000}"}
+    seq: list[tuple[float, str, dict]] = [(0, "workflow_run", {**base, "action": "requested", "workflow_run": {**run, "status": "queued"}}),
+                                          (1, "workflow_run", {**base, "action": "in_progress", "workflow_run": {**run, "status": "in_progress"}})]
+    for i, st in enumerate(STEPS if not fail else STEPS[:4]):
+        seq.append((1.6, "workflow_job", {**base, "action": "in_progress", "workflow_job": {
+            "run_id": run_id, "name": "build", "status": "in_progress", "steps": [{"name": st, "status": "in_progress", "number": i + 1}]}}))
+    if not fail:
+        if provider == "github":
+            pkg = {"name": name, "package_type": "CONTAINER", "owner": {"login": owner},
+                   "package_version": {"version": f"sha256:{random.getrandbits(64):016x}", "container_metadata": {"tag": {"name": tag}}}}
+            seq.append((1.2, "registry_package", {"action": "published", "registry_package": pkg}))
+        else:
+            seq.append((1.2, "package", {"action": "created", "package": {"type": "container", "name": name, "version": tag, "owner": {"login": owner}}}))
+    seq.append((0.4, "workflow_run", {**base, "action": "completed", "workflow_run": {**run, "status": "completed", "conclusion": "failure" if fail else "success"}}))
+    return seq
+
+
+def gitlab_sequence(repo: str, tag: str, fail: bool) -> list[tuple[float, str, dict]]:
+    """GitLab Pipeline Hook / Job Hook payloads for a tag pipeline (the image tag is the Git tag)."""
+    pid = random.randint(100_000, 999_999)
+    web = f"https://gitlab.example/{repo}"
+    project = {"path_with_namespace": repo, "web_url": web, "default_branch": "main"}
+
+    def pipeline(status: str, running: str | None = None) -> dict:
+        return {"object_kind": "pipeline", "project": project, "commit": {"title": f"release {tag}"},
+                "object_attributes": {"id": pid, "iid": pid % 1000, "name": "image", "ref": tag, "tag": True,
+                                      "sha": f"{random.getrandbits(40):010x}", "status": status, "url": f"{web}/-/pipelines/{pid}"},
+                "builds": [{"name": "build-push", "stage": "build", "status": "running" if running else status}]}
+
+    seq: list[tuple[float, str, dict]] = [(0, "Pipeline Hook", pipeline("pending")), (1, "Pipeline Hook", pipeline("running", "build-push"))]
+    for st in ["docker info", "docker login", "docker build", "docker push"][: 3 if fail else 4]:
+        seq.append((1.6, "Job Hook", {"object_kind": "build", "pipeline_id": pid, "build_name": f"build-push · {st}",
+                                      "build_status": "running", "project": project}))
+    seq.append((0.8, "Pipeline Hook", pipeline("failed" if fail else "success")))
+    return seq
+
+
+async def _simulate(ref: str, fail: bool, provider: str) -> None:
+    """Feeds the same handlers the real webhooks reach, with a realistic sequence of payloads."""
     with SessionLocal() as db:
         img = db.get(m.Image, ref)
         owner, name = ref.split("/")[-2:]
         repo, tag = img.source_repo or f"{owner}/{name}", next_tag(img)
-    run_id = random.randint(10_000, 99_999)
-    base = {"repository": {"full_name": repo}}
-    run = {"id": run_id, "run_number": run_id % 1000, "name": "image", "display_title": f"release {tag}",
-           "head_branch": "main", "head_sha": f"{random.getrandbits(40):010x}", "html_url": f"https://gitea.example/{repo}/actions/runs/{run_id % 1000}"}
-    steps = ["Set up job", "Checkout", "Login to registry", "Build and push", "Post job"]
-    sequence: list[tuple[float, str, dict]] = [(0, "workflow_run", {**base, "action": "requested", "workflow_run": {**run, "status": "queued"}}),
-                                               (1, "workflow_run", {**base, "action": "in_progress", "workflow_run": {**run, "status": "in_progress"}})]
-    for i, st in enumerate(steps if not fail else steps[:4]):
-        sequence.append((1.6, "workflow_job", {**base, "action": "in_progress", "workflow_job": {
-            "run_id": run_id, "name": "build", "status": "in_progress", "steps": [{"name": st, "status": "in_progress", "number": i + 1}]}}))
-    done = {**run, "status": "completed", "conclusion": "failure" if fail else "success"}
-    if not fail:
-        sequence.append((1.2, "package", {"action": "created", "package": {"type": "container", "name": name, "version": tag, "owner": {"login": owner}}}))
-    sequence.append((0.4, "workflow_run", {**base, "action": "completed", "workflow_run": done}))
-    for delay, event, payload in sequence:
+    seq = gitlab_sequence(repo, tag, fail) if provider == "gitlab" else actions_sequence(provider, repo, owner, name, tag, fail)
+    for delay, event, payload in seq:
         await asyncio.sleep(delay)
         with SessionLocal() as db:
-            process(db, event, payload)
+            process(db, provider, event, payload)
 
 
-@router.post("/integrations/gitea/test")
-async def gitea_test(body: TestIn, db: Session = Depends(get_db)):
+@router.post("/integrations/git/test")
+async def git_test(body: TestIn, db: Session = Depends(get_db)):
     img = db.get(m.Image, body.ref)
     if not img:
         raise HTTPException(404, "이미지를 찾을 수 없어요.")
     if not img.source_repo:
         raise HTTPException(400, "먼저 이 이미지를 빌드하는 레포를 연결해 주세요.")
-    s.log_act(db, "시험 빌드 이벤트", f"{img.ref} · {'실패' if body.fail else '성공'} 시나리오")
+    s.log_act(db, "시험 빌드 이벤트", f"{img.ref} · {githooks.PROVIDER_NAMES[body.provider]} · {'실패' if body.fail else '성공'} 시나리오")
     db.commit()
-    asyncio.get_running_loop().create_task(_simulate(body.ref, body.fail))
+    asyncio.get_running_loop().create_task(_simulate(body.ref, body.fail, body.provider))
     return {"ok": True, "startedAt": time.time()}

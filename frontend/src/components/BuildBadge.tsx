@@ -1,10 +1,12 @@
-import type { Build } from "../lib/types";
+import type { Build, GitProvider } from "../lib/types";
 import { cx } from "./ui";
 
 export function elapsed(since: number): string {
   const s = Math.max(0, Math.round(Date.now() / 1000 - since));
   return s < 60 ? `${s}초째` : `${Math.floor(s / 60)}분째`;
 }
+
+export const PROVIDER_NAME: Record<GitProvider, string> = { gitea: "Gitea", github: "GitHub", gitlab: "GitLab" };
 
 export const buildNo = (b: Build) => `#${b.runNumber ?? b.runId}`;
 
@@ -24,7 +26,7 @@ const TONE = {
 };
 const DOT = { accent: "bg-accent animate-pulse-dot", ok: "bg-ok", bad: "bg-bad", neutral: "bg-faint" };
 
-/** CI build state next to an image: "빌드 중 #42 · Build and push · 1분째", "빌드 성공 #42 → v0.9.5". Links to the run in Gitea. */
+/** CI build state next to an image: "빌드 중 #42 · Build and push · 1분째", "빌드 성공 #42 → v0.9.5". Links to the run on its Git host. */
 export function BuildBadge({ build }: { build: Build | null }) {
   if (!build) return null;
   const { tone, label } = buildState(build);

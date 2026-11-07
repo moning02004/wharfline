@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, Job, RunDetail, RunEvent, Status } from "../lib/types";
-import { buildNo, buildState, elapsed } from "../components/BuildBadge";
+import { PROVIDER_NAME, buildNo, buildState, elapsed } from "../components/BuildBadge";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
@@ -226,7 +226,7 @@ function BuildPanel({ build, selected, waiting, onUseTag, onWait }: { build: Bui
         </span>
         {build.url && (
           <a href={build.url} target="_blank" rel="noreferrer noopener" className="ml-auto text-[12px] text-accent hover:underline">
-            Gitea에서 보기
+            {PROVIDER_NAME[build.provider] ?? "Git"}에서 보기
           </a>
         )}
       </div>

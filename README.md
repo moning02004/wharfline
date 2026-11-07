@@ -119,20 +119,26 @@ make kms-down      # 모든 데이터 키를 로컬 키 파일로 되돌린 뒤(
 
 Vault가 응답하지 않으면 API는 시작하지 않고, 실행 중이라면 복호화 요청이 일반 오류로 실패해요(값을 평문으로 다루는 대체 경로는 없어요).
 
-## Gitea 연동 (빌드 상태와 새 이미지 자동 배포)
+## Git 연동 (빌드 상태와 새 이미지 자동 배포)
 
-Gitea Actions가 이미지를 빌드하는 동안 배포 작업에 `빌드 중`을 띄우고, 이미지가 푸시되면 새 태그를 등록해요. 자동 배포가 켜진 작업은 `v`로 시작하는 새 태그가 오면 바로 배포해요.
+Gitea(Forgejo), GitHub, GitLab의 CI가 이미지를 빌드하는 동안 배포 작업에 `빌드 중`을 띄우고, 이미지가 푸시되면 새 태그를 등록해요. 자동 배포가 켜진 작업은 `v`로 시작하는 새 태그가 오면 바로 배포해요.
 
-1. **이미지 레지스트리 → Gitea 연동**에서 비밀값을 만들어요(봉투 암호화로 저장, 한 번만 보여줘요).
-2. Gitea 저장소(또는 조직) **설정 → 웹훅 → 웹훅 추가 → Gitea**
-   - 대상 URL: `https://<wharfline 주소>/api/hooks/gitea` · HTTP 메서드 POST · 콘텐츠 유형 `application/json`
-   - 비밀: 1번의 값
-   - 트리거: 사용자 지정 이벤트 → **Workflow run**, **Workflow job**, **패키지**
-3. 이미지 표에서 이미지마다 **빌드 레포**(`owner/name`)를 연결해요.
+1. **이미지 레지스트리 → Git 연동**에서 비밀값을 만들어요(봉투 암호화로 저장, 한 번만 보여줘요). 세 곳 모두 같은 값을 써요.
+2. 빌드하는 저장소에 웹훅을 추가해요. 주소는 모두 `https://<wharfline 주소>/api/hooks/git`, 콘텐츠 유형 `application/json`.
 
-- 요청은 `X-Gitea-Signature`(HMAC-SHA256) 서명이 맞아야만 받아요. 비밀값이 없으면 503, 서명이 틀리면 401이에요.
-- Gitea 서버가 Wharfline 주소에 접속할 수 있어야 해요.
-- 실제 Gitea 없이 확인하려면 이미지 표의 **시험 빌드** / **실패 시험**을 누르면 같은 처리 경로로 이벤트가 흘러가요.
+| 호스트 | 메뉴 | 비밀값 칸 | 이벤트 |
+|---|---|---|---|
+| Gitea / Forgejo | 설정 → 웹훅 → 웹훅 추가 → Gitea | 비밀 | Workflow run, Workflow job, 패키지 |
+| GitHub | Settings → Webhooks → Add webhook | Secret | Workflow runs, Workflow jobs, Registry packages |
+| GitLab | Settings → Webhooks → Add new webhook | Secret token | Pipeline events, Job events |
+
+3. 이미지 표에서 이미지마다 **빌드 레포**(`owner/name`, GitLab 하위 그룹은 `group/sub/name`)를 연결해요.
+
+- 보낸 곳은 헤더로 알아봐요(`X-Gitea-Event`, `X-GitHub-Event`, `X-Gitlab-Event`). Gitea·GitHub는 HMAC-SHA256 서명(`X-Gitea-Signature`, `X-Hub-Signature-256`), GitLab은 `X-Gitlab-Token`이 맞아야만 받아요. 비밀값이 없으면 503, 틀리면 401이에요.
+- GitLab은 이미지 푸시 알림이 없어서 파이프라인 성공으로 새 태그를 알아요. Git 태그 파이프라인은 그 태그, 기본 브랜치는 커밋 SHA 앞 8자리(`CI_COMMIT_SHORT_SHA`)예요. 레포의 `.gitlab-ci.yml`과 같은 규칙이에요.
+- 예전 주소 `/api/hooks/gitea`도 계속 받아요. 이미 만든 Gitea 웹훅은 그대로 둬도 돼요.
+- Git 호스트가 Wharfline 주소에 접속할 수 있어야 해요.
+- 실제 Git 호스트 없이 확인하려면 Git 연동 카드에서 호스트를 고른 뒤 이미지 표의 **시험 빌드** / **실패 시험**을 누르면 그 호스트 형식의 이벤트가 같은 처리 경로로 흘러가요.
 - 웹훅 비밀값도 `make key-status` / `key-verify` / `key-rotate` 대상이에요.
 
 ## 로컬 개발

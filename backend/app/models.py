@@ -163,7 +163,7 @@ class Image(Base):
     ref: Mapped[str] = mapped_column(String(512), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
     registry_id: Mapped[str | None] = mapped_column(ForeignKey("registries.id", ondelete="SET NULL"))
-    # Repository whose CI builds this image ("owner/name"), used to match Gitea build events.
+    # Repository whose CI builds this image ("owner/name", or "group/sub/name" on GitLab), used to match Git build events.
     source_repo: Mapped[str | None] = mapped_column(String(255), index=True)
     tags: Mapped[list[ImageTag]] = relationship(order_by="ImageTag.pushed_at.desc()", cascade="all, delete-orphan")
 
@@ -400,11 +400,12 @@ class DeviceSession(Base):
 
 
 class Build(Base):
-    """A CI workflow run reported by Gitea (workflow_run / workflow_job / package webhooks)."""
+    """A CI run reported by a Git host: Gitea/GitHub Actions workflow runs or GitLab pipelines."""
 
     __tablename__ = "builds"
     __table_args__ = (UniqueConstraint("repo", "run_id"),)
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    provider: Mapped[str] = mapped_column(String(16), default="gitea", server_default="gitea")  # gitea | github | gitlab
     repo: Mapped[str] = mapped_column(String(255), index=True)  # owner/name, lower case
     run_id: Mapped[int] = mapped_column(BigInteger)
     run_number: Mapped[int | None] = mapped_column(Integer)
@@ -424,6 +425,6 @@ class Build(Base):
         return self.status in ("queued", "in_progress")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "repo": self.repo, "runId": self.run_id, "runNumber": self.run_number, "workflow": self.workflow,
+        return {"id": self.id, "provider": self.provider, "repo": self.repo, "runId": self.run_id, "runNumber": self.run_number, "workflow": self.workflow,
                 "title": self.title, "status": self.status, "active": self.active, "branch": self.branch, "sha": self.sha,
                 "url": self.url, "step": self.step, "tag": self.tag, "startedAt": self.started_at, "updatedAt": self.updated_at}
