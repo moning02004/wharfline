@@ -35,7 +35,7 @@ make key-backup   # 암호를 걸어 backups/에 복사본을 만들어요. 이 
 
 | 값 | 설명 |
 |---|---|
-| `WHARFLINE_VERSION` | 실행할 릴리스 태그. [릴리스 목록](https://github.com/moning02004/wharfline/releases)에서 골라요 |
+| `WHARFLINE_VERSION` | `latest`(늘 최신 릴리스) 또는 [릴리스 목록](https://github.com/moning02004/wharfline/releases)의 태그. 아래 "업데이트" 참고 |
 | `WHARFLINE_URL` | 브라우저로 여는 주소, 예: `https://deploy.example.com` |
 | `POSTGRES_PASSWORD` | `openssl rand -base64 32`로 만든 긴 값 |
 | `WHARFLINE_OWNER_EMAIL` / `_NAME` / `_PASSWORD` | 처음 만들 Owner. 비밀번호는 10자 이상, 첫 로그인 때 바꾸게 돼요 |
@@ -118,10 +118,17 @@ make logs s=migrate   # "created the first Owner (no sample data)"
 ## 업데이트
 
 ```bash
-make upgrade v=2026.11.09-1   # DB를 먼저 백업하고, .env의 버전을 바꾸고, 새 이미지를 받아 다시 띄워요
+make upgrade                    # WHARFLINE_VERSION=latest: DB 백업 → 새 이미지 받기 → 다시 띄우기
+make upgrade v=2026.11.09-1     # 태그로 고정해 쓸 때: .env의 버전도 바꿔요
+make version                    # 지금 떠 있는 실제 릴리스 (예: 2026.11.08-2)
 ```
 
 migrate가 DB를 새 버전으로 올린 뒤 백엔드가 떠요.
+
+`latest`로 쓸 때 알아둘 점:
+
+- `make up`이나 서버 재부팅으로는 새 버전을 받지 않아요. 새 버전은 `make upgrade`를 칠 때만 받아요. 그래서 원하지 않을 때 갑자기 바뀌지는 않아요.
+- 문제가 생겨 이전 버전으로 돌아가려면 `make upgrade v=<이전 태그>`로 태그를 고정하고, `make restore`로 업데이트 직전 백업을 되살려요(새 버전이 DB 구조를 바꿨을 수 있어서요). `make upgrade`가 업데이트 전에 백업을 남겨 둬요.
 
 ## 백업
 

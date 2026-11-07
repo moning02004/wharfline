@@ -7,7 +7,7 @@ IMAGE    = ghcr.io/moning02004/wharfline-backend:$(VERSION)
 KEYS    := secrets/master_keys
 
 .DEFAULT_GOAL := help
-.PHONY: help up down restart ps logs upgrade keygen key-status key-verify key-rotate key-backup backup restore
+.PHONY: help up down restart ps logs version upgrade keygen key-status key-verify key-rotate key-backup backup restore
 
 help: ## List the commands
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*## "}{printf "  make %-12s %s\n", $$1, $$2}'
@@ -27,12 +27,21 @@ ps: ## Container status
 logs: ## Follow logs, e.g. make logs s=backend
 	$(COMPOSE) logs -f --tail 100 $(s)
 
-upgrade: ## Back up, then run a new release: make upgrade v=2026.11.09-1
-	@test -n "$(v)" || (echo 'usage: make upgrade v=<release tag>' && exit 1)
+version: ## The release actually running (useful with WHARFLINE_VERSION=latest)
+	@for svc in backend frontend; do \
+	  id=$$($(COMPOSE) ps -q $$svc 2>/dev/null); \
+	  if [ -n "$$id" ]; then \
+	    printf '%-9s %s\n' "$$svc" "$$(docker inspect -f '{{ index .Config.Labels "org.opencontainers.image.version" }} ({{ .Config.Image }})' $$id)"; \
+	  else printf '%-9s not running\n' "$$svc"; fi; \
+	done
+
+upgrade: ## Back up, then run the newest image: make upgrade (latest) or make upgrade v=2026.11.09-1
+	@test -n "$(v)" -o "$(VERSION)" = "latest" || (echo 'usage: make upgrade v=<release tag>  (or set WHARFLINE_VERSION=latest)' && exit 1)
 	$(MAKE) backup
-	sed -i.bak 's/^WHARFLINE_VERSION=.*/WHARFLINE_VERSION=$(v)/' .env && rm -f .env.bak
+	@if [ -n "$(v)" ]; then sed -i.bak 's/^WHARFLINE_VERSION=.*/WHARFLINE_VERSION=$(v)/' .env && rm -f .env.bak; fi
 	$(COMPOSE) pull
 	$(COMPOSE) up -d
+	@$(MAKE) --no-print-directory version
 
 keygen: ## Create the master key once (refuses to overwrite)
 	@test -n "$(VERSION)" || (echo 'set WHARFLINE_VERSION in .env first' && exit 1)
