@@ -21,6 +21,7 @@
   --primary-fg: #ffffff;
   --primary-soft: #eef0ff;
   --accent: #4f46e5;
+  --section: #8b5cf6; /* violet: modal section line while filling */
   --accent-soft: #eef0ff;
   --on-accent: #ffffff;
   --ok: #16a34a;
@@ -58,6 +59,8 @@
     --primary-fg: #13122b;
     --primary-soft: #1d1b3a;
     --accent: #818cf8;
+  --section: #a78bfa;
+    --section: #a78bfa;
     --accent-soft: #1d1b3a;
     --on-accent: #13122b;
     --ok: #22c55e;
@@ -214,11 +217,11 @@
 /* Unlayered on purpose: it must beat the label's Tailwind utility classes. */
 /* Inside modals each field reads as its own section: a soft rounded line runs from the title
    down through the input and hint, and turns accent while you are filling that field. */
-.modal-body .field { position: relative; gap: 8px; padding-left: 15px; }
+.modal-body .field { position: relative; gap: 8px; padding-left: 16px; }
 .modal-body .field::before {
-  content: ""; position: absolute; left: 0; top: 1px; bottom: 1px; width: 3px; border-radius: 999px;
-  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  content: ""; position: absolute; left: 0; top: 1px; bottom: 1px; width: 4px; border-radius: 999px;
+  background: color-mix(in srgb, var(--section) 22%, transparent);
   transition: background-color .15s ease;
 }
-.modal-body .field:focus-within::before { background: var(--accent); }
+.modal-body .field:focus-within::before { background: var(--section); }
 .modal-body .field-label { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg); }
