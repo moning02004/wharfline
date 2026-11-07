@@ -229,3 +229,18 @@
 .modal-body .field .field { padding-left: 0; gap: 6px; }
 .modal-body .field .field::before { content: none; }
 .modal-body .field .field .field-label { font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
+
+/* Guide bubble: points up at the input it explains. */
+.guide-bubble {
+  background: color-mix(in srgb, var(--section) 8%, var(--surface));
+  border: 1px solid color-mix(in srgb, var(--section) 32%, transparent);
+  box-shadow: 0 8px 20px -14px color-mix(in srgb, var(--section) 70%, transparent);
+}
+.guide-bubble-arrow {
+  background: color-mix(in srgb, var(--section) 8%, var(--surface));
+  border-top: 1px solid color-mix(in srgb, var(--section) 32%, transparent);
+  border-left: 1px solid color-mix(in srgb, var(--section) 32%, transparent);
+}
+.guide-bubble-icon { color: var(--section); }
+.guide-bubble-next { color: var(--section); }
+.guide-bubble-next:hover { background: color-mix(in srgb, var(--section) 14%, transparent); }

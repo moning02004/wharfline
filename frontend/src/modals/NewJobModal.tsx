@@ -7,7 +7,7 @@ import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalFoot, ModalHead } from "../components/Modal";
-import { JOB_STEPS, JobGuide, type JobStepId } from "./JobGuide";
+import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { NewKeyModal } from "./ResourceModals";
 import { Button, Check, Chip, ErrorText, Field, Hint, Input, Select, Seg, Switch, cx } from "../components/ui";
 
@@ -314,6 +314,55 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           ? envPick
           : `붙여넣은 변수 ${envVars.length}개${editing && job.env ? ` → ${job.env}의 새 버전` : ""}`;
 
+  /* ---------- guide: a bubble that points at the input to fill ---------- */
+
+  // Inputs of the current step in screen order.
+  const tipOrder: TipId[] =
+    step === "name"
+      ? ["name"]
+      : step === "playbook"
+        ? source === "git"
+          ? ["playbook.source", "playbook.url", "playbook.branch", "playbook.path", "playbook.key"]
+          : ["playbook.source", "playbook.builtin"]
+        : step === "target"
+          ? ["target.inv", "target.groups"]
+          : step === "image"
+            ? ["image"]
+            : step === "env"
+              ? envOn && envMode !== "existing"
+                ? ["env", "env.vars"]
+                : ["env"]
+              : step === "access"
+                ? ["access.editors", "access.safety"]
+                : ["review"];
+  // Where the guide starts on a step: the first input that still needs something.
+  const firstTip = (): TipId => {
+    if (step === "playbook") return source === "builtin" ? "playbook.builtin" : !url.trim() ? "playbook.url" : !path.trim() ? "playbook.path" : "playbook.key";
+    if (step === "env" && envOn && envMode !== "existing" && !envText.trim()) return "env.vars";
+    return tipOrder[0];
+  };
+  const [tip, setTip] = useState<TipId | null>(null);
+  const focusTip = (id: TipId, textOnly = false) => {
+    setTip(id);
+    requestAnimationFrame(() => {
+      const spot = bodyRef.current?.querySelector<HTMLElement>(`[data-tip="${id}"]`);
+      const el = spot?.querySelector<HTMLElement>(textOnly ? "input, textarea, [role=combobox]" : "input, textarea, [role=combobox], button, [tabindex='0']");
+      el?.focus({ preventScroll: true });
+      spot?.scrollIntoView({ block: "nearest" });
+    });
+  };
+  useEffect(() => {
+    if (guide) focusTip(firstTip(), true);
+  }, [guide, step, source]); // a new step, or the playbook kind changed
+  const guideState = {
+    on: guide,
+    tip,
+    mode,
+    builtin: source === "builtin",
+    nextOf: (id: TipId) => tipOrder[tipOrder.indexOf(id) + 1] ?? null,
+    focus: (id: TipId) => focusTip(id),
+  };
+
   /* ---------- steps ---------- */
 
   const renderStep = () => {
@@ -321,7 +370,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       case "name":
         return (
           <Field label="이름" htmlFor="jName" hint="목록과 실행 기록에 보이는 이름이에요. 앱과 환경을 함께 적으면 찾기 쉬워요.">
-            <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" autoFocus={!editing} />
+            <TipSpot id="name">
+              <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" autoFocus={!editing} />
+            </TipSpot>
           </Field>
         );
 
@@ -343,7 +394,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </span>
             }
           >
-            <div>
+            <TipSpot id="playbook.source">
+              <div>
               <Seg
                 options={[
                   { value: "git", label: "Git 레포" },
@@ -355,7 +407,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   setErr("");
                 }}
               />
-            </div>
+              </div>
+            </TipSpot>
             {source === "git" ? (
               <div key="git" className="flex flex-col gap-3 animate-fade">
                 {repos.length > 0 && (
@@ -391,6 +444,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   </div>
                 )}
                 <Field label="저장소 URL" htmlFor="jUrl">
+                  <TipSpot id="playbook.url">
                   <Input
                     id="jUrl"
                     mono
@@ -400,13 +454,18 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                     autoComplete="off"
                     spellCheck={false}
                   />
+                  </TipSpot>
                 </Field>
                 <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3">
                   <Field label="브랜치" htmlFor="jBranch">
-                    <Input id="jBranch" mono value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" autoComplete="off" spellCheck={false} />
+                    <TipSpot id="playbook.branch">
+                      <Input id="jBranch" mono value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" autoComplete="off" spellCheck={false} />
+                    </TipSpot>
                   </Field>
                   <Field label="플레이북 경로" htmlFor="jPath">
-                    <Input id="jPath" mono value={path} onChange={(e) => setPath(e.target.value)} placeholder="deploy/app.yml" autoComplete="off" spellCheck={false} />
+                    <TipSpot id="playbook.path">
+                      <Input id="jPath" mono value={path} onChange={(e) => setPath(e.target.value)} placeholder="deploy/app.yml" autoComplete="off" spellCheck={false} />
+                    </TipSpot>
                   </Field>
                 </div>
                 <Field
@@ -422,6 +481,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                     )
                   }
                 >
+                  <TipSpot id="playbook.key">
                   <Select id="jKey" value={reused ? NO_KEY : key} onChange={(e) => setKey(e.target.value)} disabled={!!reused} placeholder={ssh ? "SSH 키를 추가해 주세요" : undefined}>
                     {reused && <option value={NO_KEY}>연결된 레포의 인증을 그대로 써요</option>}
                     {!reused && !ssh && <option value={NO_KEY}>공개 저장소(키 없음)</option>}
@@ -432,9 +492,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                         </option>
                       ))}
                   </Select>
+                  </TipSpot>
                 </Field>
               </div>
             ) : (
+              <TipSpot id="playbook.builtin">
               <div key="builtin" className="flex gap-2.5 items-start rounded-lg bg-surface-2 border border-line px-3.5 py-3 text-[13px] animate-fade">
                 <Icon name="box" className="size-4 mt-px flex-none text-accent" />
                 <div className="min-w-0">
@@ -444,6 +506,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   <span className="text-muted">이미지 하나를 .env와 함께 컨테이너로 띄워요. 플레이북이 없을 때 쓰세요. 이미지 단계에서 이미지를 꼭 넣어 주세요.</span>
                 </div>
               </div>
+              </TipSpot>
             )}
           </Field>
         );
@@ -464,6 +527,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             error={!!invObj && !hosts.length}
           >
             <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2">
+              <TipSpot id="target.inv">
               <Select
                 id="jInv"
                 aria-label="인벤토리"
@@ -480,7 +544,10 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   </option>
                 ))}
               </Select>
-              <GroupSelect groups={groups} value={targets} onChange={setTargets} />
+              </TipSpot>
+              <TipSpot id="target.groups">
+                <GroupSelect groups={groups} value={targets} onChange={setTargets} />
+              </TipSpot>
             </div>
             {hosts.length > 0 && (
               <div className="flex flex-wrap gap-1.5">
@@ -513,6 +580,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   : "레지스트리 주소가 없으면 Docker Hub예요. 비공개 이미지는 레지스트리에 토큰을 등록해 두면 자동으로 써요."
             }
           >
+            <TipSpot id="image">
             <Input
               id="jImage"
               mono
@@ -522,6 +590,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               autoComplete="off"
               spellCheck={false}
             />
+            </TipSpot>
             {parsed && "ref" in parsed && (
               <div className="flex items-center gap-1.5 text-[12px] text-muted min-w-0 animate-fade">
                 <Icon name="check" className="size-3 flex-none text-ok" strokeWidth={2.6} />
@@ -564,9 +633,16 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 환경 변수 <span className="text-muted font-normal text-[12.5px]">선택</span>
               </>
             }
-            right={<Seg options={opts} value={envChoice} onChange={setEnvChoice} />}
+            right={
+              <span data-tip="env">
+                <Seg options={opts} value={envChoice} onChange={setEnvChoice} />
+              </span>
+            }
             hint={hint}
           >
+            <TipSpot id="env" arrow="right" className="contents">
+              {null}
+            </TipSpot>
             {envChoice === "keep" && (
               <div className="flex items-center gap-2 rounded-lg bg-surface-2 border border-line px-3.5 py-2.5 text-[13px]">
                 <Icon name="file" className="size-4 flex-none text-faint" />
@@ -574,7 +650,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </div>
             )}
             {envOn && (
-              <EnvSource text={envText} setText={setEnvText} mode={envMode} setMode={setEnvMode} existing={envs.map((e) => e.name)} picked={envPick} setPicked={setEnvPick} />
+              <TipSpot id="env.vars">
+                <EnvSource text={envText} setText={setEnvText} mode={envMode} setMode={setEnvMode} existing={envs.map((e) => e.name)} picked={envPick} setPicked={setEnvPick} />
+              </TipSpot>
             )}
           </Field>
         );
@@ -592,6 +670,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 </>
               }
             >
+              <TipSpot id="access.editors">
               <Field label="그룹">
                 {groupsRes.error ? (
                   <Hint>그룹 목록을 불러오지 못했어요.</Hint>
@@ -621,6 +700,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   </div>
                 )}
               </Field>
+              </TipSpot>
               <Field label="멤버">
                 {membersRes.error ? (
                   <Hint>멤버 목록을 불러오지 못했어요.</Hint>
@@ -646,12 +726,14 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </Field>
             </Field>
             <Field label="안전장치" hint={`켜진 것: ${safetySummary}`}>
+              <TipSpot id="access.safety">
               <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
                 <Toggle checked={hook} onChange={setHook} title="자동 배포" desc="새 이미지 태그가 올라오면 바로 배포해요. 레지스트리 webhook의 서명을 검증하고, v로 시작하는 릴리스 태그만 받아요." />
                 <Toggle checked={prot} onChange={setProt} title="운영 보호" desc="Deployer가 실행하면 Admin의 승인을 받은 뒤 시작돼요." />
                 <Toggle checked={lock} onChange={setLock} title="동시 실행 잠금" desc="같은 서버에 다른 배포가 돌고 있으면 기다려요." />
                 <Toggle checked={rb} onChange={setRb} title="실패 시 되돌리기" desc="상태 확인이 실패하면 직전에 성공한 태그로 되돌려요." />
               </div>
+              </TipSpot>
             </Field>
           </>
         );
@@ -683,6 +765,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         ];
         return (
           <Field label="확인" hint={editing ? "고칠 줄의 고치기를 누르거나 위 목차에서 단계를 고르세요." : "이대로 만들까요? 바꿀 게 있으면 이전으로 돌아가세요."}>
+            <TipSpot id="review">
             <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
               {rows.map(([id, label, value]) => (
                 <div key={id} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[112px_minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 items-center px-3.5 py-2.5 text-[13px]">
@@ -696,6 +779,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 </div>
               ))}
             </div>
+            </TipSpot>
           </Field>
         );
       }
@@ -716,10 +800,18 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       />
       <StepIndex mode={editing ? "edit" : "new"} cur={cur} skipped={skipped} onPick={goto} />
       <form id="jobForm" onSubmit={submit} className="contents" noValidate>
-        <div ref={bodyRef} className="modal-body px-5 pt-4 pb-5 overflow-auto scroll-soft flex flex-col gap-5 flex-[0_1_420px] min-h-[140px]">
-          <div key={step} className="flex flex-col gap-5 animate-fade">
-            {renderStep()}
-          </div>
+        <div
+          ref={bodyRef}
+          onFocusCapture={(e) => {
+            const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]")?.dataset.tip as TipId | undefined;
+            if (t) setTip(t);
+          }}
+          className="modal-body px-5 pt-4 pb-5 overflow-auto scroll-soft flex flex-col gap-5 flex-[0_1_420px] min-h-[140px]">
+          <GuideContext.Provider value={guideState}>
+            <div key={step} className="flex flex-col gap-5 animate-fade">
+              {renderStep()}
+            </div>
+          </GuideContext.Provider>
           {err && (
             <div ref={errRef}>
               <ErrorText>{err}</ErrorText>
@@ -727,11 +819,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           )}
         </div>
       </form>
-      {guide && (
-        <div className="flex-[0_1_auto] min-h-[64px] max-h-[220px] overflow-auto scroll-soft border-t border-line bg-surface-2 px-5 py-3 animate-fade">
-          <JobGuide step={step} mode={editing ? "edit" : "new"} />
-        </div>
-      )}
       <ModalFoot between>
         <Button variant="ghost" onClick={onClose}>
           취소
