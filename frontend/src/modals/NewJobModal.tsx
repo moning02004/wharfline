@@ -58,7 +58,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
   const [inv, setInv] = useState("");
   const [targets, setTargets] = useState<string[]>([]);
   const [image, setImage] = useState("");
-  const [envOn, setEnvOn] = useState(true);
+  const [envOn, setEnvOn] = useState(false);
   const [envMode, setEnvMode] = useState<EnvMode>("paste");
   const [envText, setEnvText] = useState("");
   const [envPick, setEnvPick] = useState("");
@@ -389,7 +389,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
                 onChange={(v) => setEnvOn(v === "on")}
               />
             }
-            hint={!envOn && "앱이 읽을 .env 없이 배포해요. 나중에 작업을 고쳐서 넣을 수도 있어요."}
+            hint={!envOn && "앱이 읽을 .env 없이 배포해요. 필요하면 넣기를 눌러 붙여넣거나 저장된 것을 고르세요."}
           >
             {envOn && (
               <EnvSource text={envText} setText={setEnvText} mode={envMode} setMode={setEnvMode} existing={envs.map((e) => e.name)} picked={envPick} setPicked={setEnvPick} />
