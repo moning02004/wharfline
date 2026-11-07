@@ -6,6 +6,7 @@ routers can stay storage-agnostic.
 
 from __future__ import annotations
 
+import hashlib
 import re
 import time
 from datetime import datetime
@@ -99,9 +100,12 @@ def repo_by_name(db: Session, name: str | None) -> dict | None:
 
 
 def registry_of(db: Session, job: dict) -> dict:
+    """The registry the image was registered with; falls back to the first one on the same host."""
     host = job["image"].split("/")[0]
-    r = db.scalar(select(m.Registry).where(m.Registry.host == host).order_by(m.Registry.ord))
-    return r.to_dict() if r else {"host": host, "user": "deploy"}
+    img = db.get(m.Image, job["image"])
+    r = db.get(m.Registry, img.registry_id) if img and img.registry_id else None
+    r = r or db.scalar(select(m.Registry).where(m.Registry.host == host).order_by(m.Registry.ord))
+    return r.to_dict() if r else {"host": host, "user": "", "public": True}
 
 
 def groups_of(inv: dict | None) -> dict[str, list[dict]]:
@@ -137,7 +141,11 @@ def resolve_tag(img: dict, tag: str) -> str:
 
 
 def tag_info(img: dict, tag: str) -> dict:
-    return next((t for t in img["tags"] if t["name"] == tag), {"name": tag, "digest": "00000000", "pushed": "-"})
+    t = next((t for t in img["tags"] if t["name"] == tag), {"name": tag, "digest": "", "pushed": "-"})
+    if not t["digest"]:
+        # Simulated: a real runner resolves the tag in the registry and pins this digest.
+        t = {**t, "digest": hashlib.sha256(f"{img['ref']}:{tag}".encode()).hexdigest()[:8]}
+    return t
 
 
 def prev_tag(db: Session, job: dict, img: dict) -> str | None:

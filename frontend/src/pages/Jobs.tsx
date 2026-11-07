@@ -1,3 +1,4 @@
+import { useNavigate } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
 import type { Job, Run } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
@@ -6,6 +7,7 @@ import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWr
 
 export function Jobs() {
   const { data } = useApi<Job[]>("/jobs");
+  const nav = useNavigate();
   const { openModal, toast } = useApp();
   const { confirm } = useRun();
   if (!data) return <Loading />;
@@ -16,8 +18,11 @@ export function Jobs() {
         title="배포 작업"
         desc="도커 이미지, Ansible 플레이북, 서버 그룹, 환경 변수를 묶은 실행 단위예요. 실행할 때 이미지 태그를 고르고, 로그는 실시간으로 보여요."
       >
-        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
-          새 배포 작업
+        <Button icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
+          직접 만들기
+        </Button>
+        <Button variant="primary" icon="wand" onClick={() => nav("/setup")}>
+          배포 마법사
         </Button>
       </PageHeader>
       <div className="grid grid-cols-[repeat(auto-fill,minmax(min(100%,340px),1fr))] gap-4">
@@ -57,7 +62,7 @@ export function Jobs() {
                       <span className="font-mono text-muted text-[12.5px]">{j.targetHosts.map((h) => h.ip).join(", ")}</span>
                     </>,
                   ],
-                  ["환경 변수", j.env, "font-mono text-[12.5px]"],
+                  ["환경 변수", j.env || <span className="text-faint font-sans">없음</span>, "font-mono text-[12.5px]"],
                   ["자동 배포", j.hook ? "새 이미지 태그가 올라오면 바로 배포" : <span className="text-muted">수동 실행만</span>],
                   ["안전장치", [j.protected && "실행 전 확인", j.lock && "동시 실행 금지", j.rollback && "실패 시 롤백"].filter(Boolean).join(" · ") || "없음", "text-muted"],
                 ]}

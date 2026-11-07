@@ -102,6 +102,7 @@ export interface Registry {
   auth: string;
   user: string;
   imageCount: number;
+  hasSecret?: boolean;
 }
 
 export interface Image {
@@ -132,6 +133,7 @@ export interface Key {
   lastUsed: string;
   usedCount: number;
   publicKey?: string;
+  hasSecret?: boolean;
 }
 
 export interface EnvSet {

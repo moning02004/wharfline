@@ -32,7 +32,7 @@ function SudoTimer() {
   return (
     <span
       title="민감 정보 열람 가능 시간"
-      className="inline-flex items-center gap-1.5 h-[30px] pl-3 pr-1 rounded-full bg-warn-soft text-warn text-xs font-medium shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--warn)_28%,transparent)] animate-fade"
+      className="inline-flex items-center gap-1.5 h-[30px] pl-3 pr-1 rounded-full whitespace-nowrap flex-none bg-warn-soft text-warn text-xs font-medium shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--warn)_28%,transparent)] animate-fade"
     >
       <Icon name="unlock" className="size-[14px]" />
       <span className="tabular-nums">
@@ -52,14 +52,16 @@ function SudoTimer() {
 }
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { session, setSession, canSee, viewAs } = useApp();
+  const { session, setSession, canSee, viewAs, version } = useApp();
   const { runById } = useRun();
   const [open, setOpen] = useState(false);
   const { dark, toggle } = useTheme();
   const loc = useLocation();
   const route = ROUTES.find((r) => r.path === loc.pathname) ?? ROUTES[0];
 
-  useEffect(() => setOpen(false), [loc.pathname]);
+  useEffect(() => {
+    setOpen(false);
+  }, [loc.pathname]);
 
   let lastGrp: string | null = null;
   const [counts, setCounts] = useState<Record<string, number>>({});
@@ -67,7 +69,7 @@ export function Layout({ children }: { children: ReactNode }) {
     Promise.all([api.get<unknown[]>("/jobs"), api.get<{ hosts: unknown[] }[]>("/inventory"), api.get<unknown[]>("/keys")])
       .then(([j, i, k]) => setCounts({ jobs: j.length, inventory: i.reduce((a, x) => a + x.hosts.length, 0), keys: k.length }))
       .catch(() => {});
-  }, [loc.pathname]);
+  }, [loc.pathname, version]);
 
   const logout = async () => {
     const s = await api.post<Session>("/auth/logout");

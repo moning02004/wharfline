@@ -32,8 +32,10 @@ def check_keys() -> None:
     """Refuse to start without a master key, or if stored data needs a key that is not loaded."""
     ring = crypto.keyring()
     with SessionLocal() as db:
-        used = set(db.scalars(union(select(m.EnvSet.kek_id), select(m.EnvVersion.kek_id))))
+        used = set(db.scalars(union(*(select(t.kek_id).where(t.kek_id.is_not(None)) for t in (m.EnvSet, m.EnvVersion, m.Key, m.Registry)))))
     missing = used - set(ring.ids)
+    if ring.vault:
+        ring.vault.latest_version()  # fail fast if Vault is unreachable or the token lacks access
     if missing:
         raise RuntimeError(f"encrypted data uses master key(s) {sorted(missing)} that are not loaded")
     log.info("master keys ok (active: %s)", ring.active_id)

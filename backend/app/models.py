@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Boolean, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Text
+from sqlalchemy import Boolean, CheckConstraint, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -25,7 +25,50 @@ class Setting(Base):
     value: Mapped[dict] = mapped_column(JSONB, default=dict)
 
 
-class Key(Base):
+ENVELOPE_COMPLETE = (
+    "(kek_id IS NULL AND wrapped_dek IS NULL AND nonce IS NULL AND ciphertext IS NULL) OR "
+    "(kek_id IS NOT NULL AND wrapped_dek IS NOT NULL AND nonce IS NOT NULL AND ciphertext IS NOT NULL)"
+)
+
+
+class EncryptedSecret:
+    """An optional single secret string, sealed with envelope encryption (see app/crypto.py)."""
+
+    __table_args__ = (CheckConstraint(ENVELOPE_COMPLETE, name="envelope_complete"),)
+
+    kek_id: Mapped[str | None] = mapped_column(String(32))
+    wrapped_dek: Mapped[bytes | None] = mapped_column(LargeBinary)
+    nonce: Mapped[bytes | None] = mapped_column(LargeBinary)
+    ciphertext: Mapped[bytes | None] = mapped_column(LargeBinary)
+
+    def crypto_context(self) -> str:  # binds the ciphertext to this exact row
+        raise NotImplementedError
+
+    @property
+    def has_secret(self) -> bool:
+        return self.ciphertext is not None
+
+    @property
+    def envelope(self) -> crypto.Envelope:
+        return crypto.Envelope(self.kek_id, self.wrapped_dek, self.nonce, self.ciphertext)  # type: ignore[arg-type]
+
+    @envelope.setter
+    def envelope(self, env: crypto.Envelope) -> None:
+        self.kek_id, self.wrapped_dek, self.nonce, self.ciphertext = env.kek_id, env.wrapped_dek, env.nonce, env.ciphertext
+
+    def set_secret(self, value: str) -> None:
+        self.envelope = crypto.encrypt(value.encode(), self.crypto_context())
+
+    def get_secret(self) -> str | None:
+        return crypto.decrypt(self.envelope, self.crypto_context()).decode() if self.has_secret else None
+
+    def check_secret(self) -> None:
+        self.get_secret()
+
+
+class Key(EncryptedSecret, Base):
+    """SSH private key or access token. The secret is envelope-encrypted and never returned by the API."""
+
     __tablename__ = "keys"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
@@ -33,14 +76,19 @@ class Key(Base):
     name: Mapped[str] = mapped_column(String(128), unique=True)
     type: Mapped[str] = mapped_column(String(32))
     fingerprint: Mapped[str] = mapped_column(String(256))
+    public_key: Mapped[str | None] = mapped_column(Text)
     created_by: Mapped[str] = mapped_column(String(64))
     created_at: Mapped[str] = mapped_column(String(32))
     last_used: Mapped[str] = mapped_column(String(64))
     used_count: Mapped[int] = mapped_column(Integer, default=0)
 
+    def crypto_context(self) -> str:
+        return f"key:{self.id}"
+
     def to_dict(self) -> dict[str, Any]:
         return {"id": self.id, "kind": self.kind, "name": self.name, "type": self.type, "fingerprint": self.fingerprint,
-                "createdBy": self.created_by, "createdAt": self.created_at, "lastUsed": self.last_used, "usedCount": self.used_count}
+                "createdBy": self.created_by, "createdAt": self.created_at, "lastUsed": self.last_used, "usedCount": self.used_count,
+                "hasSecret": self.has_secret}
 
 
 class Inventory(Base):
@@ -89,7 +137,9 @@ class Repo(Base):
                 "commit": self.commit, "books": self.books}
 
 
-class Registry(Base):
+class Registry(EncryptedSecret, Base):
+    """Pull token is envelope-encrypted; public registries have none."""
+
     __tablename__ = "registries"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
@@ -99,8 +149,12 @@ class Registry(Base):
     auth: Mapped[str] = mapped_column(String(128))
     user: Mapped[str] = mapped_column("username", String(128))
 
+    def crypto_context(self) -> str:
+        return f"registry:{self.id}"
+
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "host": self.host, "namespace": self.namespace, "auth": self.auth, "user": self.user}
+        return {"id": self.id, "name": self.name, "host": self.host, "namespace": self.namespace, "auth": self.auth, "user": self.user,
+                "hasSecret": self.has_secret}
 
 
 class Image(Base):
@@ -158,6 +212,9 @@ class EncryptedVars:
 
     def get_vars(self) -> list[list[str]]:
         return crypto.open_json(self.envelope, self.crypto_context())
+
+    def check_secret(self) -> None:
+        self.get_vars()
 
 
 class EnvSet(EncryptedVars, Base):

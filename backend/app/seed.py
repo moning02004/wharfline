@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import secrets
 from typing import Any
+
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from . import models as m
+from . import sshkeys
 from .store import ALL, CLIENT_IP, COMPOSE_TPL
 
 keys: list[dict] = [
@@ -137,7 +142,7 @@ sessions: list[dict] = [
 
 # Menus each role can see. Owner always sees everything; dashboard is always visible.
 access: dict[str, list[str]] = {
-    "jobs": list(ALL), "runs": list(ALL),
+    "setup": ["Owner", "Admin"], "jobs": list(ALL), "runs": list(ALL),
     "registries": ["Owner", "Admin", "Deployer"], "repos": ["Owner", "Admin", "Deployer"],
     "inventory": ["Owner", "Admin", "Deployer"], "keys": ["Owner", "Admin"], "envs": ["Owner", "Admin"],
     "activity": ["Owner", "Admin"], "members": ["Owner"],
@@ -162,14 +167,29 @@ def seed_if_empty(db: Session) -> bool:
         m.Setting(key="session", value={"logged_in": True, "pending_login": False, "sudo_until": 0.0}),
         m.Setting(key="policy", value=policy),
     ])
-    db.add_all(m.Key(id=k["id"], kind=k["kind"], name=k["name"], type=k["type"], fingerprint=k["fingerprint"],
-                     created_by=k["createdBy"], created_at=k["createdAt"], last_used=k["lastUsed"], used_count=k["usedCount"]) for k in keys)
+    for k in keys:
+        key = m.Key(id=k["id"], kind=k["kind"], name=k["name"], type=k["type"], fingerprint=k["fingerprint"],
+                    created_by=k["createdBy"], created_at=k["createdAt"], last_used=k["lastUsed"], used_count=k["usedCount"])
+        if k["kind"] == "ssh":
+            # Real key pairs, so fingerprints and public keys are genuine.
+            pk = (rsa.generate_private_key(public_exponent=65537, key_size=4096) if k["type"].startswith("RSA")
+                  else ed25519.Ed25519PrivateKey.generate())
+            ssh = sshkeys.load_private(pk.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.OpenSSH,
+                                                        serialization.NoEncryption()).decode(), None, f"{k['name']}@wharfline")
+            key.type, key.fingerprint, key.public_key = ssh.type, ssh.fingerprint, ssh.public_line
+            key.set_secret(ssh.private_openssh)
+        else:
+            key.set_secret("github_pat_example_" + secrets.token_hex(16) + "7c1e")
+        db.add(key)
     for inv in inventories:
         db.add(m.Inventory(id=inv["id"], name=inv["name"], key=inv["key"], hosts=[
             m.Host(name=h["name"], ip=h["ip"], port=h["port"], ssh_user=h["user"], grp=h["group"], host_key=h["hostKey"], status=h["status"])
             for h in inv["hosts"]]))
     db.add_all(m.Repo(**r) for r in repos)
-    db.add_all(m.Registry(id=r["id"], name=r["name"], host=r["host"], namespace=r["namespace"], auth=r["auth"], user=r["user"]) for r in registries)
+    for r in registries:
+        reg = m.Registry(id=r["id"], name=r["name"], host=r["host"], namespace=r["namespace"], auth=r["auth"], user=r["user"])
+        reg.set_secret("example_pull_token_" + secrets.token_hex(16))
+        db.add(reg)
     db.flush()
     for img in images:
         db.add(m.Image(ref=img["ref"], registry_id=img["registry"], tags=[m.ImageTag(**t) for t in img["tags"]]))

@@ -75,7 +75,7 @@ class JobIn(BaseModel):
     compose: str | None = None
     repo: str | None = None
     book: str | None = None
-    envMode: str = Field(default="paste", pattern="^(paste|existing)$")
+    envMode: str = Field(default="paste", pattern="^(paste|existing|none)$")
     envName: str | None = None
     envVars: list[list[str]] = []
     hook: bool = False
@@ -91,8 +91,16 @@ def create_job(body: JobIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "이름을 넣어 주세요.")
     if db.scalar(select(m.Job).where(m.Job.name == name)):
         raise HTTPException(400, "같은 이름의 작업이 있어요.")
-    if not db.scalar(select(m.Inventory).where(m.Inventory.name == body.inventory)):
+    inv = db.scalar(select(m.Inventory).where(m.Inventory.name == body.inventory))
+    if not inv:
         raise HTTPException(400, "인벤토리를 찾을 수 없어요.")
+    if not inv.hosts:
+        raise HTTPException(400, "인벤토리에 서버가 없어요. 서버를 먼저 추가해 주세요.")
+    unknown = set(body.targets) - {h.grp for h in inv.hosts}
+    if unknown:
+        raise HTTPException(400, f"인벤토리에 없는 그룹이에요: {', '.join(sorted(unknown))}")
+    if not db.get(m.Image, body.image):
+        raise HTTPException(400, "이미지를 먼저 등록해 주세요.")
     if body.method == "compose":
         bad = s.compose_risk(body.compose or "")
         if bad:
@@ -104,7 +112,9 @@ def create_job(body: JobIn, db: Session = Depends(get_db)):
         if not repo or body.book not in repo["books"]:
             raise HTTPException(400, "플레이북 레포와 플레이북을 골라 주세요.")
 
-    if body.envMode == "existing":
+    if body.envMode == "none":
+        env_name = ""  # no .env for this job; one can be attached later
+    elif body.envMode == "existing":
         if not s.env_by_name(db, body.envName or ""):
             raise HTTPException(400, "저장된 환경 변수를 찾을 수 없어요.")
         env_name = body.envName

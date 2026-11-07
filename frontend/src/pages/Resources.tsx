@@ -71,7 +71,7 @@ export function Registries() {
                   <tr key={i.ref}>
                     <td className="font-mono">{i.ref}</td>
                     <td className="font-mono">{t?.name ?? "-"}</td>
-                    <td className="font-mono text-faint">sha256:{t?.digest ?? "-"}…</td>
+                    <td className="font-mono text-faint">{t?.digest ? `sha256:${t.digest}…` : "배포할 때 고정"}</td>
                     <td className="text-muted">{t?.pushed ?? "-"}</td>
                     <td>
                       <span className="flex gap-1.5">

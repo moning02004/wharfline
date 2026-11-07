@@ -68,13 +68,15 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
             ]},
             {"name": "파일 전송", "lines": [
                 ("", f"compose.yml → {job.get('dir')}/compose.yml"),
-                ("", f".env {env_label} → {job.get('dir')}/.env (권한 600)"),
-                *masked,
+                *([("", f".env {env_label} → {job.get('dir')}/.env (권한 600)"), *masked] if env
+                  else [("", "환경 변수 없음 · .env는 보내지 않아요")]),
                 ("g", f"✓ 서버 {len(hosts)}대에 전송"),
             ]},
             {"name": "이미지 받기", "lines": per(lambda h: [
-                ("", f"$ docker login {reg['host']} -u {reg['user']} --password-stdin"),
-                ("", "Login Succeeded"),
+                *([("", "공개 이미지 · 로그인 없이 받아요")] if reg.get("public") else [
+                    ("", f"$ docker login {reg['host']} -u {reg['user']} --password-stdin"),
+                    ("", "Login Succeeded"),
+                ]),
                 ("", f"$ IMAGE_TAG={tag} docker compose pull"),
                 ("", f"app Pulled · sha256:{ti['digest']}…"),
             ])},
@@ -82,7 +84,7 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
                 ("", f"$ IMAGE_TAG={tag} docker compose up -d --remove-orphans"),
                 ("", "Container app-1  Recreated"),
                 ("", "Container app-1  Started"),
-                ("", f"$ docker logout {reg['host']}"),
+                *([] if reg.get("public") else [("", f"$ docker logout {reg['host']}")]),
                 ("g", f"✓ {h['name']} 교체 완료"),
             ])},
             {"name": "상태 확인", "lines": [
@@ -120,7 +122,8 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
             *task("Gathering Facts", None, "ok"),
             *[("y", f"skipping: [{h['name']}] {s.host_skip(h)}") for h in skipped],
         ]},
-        {"name": ".env 전송", "lines": [*task(f"Upload .env → {env_label}", lambda h: " mode=0600"), *masked]},
+        {"name": ".env 전송", "lines": [*task(f"Upload .env → {env_label}", lambda h: " mode=0600"), *masked] if env
+         else [("", "환경 변수 없음 · 건너뜀")]},
         {"name": "이미지 받기", "lines": [
             *task("Registry login (read-only token)"),
             *task(f"Pull {short}:{tag}"),

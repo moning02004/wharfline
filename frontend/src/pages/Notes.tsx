@@ -49,6 +49,8 @@ export default function Notes() {
         <NoteList
           title="제가 더한 것"
           items={[
+            ["배포 마법사", <><L to="/setup">배포 마법사</L>에서 SSH 키부터 .env까지 한 페이지에서 순서대로 등록하고, 완료하면 바로 배포를 시작해요. 단계마다 발급·등록 매뉴얼이 있어요.</>],
+            ["비밀 값 봉투 암호화", "환경 변수, SSH 비공개 키, 토큰을 레코드마다 새 데이터 키로 암호화해요. 마스터 키는 키 파일이나 Vault/OpenBao(KMS)에 둬요."],
             ["역할 기반 권한", "Owner, Admin, Deployer, Viewer. production 작업은 승인 필요."],
             ["역할별 메뉴 설정", <><L to="/members">멤버와 권한</L>에서 관리자가 역할마다 보일 메뉴를 켜고 꺼요. 숨긴 메뉴는 서버 API에서도 같이 막아야 해요(화면만 숨기면 주소로 들어올 수 있어요).</>],
             ["호스트 키 고정", "처음 접속 때 지문을 저장하고, 바뀌면 배포를 막아요."],
@@ -76,7 +78,7 @@ export default function Notes() {
           <CardHeader title="서버 쪽에서 지킬 것 (화면에 안 보이는 부분)" />
           <div className="p-5">
             <ul className="m-0 pl-[18px] flex flex-col gap-2.5 text-muted marker:text-faint">
-              <li>비밀 값은 AES-256-GCM으로 암호화하고, 마스터 키는 DB가 아닌 환경 변수나 KMS에 둬요.</li>
+              <li>비밀 값은 봉투 암호화(AES-256-GCM)로 저장하고, 마스터 키는 DB가 아닌 Docker secret 파일이나 KMS(Vault/OpenBao Transit)에 둬요. (구현됨)</li>
               <li>비밀번호는 Argon2id로 해시, TOTP 비밀값도 암호화 저장.</li>
               <li>세션 쿠키는 HttpOnly, Secure, SameSite=Strict. 모든 변경 요청에 CSRF 토큰.</li>
               <li>배포 실행기는 웹 서버와 분리된 워커 프로세스에서 돌리고, 키는 실행 중 메모리에만 풀어요.</li>

@@ -1,18 +1,22 @@
 # Wharfline
 
-셀프호스팅 배포 콘솔 프로토타입. React + Tailwind 프론트엔드, FastAPI 백엔드, PostgreSQL(Alembic 마이그레이션)로 구성돼요. 환경 변수 값은 봉투 암호화(AES-256-GCM)로 저장돼요.
+셀프호스팅 배포 콘솔 프로토타입. React + Tailwind 프론트엔드, FastAPI 백엔드, PostgreSQL(Alembic 마이그레이션)로 구성돼요. 환경 변수, SSH 비공개 키, 액세스·레지스트리 토큰은 봉투 암호화(AES-256-GCM)로 저장하고, 마스터 키는 로컬 키 파일이나 Vault/OpenBao Transit(KMS)에 둬요.
+
+처음이라면 화면 왼쪽의 **배포 마법사**에서 SSH 키 → 서버 → 레지스트리 → 이미지 → (레포) → 배포 설정 → .env 순서로 등록하고, 완료하면 바로 배포를 시작할 수 있어요. 단계마다 무엇을 어디서 발급받는지 매뉴얼이 붙어 있어요.
 
 ```
 backend/
   app/                FastAPI + SQLAlchemy, 실행 로그는 SSE로 스트리밍
-    crypto.py         봉투 암호화
-    keys.py           마스터 키 상태 확인, 검증, 교체
+    crypto.py         봉투 암호화 (로컬 키 / Vault·OpenBao Transit)
+    keys.py           마스터 키 상태 확인, 검증, 교체, Vault 준비
+    sshkeys.py        SSH 키 생성·가져오기, 지문
   migrations/         Alembic 마이그레이션
-  tests/              pytest (암호화)
+  tests/              pytest (암호화, SSH 키, Vault 연동)
   alembic.ini
 frontend/             Vite + React + TypeScript + Tailwind v4, nginx로 서빙
 docker-compose.yml       db + backend + frontend
 docker-compose.dev.yml   로컬 개발용: DB 포트를 localhost:55432에 열어요
+docker-compose.kms.yml   마스터 키를 OpenBao(Vault 호환)에 두는 구성
 Makefile                 자주 쓰는 명령 (`make`로 목록 보기)
 secrets/master_keys      마스터 키 (`make keygen`이 만들어요, git에 안 올라가요)
 ```
@@ -62,9 +66,9 @@ make check                                  # 모델과 마이그레이션이 �
 
 제약 조건 이름은 `app/db.py`의 naming convention으로 정해져서(`pk_keys`, `uq_keys_name` 등) 나중에 바꾸거나 지울 수 있어요.
 
-## 환경 변수 암호화
+## 비밀 값 암호화
 
-봉투 암호화를 써요 (`backend/app/crypto.py`).
+환경 변수, SSH 비공개 키, 액세스 토큰, 레지스트리 토큰 모두 봉투 암호화로 저장해요 (`backend/app/crypto.py`). 어떤 API도 비공개 키와 토큰을 다시 내주지 않아요.
 
 - 저장할 때마다 새 데이터 키(DEK, 256비트)를 만들어 값을 AES-256-GCM으로 암호화하고, DEK는 마스터 키(KEK)로 다시 AES-256-GCM 암호화해서 함께 저장해요. DB에는 감싼 DEK만 있고 마스터 키는 없어요.
 - 암호문과 감싼 DEK는 레코드 ID에 묶여 있어요(AAD). DB에서 다른 행으로 옮겨 붙이거나 한 바이트라도 바꾸면 복호화가 실패해요.
@@ -82,8 +86,38 @@ make check                                  # 모델과 마이그레이션이 �
 | `make key-verify` | 모든 행을 복호화해서 키와 데이터가 멀쩡한지 확인 |
 | `make key-rotate` | 새 키를 맨 앞에 추가 → 모든 DEK를 새 키로 다시 감싸기 → API 재시작. 데이터는 다시 암호화하지 않아요 |
 
+| `make key-backup` | 키 파일을 암호(passphrase)로 잠근 백업 파일을 `backups/`에 만들기 |
+| `make key-restore f=…` | 백업에서 키 파일 되살리기 |
+
 키 교체 후 `key-status`가 새 키만 보여주면 파일에서 옛 키 줄을 지워요(백업은 남겨 두세요).
-더 높은 보안이 필요하면 `crypto.KeyRing`을 AWS KMS, GCP KMS, Vault Transit 클라이언트로 바꾸면 마스터 키가 이 서버 밖에 머물러요. 저장 형식은 그대로예요.
+
+### 권장: 마스터 키를 KMS에 두기 (Vault / OpenBao Transit)
+
+키 파일 방식은 마스터 키가 이 서버 디스크에 있어요. KMS를 쓰면 마스터 키가 KMS 밖으로 나오지 않고, Wharfline은 데이터 키를 감싸고 푸는 요청만 보내요. Transit 키는 `derived=true`로 만들어서 레코드마다 다른 키로 감싸요.
+
+```bash
+make kms-up        # OpenBao(dev 모드)를 띄우고 Transit 키를 만든 뒤, 모든 데이터 키를 OpenBao로 옮겨요
+make kms-status    # 각 행이 어떤 키·버전으로 감싸져 있는지
+make kms-down      # 모든 데이터 키를 로컬 키 파일로 되돌린 뒤(검증까지 하고) OpenBao를 내려요
+```
+
+> `docker-compose.kms.yml`의 OpenBao는 **dev 모드**예요(메모리에만 저장, root 토큰). 시험용이에요. **dev 서버를 지우거나 재시작하면 그 키로 감싼 데이터는 읽을 수 없어요.** 그래서 `kms-down`은 로컬 키로 모두 복호화되는지 확인한 뒤에만 OpenBao를 지워요.
+
+운영에서는 실제 Vault/OpenBao 클러스터를 쓰세요.
+
+1. Vault에서: `bao secrets enable transit` → `bao write -f transit/keys/wharfline type=aes256-gcm96 derived=true`
+   (또는 관리자 토큰으로 `python -m app.keys vault-setup`)
+2. 최소 권한 정책(`app/crypto.py`의 `VaultTransit` 주석)으로 토큰을 발급해 `secrets/vault_token`에 넣기. AppRole 등으로 짧게 발급하는 걸 권해요.
+3. `docker-compose.kms.yml`에서 `openbao` 서비스를 빼고 `VAULT_ADDR`를 클러스터 주소로 바꾼 뒤 `make kms-up`에서 OpenBao 시작 줄만 빼고 실행 (또는 `rotate`만 실행)
+4. Vault 키 교체: `bao write -f transit/keys/wharfline/rotate` → `python -m app.keys rotate` (데이터 키만 새 버전으로 다시 감싸요)
+
+| `WHARFLINE_KMS` | 동작 |
+| --- | --- |
+| `local` (기본) | 키 파일의 첫 키로 감싸요 |
+| `vault` | Vault로 감싸요. 키 파일이 있으면 옛 데이터를 읽는 데만 써요 |
+| `vault-decrypt` | Vault는 읽기만, 새로 감쌀 때는 키 파일. Vault에서 빠져나올 때 써요 |
+
+Vault가 응답하지 않으면 API는 시작하지 않고, 실행 중이라면 복호화 요청이 일반 오류로 실패해요(값을 평문으로 다루는 대체 경로는 없어요).
 
 ## 로컬 개발
 
@@ -118,7 +152,7 @@ cd frontend && npm install && npm run dev     # http://localhost:5173 (/api는 :
 
 ## 프로토타입 한계
 
-- 레지스트리 토큰, SSH 비공개 키는 아직 저장하지 않아요(화면만 있어요). 저장하게 되면 같은 봉투 암호화를 쓰면 돼요.
+- 실제 SSH 접속, 레지스트리 조회(태그·digest), 호스트 키 지문 받기는 아직 흉내예요. 키와 토큰은 진짜로 만들어지고 암호화 저장돼서, 실행기를 붙이면 그대로 쓸 수 있어요.
 - Python에서는 복호화한 값을 메모리에서 확실히 지울 수 없어요. 프로세스 메모리 덤프까지 막으려면 KMS를 쓰세요.
 - 로그인, 비밀번호 재확인, TOTP는 아무 값이나 통과하고, 사용자는 한 명(데모)이에요.
 - 실제 SSH 접속이나 배포는 하지 않고 로그를 흉내 내요. 실행 중이던 배포는 backend가 재시작되면 "실패"로 표시돼요.

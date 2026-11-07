@@ -112,7 +112,7 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
                   latest는 지금 <span className="font-mono">{resolved}</span>이에요. 이 digest로 고정해서 배포해요 ·{" "}
                 </>
               )}
-              <span className="font-mono">sha256:{info.digest}…</span> · {info.pushed} 올라옴
+              {info.digest ? <span className="font-mono">sha256:{info.digest}…</span> : "digest는 실행할 때 고정해요"} · {info.pushed}
               {resolved === job.tagNow && " · 지금 배포된 버전과 같아서 다시 배포돼요"}
             </>
           }
@@ -131,7 +131,7 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
           items={[
             ["이미지", job.image, "font-mono text-[12.5px]"],
             ["배포 방식", <MethodLine job={job} />],
-            ["환경 변수", job.env, "font-mono text-[12.5px]"],
+            ["환경 변수", job.env || "없음", "font-mono text-[12.5px]"],
             ...(job.protected
               ? ([["안전장치", [job.lock && "동시 실행 금지", job.rollback && "실패 시 이전 태그로 롤백"].filter(Boolean).join(" · "), "text-muted"]] as [string, string, string][])
               : []),
