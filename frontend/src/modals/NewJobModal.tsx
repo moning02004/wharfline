@@ -1,14 +1,15 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { api, errMsg, parseEnv } from "../lib/api";
+import { api, ApiError, errMsg, parseEnv } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { EnvSet, Inventory, Key, Repo } from "../lib/types";
+import type { EnvSet, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
 import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
-import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
+import { ModalFoot, ModalHead } from "../components/Modal";
+import { JOB_STEPS, JobGuide, type JobStepId } from "./JobGuide";
 import { NewKeyModal } from "./ResourceModals";
-import { Button, Chip, ErrorText, Field, Hint, Input, Select, Seg, Switch, cx } from "../components/ui";
+import { Button, Check, Chip, ErrorText, Field, Hint, Input, Select, Seg, Switch, cx } from "../components/ui";
 
 /* Same rules as the server (docs/deploy-simplify.md). */
 const PATH_RE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml$/;
@@ -41,35 +42,71 @@ const VARS: [string, string][] = [
   ["app_name", "작업 이름으로 만든 이름"],
 ];
 
-export function NewJobModal({ onClose }: { onClose: () => void }) {
-  const { toast, refresh, openModal } = useApp();
+type Mode = "new" | "edit";
+/** Environment choice: "keep" only exists when editing; "on" means EnvSource decides paste or existing. */
+type EnvChoice = "keep" | "none" | "on";
+
+interface GroupsData {
+  groups: Group[];
+}
+
+/** Image text for the form from a job: ref + ":" + defaultTag, or just the ref when the tag is latest. */
+function jobImageText(job: Job): string {
+  if (!job.image) return "";
+  return job.defaultTag && job.defaultTag !== "latest" ? `${job.image}:${job.defaultTag}` : job.image;
+}
+
+export function NewJobModal({ onClose, guide = false }: { onClose: () => void; guide?: boolean }) {
+  return <JobModal mode="new" onClose={onClose} initialGuide={guide} />;
+}
+
+export function EditJobModal({ job, onClose }: { job: Job; onClose: () => void }) {
+  return <JobModal mode="edit" job={job} onClose={onClose} initialGuide={false} />;
+}
+
+/** Step-by-step deploy job modal for both creating and editing (docs/deploy-edit.md). */
+function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job; onClose: () => void; initialGuide: boolean }) {
+  const { toast, refresh, openModal, withSudo, session } = useApp();
   const nav = useNavigate();
+  const editing = mode === "edit" && !!job;
   const inventories = useApi<Inventory[]>("/inventory").data ?? [];
-  const repos = (useApi<Repo[]>("/repos").data ?? []).filter((r) => r.kind === "git");
+  const allRepos = (useApi<Repo[]>("/repos").data ?? []).filter((r) => r.kind !== "builtin");
+  const repos = allRepos.filter((r) => r.kind === "git");
   const keys = useApi<Key[]>("/keys").data ?? [];
   const envs = useApi<EnvSet[]>("/envs").data ?? [];
+  const membersRes = useApi<Member[]>("/members");
+  const groupsRes = useApi<GroupsData>("/groups");
 
-  const [name, setName] = useState("");
-  const [source, setSource] = useState<"git" | "builtin">("git");
-  const [url, setUrl] = useState("");
-  const [branch, setBranch] = useState("main");
-  const [path, setPath] = useState("");
+  const pb = job?.playbook;
+  const [name, setName] = useState(job?.name ?? "");
+  const [source, setSource] = useState<"git" | "builtin">(pb?.kind === "builtin" ? "builtin" : "git");
+  const [url, setUrl] = useState(pb && pb.kind !== "builtin" ? pb.url : "");
+  const [branch, setBranch] = useState(pb && pb.kind !== "builtin" ? pb.branch : "main");
+  const [path, setPath] = useState(pb && pb.kind !== "builtin" ? pb.path : "");
   const [key, setKey] = useState(NO_KEY);
-  const [inv, setInv] = useState("");
-  const [targets, setTargets] = useState<string[]>([]);
-  const [image, setImage] = useState("");
-  const [envOn, setEnvOn] = useState(false);
+  const [inv, setInv] = useState(job?.inventory ?? "");
+  const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
+  const [image, setImage] = useState(job ? jobImageText(job) : "");
+  const [envChoice, setEnvChoice] = useState<EnvChoice>(editing ? "keep" : "none");
   const [envMode, setEnvMode] = useState<EnvMode>("paste");
   const [envText, setEnvText] = useState("");
-  const [envPick, setEnvPick] = useState("");
-  const [adv, setAdv] = useState(false);
-  const [hook, setHook] = useState(false);
-  const [prot, setProt] = useState(true);
-  const [lock, setLock] = useState(true);
-  const [rb, setRb] = useState(true);
+  const [envPick, setEnvPick] = useState(job?.env ?? "");
+  const [hook, setHook] = useState(job?.hook ?? false);
+  const [prot, setProt] = useState(job?.protected ?? true);
+  const [lock, setLock] = useState(job?.lock ?? true);
+  const [rb, setRb] = useState(job?.rollback ?? true);
+  const [edGroups, setEdGroups] = useState<string[]>(job?.editors?.groups ?? []);
+  const [edMembers, setEdMembers] = useState<string[]>(job?.editors?.members ?? []);
+  const [cur, setCur] = useState(0);
+  const [skipped, setSkipped] = useState<JobStepId[]>([]);
+  const [guide, setGuide] = useState(initialGuide);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
   const errRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+
+  const step = JOB_STEPS[cur].id;
+  const last = cur === JOB_STEPS.length - 1;
 
   useEffect(() => {
     if (!inv && inventories[0]) setInv(inventories[0].name);
@@ -77,6 +114,9 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
   useEffect(() => {
     if (!envPick && envs[0]) setEnvPick(envs[0].name);
   }, [envs, envPick]);
+  useEffect(() => {
+    bodyRef.current?.scrollTo({ top: 0 });
+  }, [cur]);
 
   // Keys that fit the URL: SSH keys for git@/ssh:// (one is required), tokens for https (optional).
   const ssh = isSsh(url);
@@ -87,7 +127,7 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
   }, [ssh, keys.length]); // re-pick when the scheme changes or a key is added
 
   // Same URL + branch as a connected repo: the server reuses it and ignores the key.
-  const reused = repos.find((r) => r.url === url.trim() && r.branch === (branch.trim() || "main"));
+  const reused = allRepos.find((r) => r.url === url.trim() && r.branch === (branch.trim() || "main"));
 
   const invObj = inventories.find((i) => i.name === inv);
   const groups = useMemo(() => {
@@ -99,22 +139,32 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
 
   const parsed = image.trim() ? parseImage(image) : null;
   const envVars = parseEnv(envText);
+  const envOn = envChoice === "on";
 
-  /** Client-side check; the server validates everything again. */
-  const validate = (): string => {
-    if (!name.trim()) return "이름을 넣어 주세요.";
-    if (source === "git") {
-      if (!/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim()))
-        return "저장소 주소를 확인해 주세요. 예: git@github.com:org/ansible.git 또는 https://github.com/org/ansible.git";
-      if (!PATH_RE.test(path.trim())) return "플레이북 경로는 레포 안의 .yml 파일이에요. 예: deploy/app.yml";
-      if (ssh && !reused && !key) return "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요.";
+  /** Client-side check of one step; the server validates everything again. */
+  const validateStep = (id: JobStepId): string => {
+    switch (id) {
+      case "name":
+        return name.trim() ? "" : "이름을 넣어 주세요.";
+      case "playbook":
+        if (source !== "git") return "";
+        if (!reused && !/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim()))
+          return "저장소 주소를 확인해 주세요. 예: git@github.com:org/ansible.git 또는 https://github.com/org/ansible.git";
+        if (!PATH_RE.test(path.trim())) return "플레이북 경로는 레포 안의 .yml 파일이에요. 예: deploy/app.yml";
+        if (ssh && !reused && !key) return "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요.";
+        return "";
+      case "target":
+        return hosts.length ? "" : "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
+      case "image":
+        if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요.";
+        return parsed && "error" in parsed ? parsed.error : "";
+      case "env":
+        if (envOn && envMode !== "existing" && !envVars.length) return "인식된 .env 변수가 없어요. 필요 없다면 '없음'을 고르세요.";
+        if (envOn && envMode === "existing" && !envPick) return "저장된 환경 변수를 골라 주세요.";
+        return "";
+      default:
+        return "";
     }
-    if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요.";
-    if (parsed && "error" in parsed) return parsed.error;
-    if (!hosts.length) return "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
-    if (envOn && envMode !== "existing" && !envVars.length) return "인식된 .env 변수가 없어요. 필요 없다면 '없음'을 고르세요.";
-    if (envOn && envMode === "existing" && !envPick) return "저장된 환경 변수를 골라 주세요.";
-    return "";
   };
 
   const fail = (m: string) => {
@@ -122,30 +172,65 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
     requestAnimationFrame(() => errRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   };
 
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    const v = validate();
+  const goto = (i: number) => {
+    setErr("");
+    setCur(i);
+  };
+
+  const next = () => {
+    const v = validateStep(step);
     if (v) return fail(v);
+    setSkipped((s) => s.filter((x) => x !== step));
+    goto(cur + 1);
+  };
+
+  // Optional steps (new job only): image unless the built-in playbook needs one, and env.
+  const skipLabel = mode === "new" ? (step === "image" && source !== "builtin" ? "이미지 없이 진행" : step === "env" ? ".env 없이 진행" : null) : null;
+  const skip = () => {
+    if (step === "image") setImage("");
+    if (step === "env") setEnvChoice("none");
+    setSkipped((s) => (s.includes(step) ? s : [...s, step]));
+    goto(cur + 1);
+  };
+
+  /** Checks every step; jumps to the first one that fails. */
+  const validateAll = (): boolean => {
+    for (let i = 0; i < JOB_STEPS.length; i++) {
+      const v = validateStep(JOB_STEPS[i].id);
+      if (v) {
+        setCur(i);
+        fail(v);
+        return false;
+      }
+    }
+    return true;
+  };
+
+  const body = () => ({
+    name: name.trim(),
+    playbook:
+      source === "git"
+        ? { source: "git", url: url.trim(), branch: branch.trim() || "main", path: path.trim(), key: reused ? NO_KEY : key }
+        : { source: "builtin" },
+    inventory: inv,
+    targets,
+    image: image.trim(),
+    envMode: envChoice === "keep" ? "keep" : !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
+    envName: envOn && envMode === "existing" ? envPick : null,
+    envVars: envOn && envMode !== "existing" ? envVars : [],
+    hook,
+    protected: prot,
+    lock,
+    rollback: rb,
+    editors: { groups: edGroups, members: edMembers },
+  });
+
+  const create = async () => {
+    if (!validateAll()) return;
     setErr("");
     setBusy(true);
     try {
-      await api.post("/jobs", {
-        name: name.trim(),
-        playbook:
-          source === "git"
-            ? { source: "git", url: url.trim(), branch: branch.trim() || "main", path: path.trim(), key: reused ? NO_KEY : key }
-            : { source: "builtin" },
-        inventory: inv,
-        targets,
-        image: image.trim(),
-        envMode: !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
-        envName: envOn && envMode === "existing" ? envPick : null,
-        envVars: envOn && envMode !== "existing" ? envVars : [],
-        hook,
-        protected: prot,
-        lock,
-        rollback: rb,
-      });
+      await api.post("/jobs", body());
       onClose();
       refresh();
       nav("/jobs");
@@ -154,6 +239,46 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
       fail(errMsg(e));
       setBusy(false);
     }
+  };
+
+  const save = async () => {
+    if (!job || !validateAll()) return;
+    setErr("");
+    setBusy(true);
+    const payload = body();
+    const done = () => {
+      onClose();
+      refresh();
+      toast("작업을 고쳤어요");
+    };
+    try {
+      await api.put(`/jobs/${job.id}`, payload);
+      done();
+    } catch (e) {
+      setBusy(false);
+      if (e instanceof ApiError && e.sudoRequired) {
+        // Pasting over an existing set writes a new version of its secrets: re-check the password and retry.
+        withSudo("환경 변수 덮어쓰기", async () => {
+          try {
+            await api.put(`/jobs/${job.id}`, payload);
+            done();
+          } catch (e2) {
+            if (e2 instanceof ApiError && e2.sudoRequired) throw e2;
+            fail(errMsg(e2));
+          }
+        });
+        return;
+      }
+      fail(errMsg(e));
+    }
+  };
+
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    if (editing) save();
+    else if (last) create();
+    else next();
   };
 
   const keyHint = reused
@@ -166,15 +291,42 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
         ? "이 토큰으로 저장소를 읽어요. 읽기 전용 권한이면 충분해요."
         : "공개 저장소면 그대로 두고, 비공개 저장소면 토큰을 고르세요.";
 
-  return (
-    <>
-      <ModalHead title="새 배포 작업" sub="플레이북과 배포 대상만 정하면 돼요. 나머지는 필요할 때만 채우세요." onClose={onClose} />
-      <form id="jobForm" onSubmit={submit} className="contents" noValidate>
-        <ModalBody>
-          <Field label="이름" htmlFor="jName">
-            <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" autoFocus />
-          </Field>
+  /* ---------- editors (access step) ---------- */
 
+  const creator = editing ? job.createdBy : session?.me?.email ?? null;
+  const allGroups = groupsRes.data?.groups ?? [];
+  // Owner/Admin can always edit and Viewers never can, so only the other roles are worth picking.
+  const pickable = (membersRes.data ?? []).filter((m) => m.role !== "Owner" && m.role !== "Admin" && m.role !== "Viewer" && m.email !== creator);
+  const toggle = (list: string[], set: (v: string[]) => void, v: string) => set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+
+  const safetySummary = [prot && "운영 보호", lock && "동시 실행 잠금", rb && "실패 시 되돌리기", hook && "자동 배포"].filter(Boolean).join(", ") || "모두 꺼짐";
+  const editorsSummary = (() => {
+    const g = edGroups.map((id) => allGroups.find((x) => x.id === id)?.name ?? id);
+    const parts = [g.length ? `그룹 ${g.join(", ")}` : "", edMembers.length ? `멤버 ${edMembers.length}명` : ""].filter(Boolean);
+    return parts.length ? parts.join(" · ") : "Owner, Admin, 만든 사람만";
+  })();
+  const envSummary =
+    envChoice === "keep"
+      ? `${job?.env || "없음"} (지금 것 유지)`
+      : !envOn
+        ? "없음"
+        : envMode === "existing"
+          ? envPick
+          : `붙여넣은 변수 ${envVars.length}개${editing && job.env ? ` → ${job.env}의 새 버전` : ""}`;
+
+  /* ---------- steps ---------- */
+
+  const renderStep = () => {
+    switch (step) {
+      case "name":
+        return (
+          <Field label="이름" htmlFor="jName" hint="목록과 실행 기록에 보이는 이름이에요. 앱과 환경을 함께 적으면 찾기 쉬워요.">
+            <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" autoFocus={!editing} />
+          </Field>
+        );
+
+      case "playbook":
+        return (
           <Field
             label="플레이북"
             hint={
@@ -289,12 +441,15 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
                   <b className="block font-semibold mb-0.5">
                     Wharfline 기본 플레이북 <span className="font-mono font-normal text-[12px] text-muted">container.yml</span>
                   </b>
-                  <span className="text-muted">이미지 하나를 .env와 함께 컨테이너로 띄워요. 플레이북이 없을 때 쓰세요. 아래에서 이미지를 꼭 넣어 주세요.</span>
+                  <span className="text-muted">이미지 하나를 .env와 함께 컨테이너로 띄워요. 플레이북이 없을 때 쓰세요. 이미지 단계에서 이미지를 꼭 넣어 주세요.</span>
                 </div>
               </div>
             )}
           </Field>
+        );
 
+      case "target":
+        return (
           <Field
             label="배포 대상"
             hint={
@@ -338,7 +493,10 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
           </Field>
+        );
 
+      case "image":
+        return (
           <Field
             label={
               <>
@@ -350,7 +508,9 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
             hint={
               parsed && "error" in parsed
                 ? parsed.error
-                : "레지스트리 주소가 없으면 Docker Hub예요. 비공개 이미지는 레지스트리에 토큰을 등록해 두면 자동으로 써요."
+                : editing && source !== "builtin"
+                  ? "비워 두면 이미지 없이 플레이북만 실행해요. 레지스트리 주소가 없으면 Docker Hub예요."
+                  : "레지스트리 주소가 없으면 Docker Hub예요. 비공개 이미지는 레지스트리에 토큰을 등록해 두면 자동으로 써요."
             }
           >
             <Input
@@ -372,71 +532,281 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
               </div>
             )}
           </Field>
+        );
 
+      case "env": {
+        const opts: { value: EnvChoice; label: string }[] = editing
+          ? [
+              { value: "keep", label: "지금 것 유지" },
+              { value: "on", label: "바꾸기" },
+              { value: "none", label: "없음" },
+            ]
+          : [
+              { value: "on", label: "넣기" },
+              { value: "none", label: "없음" },
+            ];
+        const hint =
+          envChoice === "keep"
+            ? job?.env
+              ? <>지금 쓰는 <span className="font-mono">{job.env}</span>을(를) 그대로 둬요.</>
+              : "지금은 환경 변수가 없어요. 그대로 둬요."
+            : envChoice === "none"
+              ? editing && job?.env
+                ? "저장하면 이 작업은 .env 없이 배포해요. 저장된 세트는 지워지지 않아요."
+                : "앱이 읽을 .env 없이 배포해요. 필요하면 넣기를 눌러 붙여넣거나 저장된 것을 고르세요."
+              : editing && job?.env && envMode !== "existing"
+                ? <>붙여넣은 내용은 <span className="font-mono">{job.env}</span>의 새 버전으로 저장돼요. 비밀 값을 바꾸는 일이라 저장할 때 비밀번호를 다시 확인해요.</>
+                : null;
+        return (
           <Field
             label={
               <>
                 환경 변수 <span className="text-muted font-normal text-[12.5px]">선택</span>
               </>
             }
-            right={
-              <Seg
-                options={[
-                  { value: "on", label: "넣기" },
-                  { value: "none", label: "없음" },
-                ]}
-                value={envOn ? "on" : "none"}
-                onChange={(v) => setEnvOn(v === "on")}
-              />
-            }
-            hint={!envOn && "앱이 읽을 .env 없이 배포해요. 필요하면 넣기를 눌러 붙여넣거나 저장된 것을 고르세요."}
+            right={<Seg options={opts} value={envChoice} onChange={setEnvChoice} />}
+            hint={hint}
           >
+            {envChoice === "keep" && (
+              <div className="flex items-center gap-2 rounded-lg bg-surface-2 border border-line px-3.5 py-2.5 text-[13px]">
+                <Icon name="file" className="size-4 flex-none text-faint" />
+                {job?.env ? <span className="font-mono truncate">{job.env}</span> : <span className="text-muted">없음</span>}
+              </div>
+            )}
             {envOn && (
               <EnvSource text={envText} setText={setEnvText} mode={envMode} setMode={setEnvMode} existing={envs.map((e) => e.name)} picked={envPick} setPicked={setEnvPick} />
             )}
           </Field>
+        );
+      }
 
-          <div className="flex flex-col gap-1">
-            <button
-              type="button"
-              onClick={() => setAdv((a) => !a)}
-              aria-expanded={adv}
-              className="self-start inline-flex items-center gap-1.5 h-7 -ml-1 px-1 rounded-md text-[13px] font-medium text-muted hover:text-fg transition-colors"
+      case "access":
+        return (
+          <>
+            <Field
+              label="편집할 수 있는 사람"
+              hint={
+                <>
+                  Owner와 Admin은 언제나 고칠 수 있고, Viewer는 고칠 수 없어요.
+                  {creator ? <> 만든 사람(<span className="font-mono">{creator}</span>)도 언제나 고칠 수 있어요.</> : null} 실행 권한은 따로예요.
+                </>
+              }
             >
-              <Icon name="chev" className={cx("size-3.5 transition-transform", adv ? "" : "-rotate-90")} />
-              고급
-              {!adv && (
-                <span className="text-faint font-normal text-[12px]">
-                  · {[prot && "운영 보호", lock && "동시 실행 잠금", rb && "실패 시 되돌리기", hook && "자동 배포"].filter(Boolean).join(", ") || "모두 꺼짐"}
-                </span>
-              )}
-            </button>
-            {adv && (
-              <div className="flex flex-col rounded-lg border border-line divide-y divide-line animate-fade">
+              <Field label="그룹">
+                {groupsRes.error ? (
+                  <Hint>그룹 목록을 불러오지 못했어요.</Hint>
+                ) : !allGroups.length ? (
+                  <Hint>{groupsRes.data ? "아직 그룹이 없어요." : "불러오는 중…"}</Hint>
+                ) : (
+                  <div className="flex flex-wrap gap-1.5">
+                    {allGroups.map((g) => {
+                      const on = edGroups.includes(g.id);
+                      return (
+                        <button
+                          key={g.id}
+                          type="button"
+                          aria-pressed={on}
+                          onClick={() => toggle(edGroups, setEdGroups, g.id)}
+                          className={cx(
+                            "inline-flex items-center gap-1.5 max-w-full h-7 px-2.5 rounded-lg border text-[12.5px] transition-colors",
+                            on ? "border-accent bg-accent-soft text-accent" : "border-line-strong bg-surface hover:bg-hover",
+                          )}
+                        >
+                          <Icon name={on ? "check" : "users"} className="size-3.5 flex-none" />
+                          <span className="font-medium truncate">{g.name}</span>
+                          <span className={cx("text-[11px] flex-none", on ? "text-accent" : "text-faint")}>{g.members.length}명</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </Field>
+              <Field label="멤버">
+                {membersRes.error ? (
+                  <Hint>멤버 목록을 불러오지 못했어요.</Hint>
+                ) : !pickable.length ? (
+                  <Hint>{membersRes.data ? "따로 고를 멤버가 없어요." : "불러오는 중…"}</Hint>
+                ) : (
+                  <div className="flex flex-col rounded-lg border border-line px-2 py-1 max-h-[180px] overflow-auto scroll-soft">
+                    {pickable.map((m) => (
+                      <Check
+                        key={m.email}
+                        checked={edMembers.includes(m.email)}
+                        onChange={() => toggle(edMembers, setEdMembers, m.email)}
+                        title={
+                          <>
+                            <span className="font-medium">{m.name}</span> <span className="text-faint text-[12px]">{m.role}</span>
+                          </>
+                        }
+                        desc={m.email}
+                      />
+                    ))}
+                  </div>
+                )}
+              </Field>
+            </Field>
+            <Field label="안전장치" hint={`켜진 것: ${safetySummary}`}>
+              <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
                 <Toggle checked={hook} onChange={setHook} title="자동 배포" desc="새 이미지 태그가 올라오면 바로 배포해요. 레지스트리 webhook의 서명을 검증하고, v로 시작하는 릴리스 태그만 받아요." />
                 <Toggle checked={prot} onChange={setProt} title="운영 보호" desc="Deployer가 실행하면 Admin의 승인을 받은 뒤 시작돼요." />
                 <Toggle checked={lock} onChange={setLock} title="동시 실행 잠금" desc="같은 서버에 다른 배포가 돌고 있으면 기다려요." />
                 <Toggle checked={rb} onChange={setRb} title="실패 시 되돌리기" desc="상태 확인이 실패하면 직전에 성공한 태그로 되돌려요." />
               </div>
-            )}
-          </div>
+            </Field>
+          </>
+        );
 
+      case "review": {
+        const rows: [JobStepId, string, React.ReactNode][] = [
+          ["name", "이름", name.trim() || <span className="text-faint">없음</span>],
+          [
+            "playbook",
+            "플레이북",
+            source === "builtin" ? (
+              <>
+                기본 플레이북 <span className="font-mono text-[12px] text-muted">container.yml</span>
+              </>
+            ) : (
+              <span className="font-mono text-[12.5px] break-all">
+                {url.trim() || "-"} <span className="text-faint">·</span> {branch.trim() || "main"} <span className="text-faint">·</span> {path.trim() || "-"}
+              </span>
+            ),
+          ],
+          ["target", "배포 대상", `${inv || "-"} · ${targets.length ? targets.join(", ") : "전체"} · 서버 ${hosts.length}대`],
+          [
+            "image",
+            "이미지",
+            parsed && "ref" in parsed ? <span className="font-mono text-[12.5px] break-all">{`${parsed.ref}:${parsed.tag}`}</span> : <span className="text-faint">없음</span>,
+          ],
+          ["env", "환경 변수", envSummary],
+          ["access", "권한과 안전장치", `${editorsSummary} · ${safetySummary}`],
+        ];
+        return (
+          <Field label="확인" hint={editing ? "고칠 줄의 고치기를 누르거나 위 목차에서 단계를 고르세요." : "이대로 만들까요? 바꿀 게 있으면 이전으로 돌아가세요."}>
+            <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
+              {rows.map(([id, label, value]) => (
+                <div key={id} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[112px_minmax(0,1fr)_auto] gap-x-3 gap-y-0.5 items-center px-3.5 py-2.5 text-[13px]">
+                  <span className="text-muted text-[12.5px]">{label}</span>
+                  <span className="min-w-0">{value}</span>
+                  {editing && (
+                    <Button size="sm" variant="ghost" className="justify-self-start sm:justify-self-end -ml-2.5 sm:ml-0" onClick={() => goto(JOB_STEPS.findIndex((s) => s.id === id))}>
+                      고치기
+                    </Button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </Field>
+        );
+      }
+    }
+  };
+
+  return (
+    <>
+      <ModalHead
+        title={editing ? "배포 작업 편집" : "새 배포 작업"}
+        sub={editing ? job.name : "플레이북과 배포 대상만 정하면 돼요. 나머지는 필요할 때만 채우세요."}
+        onClose={onClose}
+        extra={
+          <Button size="sm" variant={guide ? "default" : "ghost"} icon="wand" aria-pressed={guide} title="배포를 도와드릴까요?" onClick={() => setGuide((g) => !g)}>
+            <span className="hidden sm:inline">배포를 도와드릴까요?</span>
+          </Button>
+        }
+      />
+      <StepIndex mode={editing ? "edit" : "new"} cur={cur} skipped={skipped} onPick={goto} />
+      <form id="jobForm" onSubmit={submit} className="contents" noValidate>
+        <div ref={bodyRef} className="modal-body px-5 pt-4 pb-5 overflow-auto scroll-soft flex flex-col gap-5 flex-[0_1_420px] min-h-[140px]">
+          <div key={step} className="flex flex-col gap-5 animate-fade">
+            {renderStep()}
+          </div>
           {err && (
             <div ref={errRef}>
               <ErrorText>{err}</ErrorText>
             </div>
           )}
-        </ModalBody>
+        </div>
       </form>
-      <ModalFoot>
+      {guide && (
+        <div className="flex-[0_1_auto] min-h-[64px] max-h-[220px] overflow-auto scroll-soft border-t border-line bg-surface-2 px-5 py-3 animate-fade">
+          <JobGuide step={step} mode={editing ? "edit" : "new"} />
+        </div>
+      )}
+      <ModalFoot between>
         <Button variant="ghost" onClick={onClose}>
           취소
         </Button>
-        <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
-          {busy ? "만드는 중…" : "만들기"}
-        </Button>
+        <span className="flex items-center gap-2 flex-wrap justify-end">
+          <Button onClick={() => goto(cur - 1)} disabled={cur === 0}>
+            이전
+          </Button>
+          {editing ? (
+            <>
+              <Button onClick={next} disabled={last}>
+                다음
+              </Button>
+              <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
+                {busy ? "저장하는 중…" : "저장"}
+              </Button>
+            </>
+          ) : (
+            <>
+              {skipLabel && (
+                <Button variant="ghost" icon="skip" onClick={skip}>
+                  {skipLabel}
+                </Button>
+              )}
+              <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
+                {last ? (busy ? "만드는 중…" : "만들기") : "다음"}
+              </Button>
+            </>
+          )}
+        </span>
       </ModalFoot>
     </>
+  );
+}
+
+/** 목차: step numbers and titles in a row. New job: progress only. Edit: every step is done and clickable. */
+function StepIndex({ mode, cur, skipped, onPick }: { mode: Mode; cur: number; skipped: JobStepId[]; onPick: (i: number) => void }) {
+  return (
+    <nav aria-label="단계" className="flex-none px-5 pb-3 border-b border-line overflow-x-auto scroll-soft">
+      <ol className="flex items-center gap-1.5 min-w-max sm:min-w-0">
+        {JOB_STEPS.map((s, i) => {
+          const now = i === cur;
+          const wasSkipped = mode === "new" && skipped.includes(s.id) && !now;
+          const done = mode === "edit" || (i < cur && !wasSkipped);
+          const mark = wasSkipped ? "–" : done ? <Icon name="check" className="size-3" strokeWidth={2.6} /> : i + 1;
+          const inner = (
+            <>
+              <span
+                className={cx(
+                  "grid place-items-center size-5 rounded-full text-[11px] font-semibold flex-none tabular-nums transition-colors",
+                  now ? "bg-primary text-primary-fg" : done ? "bg-accent-soft text-accent" : "bg-hover text-faint",
+                )}
+              >
+                {mark}
+              </span>
+              <span className={cx("text-[12px] whitespace-nowrap", now ? "font-semibold text-fg" : "hidden sm:inline text-muted")}>{s.label}</span>
+            </>
+          );
+          return (
+            <li key={s.id} className="flex items-center gap-1.5 flex-none sm:flex-1 sm:last:flex-none min-w-0" aria-current={now ? "step" : undefined}>
+              {mode === "edit" ? (
+                <button type="button" onClick={() => onPick(i)} title={s.label} className="inline-flex items-center gap-1.5 rounded-md px-1 -mx-1 h-6 hover:bg-hover transition-colors">
+                  {inner}
+                </button>
+              ) : (
+                <span className="inline-flex items-center gap-1.5" title={s.label}>
+                  {inner}
+                </span>
+              )}
+              {i < JOB_STEPS.length - 1 && <span aria-hidden="true" className={cx("h-px w-3 sm:w-auto sm:flex-1 sm:min-w-2", done && !now ? "bg-accent/40" : "bg-line")} />}
+            </li>
+          );
+        })}
+      </ol>
+    </nav>
   );
 }
 

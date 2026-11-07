@@ -72,6 +72,12 @@ export interface Job {
   latestTag: string | null;
   prevTag: string | null;
   build: Build | null;
+  /** Who besides Owner/Admin and the creator may edit: group ids and member emails */
+  editors: { groups: string[]; members: string[] };
+  /** Email of the member who created the job */
+  createdBy: string | null;
+  /** Whether the shown member may edit this job */
+  canEdit: boolean;
 }
 
 export type GitProvider = "gitea" | "github" | "gitlab";
