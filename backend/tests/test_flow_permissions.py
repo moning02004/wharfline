@@ -31,7 +31,7 @@ def test_viewer_cannot_edit(client, login):
     assert job["canEdit"] is False
     r = client.put(f"/api/jobs/{job['id']}", json=_edit_body(job))
     assert r.status_code == 403
-    assert r.json()["detail"] == "이 작업을 고칠 권한이 없어요."
+    assert r.json()["detail"] == "이 작업을 할 권한이 없어요."  # Viewers may not edit any job
 
 
 def test_deployer_edits_only_what_they_made_or_were_given(client, login):

@@ -53,6 +53,11 @@ export function useRun() {
               close();
               openLog(no);
             }}
+            onRequested={() => {
+              close();
+              app.toast("승인을 요청했어요");
+              app.refresh();
+            }}
           />
         ),
         "sm",
@@ -73,13 +78,65 @@ export function useRun() {
     [app, confirm],
   );
 
-  return { confirm, openLog, runById };
+  /** Owner/Admin: approve (starts the run and shows its log) or reject a run waiting for approval. */
+  const decide = useCallback(
+    async (no: number, how: "approve" | "reject") => {
+      try {
+        await api.post(`/runs/${no}/${how}`);
+        app.refresh();
+        if (how === "approve") openLog(no);
+        else app.toast("실행을 거절했어요");
+      } catch (e) {
+        app.toast(errMsg(e));
+        app.refresh();
+      }
+    },
+    [app, openLog],
+  );
+
+  return { confirm, openLog, runById, decide };
+}
+
+/** 승인 / 거절 buttons for a run waiting for approval. */
+export function ApprovalButtons({ no, after }: { no: number; after?: () => void }) {
+  const { decide } = useRun();
+  const [busy, setBusy] = useState(false);
+  const act = async (how: "approve" | "reject") => {
+    setBusy(true);
+    after?.();
+    await decide(no, how);
+    setBusy(false);
+  };
+  return (
+    <span className="inline-flex gap-1">
+      <Button size="sm" variant="dangerGhost" disabled={busy} onClick={() => act("reject")}>
+        거절
+      </Button>
+      <Button size="sm" variant="primary" icon="check" disabled={busy} onClick={() => act("approve")}>
+        승인
+      </Button>
+    </span>
+  );
 }
 
 /* ---------- "배포하시겠습니까?" ---------- */
 
-function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: string }; onClose: () => void; onStarted: (no: number) => void }) {
-  const { toast } = useApp();
+function ConfirmRun({
+  job,
+  opt,
+  onClose,
+  onStarted,
+  onRequested,
+}: {
+  job: Job;
+  opt: { tag?: string };
+  onClose: () => void;
+  onStarted: (no: number) => void;
+  onRequested: () => void;
+}) {
+  const { toast, can } = useApp();
+  // A Deployer can't start a protected job: the run waits for an Owner/Admin to approve it.
+  const needsApproval = job.protected && !can("run_protected");
   const hasImage = job.image !== null;
   const [tag, setTag] = useState(opt.tag ?? job.defaultTag ?? "latest");
   // "직접 입력…": type a tag the image list doesn't know yet (the server records it on the image).
@@ -112,8 +169,9 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
   const go = async (useTag = tag) => {
     setBusy(true);
     try {
-      const r = await api.post<{ no: number }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel });
-      onStarted(r.no);
+      const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel });
+      if (r.status === "approval") onRequested();
+      else onStarted(r.no);
     } catch (e) {
       toast(errMsg(e));
       setBusy(false);
@@ -141,6 +199,12 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
         onClose={onClose}
       />
       <ModalBody>
+        {needsApproval && (
+          <Hint className="flex items-center gap-1.5">
+            <Icon name="lock" className="size-3.5 flex-none text-warn" />
+            운영 보호 작업이에요. Owner나 Admin이 승인하면 실행돼요.
+          </Hint>
+        )}
         {hasImage && showBuild && latest && (
           <BuildPanel
             build={latest}
@@ -271,8 +335,14 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
       </ModalBody>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
-        <Button variant="primary" icon="play" disabled={!ready.length || busy || waitForBuild || !tagOk || (hasImage && !tag)} onClick={() => go()} autoFocus>
-          {waitForBuild ? "빌드 끝나길 기다리는 중…" : `서버 ${ready.length}대에 배포`}
+        <Button
+          variant="primary"
+          icon={needsApproval ? "lock" : "play"}
+          disabled={!ready.length || busy || waitForBuild || !tagOk || (hasImage && !tag)}
+          onClick={() => go()}
+          autoFocus
+        >
+          {waitForBuild ? "빌드 끝나길 기다리는 중…" : needsApproval ? "승인 요청" : `서버 ${ready.length}대에 배포`}
         </Button>
       </ModalFoot>
     </>
@@ -347,7 +417,7 @@ const LINE_COLORS: Record<string, string> = {
 };
 
 function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
-  const { toast, refresh } = useApp();
+  const { toast, refresh, can } = useApp();
   const { runById } = useRun();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -417,6 +487,7 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
   };
 
   const status: Status = done?.status ?? (run?.live ? "run" : run?.status ?? "run");
+  const waiting = run?.status === "approval";
   const short = run?.image?.split("/").pop();
 
   return (
@@ -492,6 +563,14 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
           })}
         </div>
         <div ref={logRef} aria-live="polite" className="bg-log-bg text-log-fg font-mono text-[12.5px] leading-[1.7] px-5 py-4 overflow-auto scroll-soft min-w-0 md:rounded-br-none">
+          {waiting && (
+            <div className="text-[#fcd34d]">
+              ⏸ 승인 대기 · {run?.requestedByName ?? run?.by ?? "자동 배포"}님이 요청했어요. Owner나 Admin이 승인하면 실행돼요.
+            </div>
+          )}
+          {run?.status === "rejected" && (
+            <div className="text-[#fca5a5]">✗ {run.decidedByName ?? "관리자"}님이 실행을 거절했어요. 서버에는 아무것도 바뀌지 않았어요.</div>
+          )}
           {lines.map((l, i) => (
             <div key={i} className="whitespace-pre-wrap break-all animate-fade">
               <span className="text-log-dim mr-3 select-none">{l.ts}</span>
@@ -501,14 +580,17 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
         </div>
       </div>
       <ModalFoot between>
-        <span className="text-faint text-xs">로그는 실행 기록에 저장돼요. 창을 닫아도 실행은 계속돼요.</span>
+        <span className="text-faint text-xs">
+          {waiting ? "승인되기 전에는 서버에 접속하지 않아요." : "로그는 실행 기록에 저장돼요. 창을 닫아도 실행은 계속돼요."}
+        </span>
         <span className="flex gap-2">
-          {run?.live && !done && (
+          {run?.live && !done && can("run") && (
             <Button variant="danger" onClick={cancel}>
               실행 취소
             </Button>
           )}
-          {(done || (run && !run.live)) && run?.jobId && (
+          {waiting && can("approve") && <ApprovalButtons no={no} after={onClose} />}
+          {(done || (run && !run.live)) && !waiting && run?.jobId && can("run") && (
             <Button
               icon="refresh"
               onClick={() => {

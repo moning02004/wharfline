@@ -10,7 +10,7 @@ from .. import githooks
 from .. import models as m
 from .. import store as s
 from ..db import get_db
-from ..deps import require_login, require_owner, require_sudo, viewer
+from ..deps import require, require_login, require_owner, require_sudo, viewer
 
 router = APIRouter(prefix="/api", tags=["admin"], dependencies=[Depends(require_login)])
 
@@ -180,7 +180,7 @@ class PolicyIn(BaseModel):
     allowIps: str
 
 
-@router.put("/security/policy")
+@router.put("/security/policy", dependencies=[Depends(require("admin"))])
 def save_policy(body: PolicyIn, db: Session = Depends(get_db)):
     if body.sudoMinutes not in (1, 5, 10, 15):
         raise HTTPException(400, "열람 유지 시간은 1, 5, 10, 15분 중에서 골라 주세요.")

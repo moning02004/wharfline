@@ -32,6 +32,20 @@ export const ROUTES = [
 export type RouteId = (typeof ROUTES)[number]["id"];
 export const ROLES: Role[] = ["Owner", "Admin", "Deployer", "Viewer"];
 
+/** What each role may do. Mirrors the server's store.PERMS; the server is what enforces it. */
+const PERMS = {
+  run: ["Owner", "Admin", "Deployer"],
+  run_protected: ["Owner", "Admin"],
+  job_create: ["Owner", "Admin", "Deployer"],
+  job_edit: ["Owner", "Admin", "Deployer"],
+  approve: ["Owner", "Admin"],
+  env: ["Owner", "Admin"],
+  resources: ["Owner", "Admin"],
+  admin: ["Owner"],
+} satisfies Record<string, Role[]>;
+export type Action = keyof typeof PERMS;
+export const roleCan = (role: Role, action: Action) => (PERMS[action] as Role[]).includes(role);
+
 type ModalRender = (close: () => void) => ReactNode;
 interface ModalEntry {
   id: number;
@@ -63,6 +77,8 @@ interface AppCtx {
   menus: string[] | null;
   reloadAccess: () => void;
   canSee: (id: string) => boolean;
+  /** Whether the shown role (mine, or the previewed member's) may do `action`. Buttons follow this. */
+  can: (action: Action) => boolean;
   toast: (msg: string, tone?: ToastTone) => void;
   openModal: (render: ModalRender, size?: ModalSize, onClose?: () => void) => void;
   closeModal: () => void;
@@ -184,6 +200,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const role: Role = viewAs?.role ?? access.role ?? session?.me?.role ?? "Viewer";
   const canSee = useCallback((id: string) => id === "dashboard" || access.menus === null || access.menus.includes(id), [access]);
+  const can = useCallback((action: Action) => roleCan(role, action), [role]);
 
   const runAction = useCallback(
     async (fn: () => Promise<unknown>, ok?: string) => {
@@ -202,10 +219,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value = useMemo<AppCtx>(
     () => ({
-      session, setSession, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, menus: access.menus, reloadAccess, canSee,
+      session, setSession, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, menus: access.menus, reloadAccess, canSee, can,
       toast, openModal, closeModal, version, refresh, runAction,
     }),
-    [session, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, access, reloadAccess, canSee, toast, openModal, closeModal, version, refresh, runAction],
+    [session, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, access, reloadAccess, canSee, can, toast, openModal, closeModal, version, refresh, runAction],
   );
 
   return (

@@ -182,6 +182,14 @@ export function StatusPill({ status }: { status: Status }) {
       );
     case "cancel":
       return <Dot>취소됨</Dot>;
+    case "approval":
+      return (
+        <Dot tone="warn" pulse>
+          승인 대기
+        </Dot>
+      );
+    case "rejected":
+      return <Dot tone="bad">거절됨</Dot>;
     default:
       return <Dot tone="warn">주의</Dot>;
   }

@@ -11,7 +11,7 @@ from .. import models as m
 from .. import sshaccess, sshkeys
 from .. import store as s
 from ..db import get_db
-from ..deps import require_login, require_sudo
+from ..deps import require, require_login, require_sudo
 
 router = APIRouter(prefix="/api", tags=["resources"], dependencies=[Depends(require_login)])
 
@@ -48,7 +48,7 @@ def registry_name(host: str) -> str:
     return "Gitea"
 
 
-@router.post("/registries", dependencies=[Depends(require_sudo)])
+@router.post("/registries", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def add_registry(body: RegistryIn, db: Session = Depends(get_db)):
     host = body.host.strip().lower().removeprefix("https://").rstrip("/")
     if not re.match(r"^[a-z0-9.-]+(:\d+)?$", host):
@@ -72,7 +72,7 @@ class ImageIn(BaseModel):
     image: str
 
 
-@router.post("/images")
+@router.post("/images", dependencies=[Depends(require("resources"))])
 def add_image(body: ImageIn, db: Session = Depends(get_db)):
     """Register an image from "name:tag". The registry is matched by host; digests are pinned at deploy time.
 
@@ -109,7 +109,7 @@ class InventoryIn(BaseModel):
     key: str
 
 
-@router.post("/inventory")
+@router.post("/inventory", dependencies=[Depends(require("resources"))])
 def add_inventory(body: InventoryIn, db: Session = Depends(get_db)):
     name = body.name.strip()
     if not re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", name):
@@ -132,7 +132,7 @@ class FingerprintIn(BaseModel):
     port: int
 
 
-@router.post("/inventory/fingerprint")
+@router.post("/inventory/fingerprint", dependencies=[Depends(require("resources"))])
 def fingerprint(body: FingerprintIn):
     # A real implementation connects and reads the server's ED25519 host key.
     return {"type": "ED25519", "fingerprint": "SHA256:pX0c7Lq2vRz9Hn4Wb1Ke8YsT3mJ6fDaUgQ5iEoN"}
@@ -147,7 +147,7 @@ class HostIn(BaseModel):
     key: str = ""
 
 
-@router.post("/inventory/{inv_id}/hosts")
+@router.post("/inventory/{inv_id}/hosts", dependencies=[Depends(require("resources"))])
 def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
     inv = db.get(m.Inventory, inv_id)
     if not inv:
@@ -172,7 +172,7 @@ def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
     return h.to_dict()
 
 
-@router.post("/inventory/{inv_id}/ping")
+@router.post("/inventory/{inv_id}/ping", dependencies=[Depends(require("resources"))])
 async def ping(inv_id: str, db: Session = Depends(get_db)):
     inv = db.get(m.Inventory, inv_id)
     if not inv:
@@ -182,7 +182,7 @@ async def ping(inv_id: str, db: Session = Depends(get_db)):
     return {"total": total, "ok": ok}
 
 
-@router.post("/inventory/{inv_id}/hosts/{ix}/accept-key", dependencies=[Depends(require_sudo)])
+@router.post("/inventory/{inv_id}/hosts/{ix}/accept-key", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def accept_host_key(inv_id: str, ix: int, db: Session = Depends(get_db)):
     inv = db.get(m.Inventory, inv_id)
     if not inv or not (0 <= ix < len(inv.hosts)):
@@ -246,7 +246,7 @@ class KeyIn(BaseModel):
     token: str = ""
 
 
-@router.post("/keys", dependencies=[Depends(require_sudo)])
+@router.post("/keys", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def add_key(body: KeyIn, db: Session = Depends(get_db)):
     name = body.name.strip() or "new-key"
     if not NAME_RE.match(name):
@@ -285,7 +285,7 @@ def public_key(key_id: str, db: Session = Depends(get_db)):
             "restricted": bool(addresses), "accessFrom": addresses}
 
 
-@router.delete("/keys/{key_id}", dependencies=[Depends(require_sudo)])
+@router.delete("/keys/{key_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def delete_key(key_id: str, db: Session = Depends(get_db)):
     k = db.get(m.Key, key_id)
     if not k:

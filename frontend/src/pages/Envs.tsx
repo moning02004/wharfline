@@ -8,7 +8,8 @@ import { Button, Card, CardHeader, Chip, Loading, PageHeader, cx } from "../comp
 
 export default function Envs() {
   const { data } = useApi<EnvSet[]>("/envs");
-  const { openModal, withSudo, sudoActive, session, toast } = useApp();
+  const { openModal, withSudo, sudoActive, session, toast, can } = useApp();
+  const manage = can("env");
   // Revealed values live only in memory and are dropped when sudo ends.
   const [revealed, setRevealed] = useState<Record<string, [string, string][]>>({});
 
@@ -46,11 +47,17 @@ export default function Envs() {
     <>
       <PageHeader
         title="환경 변수"
-        desc={`.env를 붙여넣거나 파일로 올려 저장해요. 비밀번호를 다시 확인하면 ${session?.sudoMinutes ?? 5}분 동안 값을 보고 수정할 수 있어요. 저장할 때마다 버전이 올라가요.`}
+        desc={
+          manage
+            ? `.env를 붙여넣거나 파일로 올려 저장해요. 비밀번호를 다시 확인하면 ${session?.sudoMinutes ?? 5}분 동안 값을 보고 수정할 수 있어요. 저장할 때마다 버전이 올라가요.`
+            : "저장된 .env의 변수 이름이에요. 값을 보고 바꾸는 건 Owner와 Admin만 할 수 있어요."
+        }
       >
-        <Button variant="primary" icon="upload" onClick={() => openModal((c) => <NewEnvModal onClose={c} />, "md")}>
-          .env 추가
-        </Button>
+        {manage && (
+          <Button variant="primary" icon="upload" onClick={() => openModal((c) => <NewEnvModal onClose={c} />, "md")}>
+            .env 추가
+          </Button>
+        )}
       </PageHeader>
       {data.map((e) => {
         const vals = revealed[e.id];
@@ -69,15 +76,19 @@ export default function Envs() {
               <Button size="sm" variant="ghost" icon="history" onClick={() => openModal((c) => <EnvHistoryModal env={e} onClose={c} />, "md")}>
                 기록
               </Button>
-              <Button size="sm" icon="edit" onClick={() => edit(e)}>
-                편집
-              </Button>
-              <Button size="sm" icon={shown ? "lock" : "eye"} onClick={() => reveal(e)}>
-                {shown ? "가리기" : "값 보기"}
-              </Button>
-              <Button size="sm" icon="copy" disabled={!shown} onClick={() => copy(e)}>
-                .env 복사
-              </Button>
+              {manage && (
+                <>
+                  <Button size="sm" icon="edit" onClick={() => edit(e)}>
+                    편집
+                  </Button>
+                  <Button size="sm" icon={shown ? "lock" : "eye"} onClick={() => reveal(e)}>
+                    {shown ? "가리기" : "값 보기"}
+                  </Button>
+                  <Button size="sm" icon="copy" disabled={!shown} onClick={() => copy(e)}>
+                    .env 복사
+                  </Button>
+                </>
+              )}
             </CardHeader>
             <div>
               {e.vars.map((v, i) => {

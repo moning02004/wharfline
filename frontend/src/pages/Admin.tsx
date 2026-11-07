@@ -100,13 +100,17 @@ export function Activity() {
 
 /* ---------- members ---------- */
 
+/** Same as the server's role rules (docs/security-hardening.md, B). */
 const PERMS: [string, ...(0 | 1 | string)[]][] = [
-  ["실행 기록과 로그 보기", 1, 1, 1, 1],
-  ["일반 작업 실행", 1, 1, 1, 0],
-  ["보호된 작업(production) 실행", 1, 1, "승인 필요", 0],
-  ["환경 변수 값 열람", 1, 1, 0, 0],
-  ["키·인벤토리·레포 수정", 1, 1, 0, 0],
-  ["멤버, 그룹, 보안 정책 관리", 1, 0, 0, 0],
+  ["보기(목록, 실행 기록, 로그)", 1, 1, 1, 1],
+  ["일반 작업 실행, 실행 취소", 1, 1, 1, 0],
+  ["운영 보호 작업 실행", 1, 1, "승인 요청", 0],
+  ["배포 작업 만들기", 1, 1, "운영 보호 켜짐·자동 배포 꺼짐", 0],
+  ["배포 작업 편집", 1, 1, "편집 권한이 있을 때만 · 운영 보호·자동 배포 제외", 0],
+  ["실행 승인/거절", 1, 1, 0, 0],
+  ["환경 변수 값 보기·바꾸기", 1, 1, 0, 0],
+  ["키·인벤토리·서버·레지스트리·이미지·Git 연동 설정", 1, 1, 0, 0],
+  ["멤버, 그룹, 보안 정책", 1, 0, 0, 0],
 ];
 
 interface GroupsData {
@@ -422,7 +426,7 @@ function RolesTab() {
 
 export function Security() {
   const data = useApi<{ sessions: { agent: string; ip: string; location: string; time: string; current: boolean }[]; policy: Policy }>("/security").data;
-  const { toast, withSudo, openModal, setSession, session, refresh } = useApp();
+  const { toast, withSudo, openModal, setSession, session, refresh, can } = useApp();
   const [p, setP] = useState<Policy | null>(null);
   useEffect(() => {
     if (data && !p) setP(data.policy);
@@ -537,7 +541,7 @@ export function Security() {
               <Textarea id="p5" rows={3} placeholder="비워 두면 모든 IP 허용" value={p.allowIps} onChange={(e) => setP({ ...p, allowIps: e.target.value })} />
             </Field>
             <div className="flex justify-end">
-              <Button variant="primary" onClick={save}>
+              <Button variant="primary" onClick={save} disabled={!can("admin")} title={can("admin") ? undefined : "보안 정책은 Owner만 바꿀 수 있어요"}>
                 저장
               </Button>
             </div>

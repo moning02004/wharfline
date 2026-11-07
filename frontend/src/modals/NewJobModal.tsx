@@ -60,7 +60,10 @@ export function EditJobModal({ job, onClose }: { job: Job; onClose: () => void }
 
 /** Step-by-step deploy job modal for both creating and editing (docs/deploy-edit.md). */
 function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job; onClose: () => void; initialGuide: boolean }) {
-  const { toast, refresh, openModal, withSudo, session } = useApp();
+  const { toast, refresh, openModal, withSudo, session, can } = useApp();
+  // Deployers: new jobs are protected with auto-deploy off, and those two can't be changed; .env values can't be pasted.
+  const fixedSafety = !can("run_protected");
+  const canEnv = can("env");
   const nav = useNavigate();
   const editing = mode === "edit" && !!job;
   const inventories = useApi<Inventory[]>("/inventory").data ?? [];
@@ -82,11 +85,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
   const [image, setImage] = useState(job ? jobImageText(job) : "");
   const [envChoice, setEnvChoice] = useState<EnvChoice>(editing ? "keep" : "none");
-  const [envMode, setEnvMode] = useState<EnvMode>("paste");
+  const [envMode, setEnvMode] = useState<EnvMode>(canEnv ? "paste" : "existing");
   const [envText, setEnvText] = useState("");
   const [envPick, setEnvPick] = useState(job?.env ?? "");
-  const [hook, setHook] = useState(job?.hook ?? false);
-  const [prot, setProt] = useState(job?.protected ?? true);
+  const [hook, setHook] = useState(job ? job.hook : false);
+  const [prot, setProt] = useState(job ? job.protected : true);
   const [lock, setLock] = useState(job?.lock ?? true);
   const [rb, setRb] = useState(job?.rollback ?? true);
   const [edGroups, setEdGroups] = useState<string[]>(job?.editors?.groups ?? []);
@@ -634,7 +637,16 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             )}
             {envOn && (
               <TipSpot id="env.vars">
-                <EnvSource text={envText} setText={setEnvText} mode={envMode} setMode={setEnvMode} existing={envs.map((e) => e.name)} picked={envPick} setPicked={setEnvPick} />
+                <EnvSource
+                  text={envText}
+                  setText={setEnvText}
+                  mode={envMode}
+                  setMode={setEnvMode}
+                  existing={envs.map((e) => e.name)}
+                  picked={envPick}
+                  setPicked={setEnvPick}
+                  existingOnly={!canEnv}
+                />
               </TipSpot>
             )}
           </Field>
@@ -725,8 +737,21 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             <Field label="안전장치">
               <TipSpot id="access.safety">
               <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
-                <Toggle checked={hook} onChange={setHook} title="자동 배포" desc="새 이미지 태그가 올라오면 바로 배포해요. 레지스트리 webhook의 서명을 검증하고, v로 시작하는 릴리스 태그만 받아요." />
-                <Toggle checked={prot} onChange={setProt} title="운영 보호" desc="Deployer가 실행하면 Admin의 승인을 받은 뒤 시작돼요." />
+                <Toggle
+                  checked={hook}
+                  onChange={setHook}
+                  disabled={fixedSafety}
+                  title="자동 배포"
+                  desc="새 이미지 태그가 올라오면 바로 배포해요. 레지스트리 webhook의 서명을 검증하고, v로 시작하는 릴리스 태그만 받아요. 운영 보호가 켜져 있으면 승인을 받은 뒤 배포해요."
+                />
+                <Toggle
+                  checked={prot}
+                  onChange={setProt}
+                  disabled={fixedSafety}
+                  title="운영 보호"
+                  desc="Deployer가 실행하면 Owner나 Admin의 승인을 받은 뒤 시작돼요."
+                />
+                {fixedSafety && <div className="px-3.5 py-2 text-[12px] text-muted">운영 보호와 자동 배포는 Owner나 Admin만 바꿀 수 있어요.</div>}
                 <Toggle checked={lock} onChange={setLock} title="동시 실행 잠금" desc="같은 서버에 다른 배포가 돌고 있으면 기다려요." />
                 <Toggle checked={rb} onChange={setRb} title="실패 시 되돌리기" desc="상태 확인이 실패하면 직전에 성공한 태그로 되돌려요." />
               </div>
@@ -890,7 +915,7 @@ function StepIndex({ mode, cur, skipped, onPick }: { mode: Mode; cur: number; sk
   );
 }
 
-function Toggle({ checked, onChange, title, desc }: { checked: boolean; onChange: (v: boolean) => void; title: string; desc: string }) {
+function Toggle({ checked, onChange, title, desc, disabled }: { checked: boolean; onChange: (v: boolean) => void; title: string; desc: string; disabled?: boolean }) {
   return (
     <div className="flex items-start gap-3 px-3.5 py-2.5">
       <div className="flex-1 min-w-0 text-[13px]">
@@ -898,7 +923,7 @@ function Toggle({ checked, onChange, title, desc }: { checked: boolean; onChange
         <div className="text-[12px] text-muted mt-px">{desc}</div>
       </div>
       <span className="pt-0.5">
-        <Switch checked={checked} onChange={onChange} label={title} />
+        <Switch checked={checked} onChange={onChange} label={title} disabled={disabled} />
       </span>
     </div>
   );

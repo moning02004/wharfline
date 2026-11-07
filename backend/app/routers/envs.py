@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from .. import models as m
 from .. import store as s
 from ..db import get_db
-from ..deps import require_login, require_sudo
+from ..deps import require, require_login, require_sudo
 
 router = APIRouter(prefix="/api/envs", tags=["envs"], dependencies=[Depends(require_login)])
 
@@ -53,7 +53,7 @@ class EnvIn(BaseModel):
     vars: list[list[str]]
 
 
-@router.post("")
+@router.post("", dependencies=[Depends(require("env"))])
 def create_env(body: EnvIn, db: Session = Depends(get_db)):
     name = body.name.strip()
     if not name or not body.vars:
@@ -69,7 +69,7 @@ def create_env(body: EnvIn, db: Session = Depends(get_db)):
     return masked(db, e)
 
 
-@router.get("/{env_id}/values", dependencies=[Depends(require_sudo)])
+@router.get("/{env_id}/values", dependencies=[Depends(require("env")), Depends(require_sudo)])
 def reveal(env_id: str, purpose: str = "view", db: Session = Depends(get_db)):
     e = get_env(db, env_id)
     if purpose == "view":
@@ -78,7 +78,7 @@ def reveal(env_id: str, purpose: str = "view", db: Session = Depends(get_db)):
     return {"vars": e.get_vars()}
 
 
-@router.post("/{env_id}/copied", dependencies=[Depends(require_sudo)])
+@router.post("/{env_id}/copied", dependencies=[Depends(require("env")), Depends(require_sudo)])
 def copied(env_id: str, db: Session = Depends(get_db)):
     e = get_env(db, env_id)
     s.log_act(db, "민감 정보 복사", f".env {e.name}")
@@ -90,7 +90,7 @@ class EnvUpdate(BaseModel):
     vars: list[list[str]]
 
 
-@router.put("/{env_id}", dependencies=[Depends(require_sudo)])
+@router.put("/{env_id}", dependencies=[Depends(require("env")), Depends(require_sudo)])
 def update_env(env_id: str, body: EnvUpdate, db: Session = Depends(get_db)):
     e = get_env(db, env_id)
     s.validate_vars(body.vars)
@@ -130,7 +130,7 @@ class RestoreIn(BaseModel):
     ver: int
 
 
-@router.post("/{env_id}/restore", dependencies=[Depends(require_sudo)])
+@router.post("/{env_id}/restore", dependencies=[Depends(require("env")), Depends(require_sudo)])
 def restore(env_id: str, body: RestoreIn, db: Session = Depends(get_db)):
     e = get_env(db, env_id)
     src = next((v for v in e.versions if v.ver == body.ver), None)

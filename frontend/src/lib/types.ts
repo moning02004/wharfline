@@ -1,4 +1,5 @@
-export type Status = "ok" | "bad" | "run" | "cancel" | "warn";
+/** "approval": waiting for an Owner/Admin to approve a protected job; "rejected": they said no. */
+export type Status = "ok" | "bad" | "run" | "cancel" | "warn" | "approval" | "rejected";
 export type Role = "Owner" | "Admin" | "Deployer" | "Viewer";
 
 export interface Me {
@@ -113,6 +114,13 @@ export interface Run {
   time: string;
   duration: string;
   steps?: string[];
+  /** Email and name of who asked for the run (null for auto-deploy and old runs) */
+  requestedBy: string | null;
+  requestedByName: string | null;
+  /** Who approved or rejected it, and when (ISO time) */
+  decidedBy: string | null;
+  decidedByName: string | null;
+  decidedAt: string | null;
 }
 
 export type RunEvent =
@@ -269,6 +277,8 @@ export interface Dashboard {
   };
   hostKeyAlert: Host | null;
   recentRuns: Run[];
+  /** Runs waiting for an Owner/Admin to approve, oldest first */
+  pendingApprovals: Run[];
   jobs: Job[];
   security: { tfaUsers: number; members: number };
 }

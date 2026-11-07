@@ -113,6 +113,34 @@ def repo_allowed(scope: set[str] | None, repo: str | None) -> bool:
     return scope is None or (repo or "").lower() in scope
 
 
+# What each role may do (docs/security-hardening.md, B). Seeing lists, runs and logs needs only a login.
+#   run          start a deploy job (a protected one needs an approval for Deployers), cancel a run
+#   run_protected start a protected job without an approval
+#   job_create   make a deploy job (Deployers: protected on, auto-deploy off)
+#   job_edit     edit a deploy job; can_edit() decides which ones
+#   approve      approve or reject a run waiting for approval
+#   env          see and change environment variable values
+#   resources    keys, inventory, servers, registries, images, Git integration settings
+#   admin        members, groups, security policy
+PERMS: dict[str, set[str]] = {
+    "run": {"Owner", "Admin", "Deployer"},
+    "run_protected": {"Owner", "Admin"},
+    "job_create": {"Owner", "Admin", "Deployer"},
+    "job_edit": {"Owner", "Admin", "Deployer"},
+    "approve": {"Owner", "Admin"},
+    "env": {"Owner", "Admin"},
+    "resources": {"Owner", "Admin"},
+    "admin": {"Owner"},
+}
+
+NO_PERM = "이 작업을 할 권한이 없어요."
+
+
+def can(member: m.Member | None, action: str) -> bool:
+    """Whether `member` (always the signed-in member, never an X-View-As preview) may do `action`."""
+    return member is not None and member.role in PERMS[action]
+
+
 def can_edit(member: m.Member | None, job: m.Job) -> bool:
     """Owner/Admin always; Viewer never; others if they made the job or are listed as an editor (directly or by group)."""
     if member is None or member.role == "Viewer":

@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
@@ -13,7 +14,7 @@ from .. import models as m
 from .. import runner
 from .. import store as s
 from ..db import get_db
-from ..deps import build_scope, require_login, viewer
+from ..deps import build_scope, require, require_login, viewer
 from .envs import replace_vars
 
 router = APIRouter(prefix="/api", tags=["deploy"], dependencies=[Depends(require_login)])
@@ -40,6 +41,18 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None, who: m.Member | No
     }
 
 
+def member_names(db: Session) -> dict[str, str]:
+    return {x.email: x.name for x in db.scalars(select(m.Member))}
+
+
+def run_view(rec: m.Run, names: dict[str, str]) -> dict:
+    """A run with the names of who asked for and decided an approval."""
+    d = rec.to_dict()
+    d["requestedByName"] = names.get(rec.requested_by or "", rec.requested_by)
+    d["decidedByName"] = names.get(rec.decided_by or "", rec.decided_by)
+    return d
+
+
 def all_jobs(db: Session) -> list[m.Job]:
     return list(db.scalars(select(m.Job).order_by(m.Job.ord)))
 
@@ -51,6 +64,7 @@ def dashboard(db: Session = Depends(get_db), who: m.Member | None = Depends(view
     online = sum(1 for h in hosts if h.status == "on")
     changed = next((h for h in hosts if h.host_key == "changed"), None)
     members = list(db.scalars(select(m.Member)))
+    names = {x.email: x.name for x in members}
     return {
         "me": s.me_dict(who) if who else None,
         "stats": {
@@ -60,7 +74,8 @@ def dashboard(db: Session = Depends(get_db), who: m.Member | None = Depends(view
             "avgDuration": "1m 31s",
         },
         "hostKeyAlert": changed.to_dict() if changed else None,
-        "recentRuns": [r.to_dict() for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()).limit(5))],
+        "recentRuns": [run_view(r, names) for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()).limit(5))],
+        "pendingApprovals": [run_view(r, names) for r in db.scalars(select(m.Run).where(m.Run.status == "approval").order_by(m.Run.no))],
         "jobs": [job_view(db, j, scope, who) for j in all_jobs(db)],
         "security": {"tfaUsers": sum(1 for x in members if x.tfa), "members": len(members)},
     }
@@ -192,9 +207,14 @@ def new_env_set(db: Session, job_name: str, vars_: list[list[str]]) -> str:
 
 # ---------- endpoints ----------
 
-@router.post("/jobs")
+@router.post("/jobs", dependencies=[Depends(require("job_create"))])
 def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
                who: m.Member | None = Depends(viewer)):
+    me = s.current_member(db)
+    if body.envMode == "paste" and not s.can(me, "env"):
+        raise HTTPException(403, s.NO_PERM)  # pasting writes new .env values
+    if not s.can(me, "run_protected"):
+        body.protected, body.hook = True, False  # Deployers: protected on, auto-deploy off
     name = check_name(db, body.name)
     check_target(db, body.inventory, body.targets)
     editors = check_editors(db, body.editors)
@@ -207,7 +227,6 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     else:
         env_name = new_env_set(db, name, body.envVars)
 
-    me = s.current_member(db)
     job = m.Job(
         id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name, book=path,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, protected=body.protected,
@@ -219,14 +238,19 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     return job_view(db, job, scope, who)
 
 
-@router.put("/jobs/{job_id}")
+@router.put("/jobs/{job_id}", dependencies=[Depends(require("job_edit"))])
 def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
                who: m.Member | None = Depends(viewer)):
     job = db.get(m.Job, job_id)
     if not job:
         raise HTTPException(404, "작업을 찾을 수 없어요.")
-    if not s.can_edit(s.current_member(db), job):  # the signed-in member, never the X-View-As preview
+    me = s.current_member(db)
+    if not s.can_edit(me, job):  # the signed-in member, never the X-View-As preview
         raise HTTPException(403, NO_EDIT)
+    if body.envMode == "paste" and not s.can(me, "env"):
+        raise HTTPException(403, s.NO_PERM)  # pasting writes .env values
+    if not s.can(me, "run_protected"):
+        body.protected, body.hook = job.protected, job.hook  # Deployers can't change 운영 보호 or 자동 배포
     name = check_name(db, body.name, self_id=job.id)
     check_target(db, body.inventory, body.targets)
     editors = check_editors(db, body.editors)
@@ -285,7 +309,7 @@ class RunIn(BaseModel):
     rollback: bool = False
 
 
-@router.post("/jobs/{job_id}/runs")
+@router.post("/jobs/{job_id}/runs", dependencies=[Depends(require("run"))])
 async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # async: the runner schedules a task on the event loop
     job = db.get(m.Job, job_id)
     if not job:
@@ -302,12 +326,18 @@ async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # a
         db.flush()
     else:
         tag = "-"  # nothing to pull; the tag is ignored
-    return runner.start_run(db, j, body.groups, tag, "되돌리기" if body.rollback else "수동 실행")
+    trigger = "되돌리기" if body.rollback else "수동 실행"
+    me = s.current_member(db)
+    email = me.email if me else None
+    if job.protected and not s.can(me, "run_protected"):
+        return runner.request_approval(db, j, body.groups, tag, trigger, email)
+    return runner.start_run(db, j, body.groups, tag, trigger, requested_by=email)
 
 
 @router.get("/runs")
 def list_runs(db: Session = Depends(get_db)):
-    return [r.to_dict() for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()))]
+    names = member_names(db)
+    return [run_view(r, names) for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()))]
 
 
 @router.get("/runs/{no}")
@@ -316,12 +346,14 @@ def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Dep
     if not rec:
         raise HTTPException(404, "실행 기록을 찾을 수 없어요.")
     job = db.get(m.Job, rec.job_id)
-    base = rec.to_dict()
+    base = run_view(rec, member_names(db))
     if job:
         j = job.to_dict()
         base.update(method=runner.method_label(j), playbook=j["playbook"], image=job.image, inventory=job.inventory)
         built = githooks.build_for_tag(db, job.image, rec.tag, scope) if job.image else None
         base["build"] = built.to_dict() if built else None
+    if rec.status in ("approval", "rejected"):  # never started: nothing to show yet
+        return {**base, "live": False, "events": []}
     if no in runner.live:
         return {**base, "live": not runner.live[no]["done"], "events": runner.live[no]["events"]}
     if rec.log is not None:
@@ -352,8 +384,41 @@ async def stream_run(no: int, since: int = 0):
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
-@router.post("/runs/{no}/cancel")
+@router.post("/runs/{no}/cancel", dependencies=[Depends(require("run"))])
 def cancel(no: int, db: Session = Depends(get_db)):
     if not runner.cancel_run(no, s.actor_name(db)):
         raise HTTPException(400, "이미 끝난 실행이에요.")
     return {"ok": True}
+
+
+def pending(db: Session, no: int) -> m.Run:
+    rec = db.get(m.Run, no, with_for_update=True)  # two Admins deciding at once: only one wins
+    if not rec:
+        raise HTTPException(404, "실행 기록을 찾을 수 없어요.")
+    if rec.status != "approval":
+        raise HTTPException(400, "승인 대기 중인 실행이 아니에요.")
+    return rec
+
+
+@router.post("/runs/{no}/approve", dependencies=[Depends(require("approve"))])
+async def approve(no: int, db: Session = Depends(get_db)):  # async: the runner schedules a task on the event loop
+    rec = pending(db, no)
+    job = db.get(m.Job, rec.job_id)
+    if not job:
+        raise HTTPException(400, "작업이 지워져서 실행할 수 없어요.")
+    me = s.current_member(db)
+    rec.decided_by, rec.decided_at = me.email, datetime.now(timezone.utc)
+    s.log_act(db, "배포 승인", f"{rec.job} #{no} · {rec.tag} · 요청 {rec.by}")
+    j = job.to_dict()
+    return runner.launch(db, rec, j, runner.run_groups(db, rec, j), note=f"승인: {me.name} · 요청: {rec.by}")
+
+
+@router.post("/runs/{no}/reject", dependencies=[Depends(require("approve"))])
+def reject(no: int, db: Session = Depends(get_db)):
+    rec = pending(db, no)
+    me = s.current_member(db)
+    rec.status, rec.time = "rejected", "방금"
+    rec.decided_by, rec.decided_at = me.email, datetime.now(timezone.utc)
+    s.log_act(db, "배포 거절", f"{rec.job} #{no} · {rec.tag} · 요청 {rec.by}", "warn")
+    db.commit()
+    return {"no": no, "status": "rejected"}
