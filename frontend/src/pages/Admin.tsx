@@ -1,11 +1,13 @@
 import { useEffect, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
-import { ROLES, ROUTES, useApi, useApp } from "../lib/app";
+import { ROLES, useApi, useApp } from "../lib/app";
 import type { Activity as Act, Group, Login, Member, Policy, Role, Session } from "../lib/types";
 import { CodesModal, TfaSetupModal } from "../modals/SecurityModals";
-import { buildsLabel, DeleteGroupModal, GroupModal, MemberGroupsModal } from "../modals/AccessModals";
-import { Icon, type IconName } from "../components/Icon";
-import { Button, Card, CardHeader, Check, Chip, Dot, Field, Input, ListItem, Loading, PageHeader, Seg, Select, StatusPill, Switch, TableWrap, Textarea } from "../components/ui";
+import { draftOf, effectiveAccess, GroupDetail, GroupModal, GroupPicker } from "../modals/AccessModals";
+import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
+import { Icon } from "../components/Icon";
+import { Button, Card, CardHeader, Check, Chip, cx, Dot, Field, Input, ListItem, Loading, PageHeader, Seg, Select, StatusPill, TableWrap, Textarea } from "../components/ui";
 
 /* ---------- activity ---------- */
 
@@ -98,19 +100,13 @@ export function Activity() {
 
 /* ---------- members ---------- */
 
-const MENU_DESC: Record<string, string> = {
-  dashboard: "항상 보여요", jobs: "배포 작업 목록과 실행", runs: "실행 기록과 로그", registries: "GitHub, Gitea 컨테이너 이미지",
-  repos: "Ansible 플레이북 레포", inventory: "서버와 그룹", keys: "SSH 키", envs: ".env 열람과 수정", activity: "활동 기록, 로그인 이력",
-  members: "멤버, 역할, 그룹", security: "내 계정 보안, 워크스페이스 정책", notes: "프로토타입 안내",
-};
-
 const PERMS: [string, ...(0 | 1 | string)[]][] = [
   ["실행 기록과 로그 보기", 1, 1, 1, 1],
   ["일반 작업 실행", 1, 1, 1, 0],
   ["보호된 작업(production) 실행", 1, 1, "승인 필요", 0],
   ["환경 변수 값 열람", 1, 1, 0, 0],
   ["키·인벤토리·레포 수정", 1, 1, 0, 0],
-  ["멤버, 역할, 그룹 관리", 1, 0, 0, 0],
+  ["멤버, 그룹, 보안 정책 관리", 1, 0, 0, 0],
 ];
 
 interface GroupsData {
@@ -119,19 +115,114 @@ interface GroupsData {
   menus: string[];
 }
 
+type AccessTab = "members" | "groups" | "roles";
+
 export function Members() {
   const members = useApi<Member[]>("/members").data;
   const gd = useApi<GroupsData>("/groups").data;
-  const { session, setSession, viewAs, setViewAs, toast, openModal, refresh, reloadAccess } = useApp();
+  const { session, viewAs, openModal } = useApp();
+  const [params, setParams] = useSearchParams();
+  const tab = (["members", "groups", "roles"].includes(params.get("tab") ?? "") ? params.get("tab") : "members") as AccessTab;
+  const [selected, setSelected] = useState<string | null>(null);
   if (!members || !gd) return <Loading />;
 
+  const canEdit = session?.me.role === "Owner" && !viewAs;
+  const setTab = (t: AccessTab) => setParams(t === "members" ? {} : { tab: t }, { replace: true });
+  const newGroup = () =>
+    openModal(
+      (c) => (
+        <GroupModal
+          repos={gd.repos}
+          members={members}
+          onClose={c}
+          onCreated={(g) => {
+            setSelected(g.id);
+            setTab("groups");
+          }}
+        />
+      ),
+      "md",
+    );
+
+  const tabs: { id: AccessTab; label: string; count?: number }[] = [
+    { id: "members", label: "멤버", count: members.length },
+    { id: "groups", label: "그룹", count: gd.groups.length },
+    { id: "roles", label: "역할 권한" },
+  ];
+
+  return (
+    <>
+      <PageHeader title="멤버와 권한" desc="역할은 할 수 있는 일을, 그룹은 보이는 메뉴와 빌드를 정해요. 한 멤버가 여러 그룹에 속하면 그 그룹들의 메뉴와 빌드를 모두 합쳐서 봐요.">
+        {tab === "groups" && canEdit ? (
+          <Button variant="primary" icon="plus" onClick={newGroup}>
+            그룹 만들기
+          </Button>
+        ) : tab === "members" ? (
+          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <InviteNote onClose={c} />)}>
+            멤버 초대
+          </Button>
+        ) : null}
+      </PageHeader>
+
+      <div role="tablist" aria-label="멤버와 권한" className="flex gap-1 border-b border-line -mt-1">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            type="button"
+            role="tab"
+            aria-selected={tab === t.id}
+            onClick={() => setTab(t.id)}
+            className={cx(
+              "h-10 px-3 -mb-px inline-flex items-center gap-1.5 text-[13.5px] transition-colors",
+              tab === t.id ? "text-fg font-semibold shadow-[inset_0_-2px_0_var(--primary)]" : "text-muted hover:text-fg",
+            )}
+          >
+            {t.label}
+            {t.count !== undefined && (
+              <span className={cx("text-[11px] tabular-nums px-1.5 rounded-full", tab === t.id ? "bg-primary-soft text-primary" : "bg-hover text-faint")}>{t.count}</span>
+            )}
+          </button>
+        ))}
+      </div>
+
+      {tab === "members" && <MembersTab members={members} groups={gd.groups} canEdit={canEdit} />}
+      {tab === "groups" && (
+        <GroupsTab members={members} gd={gd} canEdit={canEdit} selected={selected ?? gd.groups[0]?.id ?? null} onSelect={setSelected} onNew={newGroup} />
+      )}
+      {tab === "roles" && <RolesTab />}
+    </>
+  );
+}
+
+function InviteNote({ onClose }: { onClose: () => void }) {
+  return (
+    <>
+      <ModalHead title="멤버 초대" sub="초대 메일은 24시간 동안 유효한 일회용 링크로 보내져요." onClose={onClose} />
+      <ModalBody>
+        <p className="m-0 text-muted">초대한 멤버는 처음 로그인할 때 2단계 인증을 설정하고, 여기서 역할과 그룹을 정해 주면 돼요.</p>
+      </ModalBody>
+      <ModalFoot>
+        <Button variant="primary" onClick={onClose}>
+          확인
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: Group[]; canEdit: boolean }) {
+  const { session, setSession, viewAs, setViewAs, toast, refresh, reloadAccess } = useApp();
+  const [q, setQ] = useState("");
+  const [groupFilter, setGroupFilter] = useState("");
   const isOwner = session?.me.role === "Owner";
-  const canEdit = isOwner && !viewAs;
-  const groupById = Object.fromEntries(gd.groups.map((g) => [g.id, g]));
+
+  const shown = members.filter((u) => {
+    const text = `${u.name} ${u.email} ${u.role} ${groups.filter((g) => u.groups.includes(g.id)).map((g) => g.name).join(" ")}`.toLowerCase();
+    return (!q.trim() || text.includes(q.trim().toLowerCase())) && (!groupFilter || u.groups.includes(groupFilter));
+  });
 
   const preview = (u: Member) => {
     setViewAs(u);
-    document.getElementById("content")?.scrollTo({ top: 0 });
     toast(`${u.name}님 화면으로 미리 보는 중이에요`);
   };
   const changeRole = async (u: Member, role: Role) => {
@@ -145,224 +236,185 @@ export function Members() {
       toast(errMsg(e));
     }
   };
-  const toggleMenu = async (g: Group, menu: string, label: string, on: boolean) => {
-    const menus = on ? [...g.menus, menu] : g.menus.filter((x) => x !== menu);
-    try {
-      await api.put(`/groups/${g.id}`, { name: g.name, menus, allBuilds: g.allBuilds, repos: g.repos });
-      toast(`${g.name}에 "${label}" 메뉴를 ${on ? "보여줘요" : "숨겼어요"}`);
-      refresh();
-      reloadAccess();
-    } catch (e) {
-      toast(errMsg(e));
-    }
-  };
-  const editGroup = (g?: Group) => openModal((c) => <GroupModal group={g} repos={gd.repos} members={members} onClose={c} />, "md");
 
   return (
-    <>
-      <PageHeader title="멤버와 권한" desc="역할은 할 수 있는 일을, 그룹은 보이는 메뉴와 빌드를 정해요. 멤버는 속한 그룹들의 메뉴와 빌드를 모두 합쳐서 봐요.">
-        <Button variant="primary" icon="plus" onClick={() => toast("초대 메일은 24시간 동안 유효한 일회용 링크로 보내져요")}>
-          멤버 초대
-        </Button>
-      </PageHeader>
-      <Card>
-        <TableWrap>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>이름</th>
-                <th>이메일</th>
-                <th>역할</th>
-                <th>그룹</th>
-                <th>2단계 인증</th>
-                <th>마지막 접속</th>
-                <th aria-label="동작" />
-              </tr>
-            </thead>
-            <tbody>
-              {members.map((u) => (
-                <tr key={u.email}>
-                  <td>
-                    <span className="flex items-center gap-2.5">
-                      <span className="grid place-items-center size-7 rounded-full bg-surface-2 border border-line text-[11px] font-semibold">{u.name[0]}</span>
-                      {u.name}
-                      {u.email === session?.me.email && <span className="text-faint text-xs">나</span>}
-                    </span>
-                  </td>
-                  <td className="text-muted">{u.email}</td>
-                  <td>
-                    {canEdit ? (
-                      <Select aria-label={`${u.name} 역할`} className="w-[120px]" value={u.role} onChange={(e) => changeRole(u, e.target.value as Role)}>
-                        {ROLES.map((r) => (
-                          <option key={r}>{r}</option>
-                        ))}
-                      </Select>
-                    ) : (
-                      <Chip>{u.role}</Chip>
-                    )}
-                  </td>
-                  <td>
-                    <span className="flex items-center gap-1 flex-wrap">
-                      {u.role === "Owner" ? (
-                        <span className="text-faint text-xs">전체 (Owner)</span>
-                      ) : u.groups.length ? (
-                        u.groups.map((id) => groupById[id] && <Chip key={id}>{groupById[id].name}</Chip>)
-                      ) : (
-                        <Dot tone="warn">그룹 없음</Dot>
-                      )}
-                      {canEdit && (
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          iconOnly
-                          icon="edit"
-                          aria-label={`${u.name} 그룹 변경`}
-                          title="그룹 변경"
-                          onClick={() => openModal((c) => <MemberGroupsModal member={u} groups={gd.groups} onClose={c} />)}
-                        />
-                      )}
-                    </span>
-                  </td>
-                  <td>{u.tfa ? <Dot tone="ok">사용</Dot> : <Dot tone="warn">미설정 · 다음 로그인 때 강제</Dot>}</td>
-                  <td className="text-muted">{u.last}</td>
-                  <td className="text-right">
-                    {isOwner && u.email !== session?.me.email && (
-                      <Button size="sm" variant="ghost" icon="eye" onClick={() => preview(u)} disabled={viewAs?.email === u.email}>
-                        미리보기
-                      </Button>
-                    )}
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
-      </Card>
-
-      <Card>
-        <CardHeader title="그룹" sub="그룹마다 보이는 메뉴와 볼 수 있는 빌드 레포를 정해요. 로그인하면 내 그룹에 허용된 빌드만 보여요.">
-          {canEdit ? (
-            <Button size="sm" icon="plus" onClick={() => editGroup()}>
-              그룹 만들기
-            </Button>
-          ) : (
-            <Chip>Owner만 수정</Chip>
-          )}
-        </CardHeader>
-        {gd.groups.map((g) => (
-          <ListItem
-            key={g.id}
-            icon="users"
-            title={g.name}
-            sub={`멤버 ${g.members.length}명${g.members.length ? ` (${g.members.map((e) => members.find((x) => x.email === e)?.name ?? e).join(", ")})` : ""} · 메뉴 ${g.menus.length}개 · ${buildsLabel(g)}`}
-          >
-            {canEdit && (
-              <span className="flex gap-1">
-                <Button size="sm" icon="edit" onClick={() => editGroup(g)}>
-                  수정
-                </Button>
-                <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label={`${g.name} 삭제`} title="삭제" onClick={() => openModal((c) => <DeleteGroupModal group={g} onClose={c} />)} />
-              </span>
-            )}
-          </ListItem>
-        ))}
-        {!gd.groups.length && <div className="px-5 py-6 text-center text-muted">아직 그룹이 없어요.</div>}
-      </Card>
-
-      <Card>
-        <CardHeader title="그룹별 메뉴" sub="끄면 그 그룹 멤버의 메뉴에서 사라지고, 주소로 직접 들어와도 막혀요. 여러 그룹에 속한 멤버는 하나라도 켜져 있으면 보여요." />
-        <TableWrap>
-          <table className="tbl center">
-            <thead>
-              <tr>
-                <th>메뉴</th>
-                <th>
-                  <div>Owner</div>
-                  <span className="text-faint text-[11px] font-normal">항상 전체</span>
-                </th>
-                {gd.groups.map((g) => (
-                  <th key={g.id}>
-                    <div>{g.name}</div>
-                    <span className="text-faint text-[11px] font-normal">멤버 {g.members.length}명</span>
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {ROUTES.map((r) => (
-                <tr key={r.id}>
-                  <td>
-                    <div className="flex items-center gap-3">
-                      <span className="grid place-items-center size-8 rounded-md bg-surface-2 text-muted">
-                        <Icon name={r.icon as IconName} />
+    <Card className="!overflow-visible">
+      <div className="flex items-center gap-2 px-4 py-3 border-b border-line flex-wrap">
+        <Input placeholder="이름, 이메일, 그룹으로 찾기" aria-label="멤버 찾기" className="max-w-[260px]" value={q} onChange={(e) => setQ(e.target.value)} />
+        <Select aria-label="그룹으로 거르기" className="w-[180px]" value={groupFilter} onChange={(e) => setGroupFilter(e.target.value)}>
+          <option value="">모든 그룹</option>
+          {groups.map((g) => (
+            <option key={g.id} value={g.id}>
+              {g.name}
+            </option>
+          ))}
+        </Select>
+        <span className="ml-auto text-[12px] text-faint">{canEdit ? "그룹 칸을 누르면 여러 그룹을 고를 수 있어요" : "Owner만 바꿀 수 있어요"}</span>
+      </div>
+      {/* scrolls sideways on phones; on wider screens it stays visible so the group picker is never clipped */}
+      <div className="relative overflow-x-auto md:overflow-visible">
+      <table className="tbl">
+        <thead>
+          <tr>
+            <th>멤버</th>
+            <th>역할</th>
+            <th>그룹</th>
+            <th>보이는 것</th>
+            <th>2단계 인증</th>
+            <th aria-label="동작" />
+          </tr>
+        </thead>
+        <tbody>
+          {shown.map((u) => {
+            const eff = effectiveAccess(u, groups);
+            return (
+              <tr key={u.email}>
+                <td>
+                  <span className="flex items-center gap-2.5">
+                    <span className="grid place-items-center size-8 rounded-full bg-primary-soft text-primary text-[12px] font-semibold flex-none">{u.name[0]}</span>
+                    <span className="min-w-0">
+                      <span className="flex items-center gap-1.5 font-medium">
+                        {u.name}
+                        {u.email === session?.me.email && <span className="text-[10.5px] text-faint border border-line rounded px-1">나</span>}
                       </span>
-                      <div>
-                        <div className="font-medium">{r.label}</div>
-                        <div className="text-faint text-xs">{MENU_DESC[r.id]}</div>
-                      </div>
-                    </div>
-                  </td>
-                  <td>
-                    <span className="inline-flex text-faint" title="바꿀 수 없어요">
-                      <Icon name="lock" />
+                      <span className="block text-[12px] text-muted">
+                        {u.email} · {u.last}
+                      </span>
                     </span>
-                  </td>
-                  {gd.groups.map((g) => (
-                    <td key={g.id}>
-                      {r.id === "dashboard" ? (
-                        <span className="inline-flex text-faint" title="바꿀 수 없어요">
-                          <Icon name="lock" />
-                        </span>
-                      ) : (
-                        <span className="inline-flex">
-                          <Switch label={`${g.name} · ${r.label}`} checked={g.menus.includes(r.id)} disabled={!canEdit} onChange={(v) => toggleMenu(g, r.id, r.label, v)} />
-                        </span>
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
-      </Card>
+                  </span>
+                </td>
+                <td>
+                  {canEdit ? (
+                    <Select aria-label={`${u.name} 역할`} className="w-[118px]" value={u.role} onChange={(e) => changeRole(u, e.target.value as Role)}>
+                      {ROLES.map((r) => (
+                        <option key={r}>{r}</option>
+                      ))}
+                    </Select>
+                  ) : (
+                    <Chip>{u.role}</Chip>
+                  )}
+                </td>
+                <td className="!whitespace-normal">
+                  {u.role === "Owner" ? <span className="text-faint text-[12.5px] px-1.5">전체 (Owner)</span> : <GroupPicker member={u} groups={groups} canEdit={canEdit} />}
+                </td>
+                <td className="text-[12.5px] text-muted">
+                  메뉴 {eff.menus}개 · {eff.builds}
+                </td>
+                <td>{u.tfa ? <Dot tone="ok">사용</Dot> : <Dot tone="warn">미설정</Dot>}</td>
+                <td className="text-right">
+                  {isOwner && u.email !== session?.me.email && (
+                    <Button size="sm" variant="ghost" icon="eye" onClick={() => preview(u)} disabled={viewAs?.email === u.email}>
+                      미리보기
+                    </Button>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      </div>
+      {!shown.length && <div className="px-4 py-8 text-center text-muted">맞는 멤버가 없어요.</div>}
+    </Card>
+  );
+}
 
-      <Card>
-        <CardHeader title="역할별 작업 권한" sub="역할은 할 수 있는 일만 정해요. 무엇이 보이는지는 그룹이 정해요." />
-        <TableWrap>
-          <table className="tbl">
-            <thead>
-              <tr>
-                <th>할 수 있는 일</th>
-                {ROLES.map((r) => (
-                  <th key={r}>{r}</th>
+function GroupsTab({ members, gd, canEdit, selected, onSelect, onNew }: {
+  members: Member[];
+  gd: GroupsData;
+  canEdit: boolean;
+  selected: string | null;
+  onSelect: (id: string) => void;
+  onNew: () => void;
+}) {
+  const group = gd.groups.find((g) => g.id === selected) ?? gd.groups[0];
+  const nameOf = (email: string) => members.find((m) => m.email === email)?.name ?? email;
+
+  if (!gd.groups.length)
+    return (
+      <Card className="py-14 px-6 text-center flex flex-col items-center gap-2">
+        <span className="grid place-items-center size-10 rounded-lg bg-primary-soft text-primary mb-1">
+          <Icon name="users" />
+        </span>
+        <b className="font-semibold">아직 그룹이 없어요</b>
+        <p className="m-0 text-muted">그룹을 만들어 멤버마다 보일 메뉴와 빌드를 정해요.</p>
+        {canEdit && (
+          <Button variant="primary" icon="plus" className="mt-2" onClick={onNew}>
+            그룹 만들기
+          </Button>
+        )}
+      </Card>
+    );
+
+  return (
+    <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] gap-4 items-start">
+      <Card className="lg:sticky lg:top-[120px]">
+        <nav aria-label="그룹 목록" className="p-1.5 flex flex-col gap-0.5 max-h-[calc(100vh-180px)] overflow-auto scroll-soft">
+          {gd.groups.map((g) => {
+            const active = g.id === group?.id;
+            return (
+              <button
+                key={g.id}
+                type="button"
+                onClick={() => onSelect(g.id)}
+                aria-current={active ? "true" : undefined}
+                className={cx("w-full text-left px-3 py-2.5 rounded-lg transition-colors", active ? "bg-primary-soft" : "hover:bg-hover")}
+              >
+                <div className={cx("text-[13px] font-medium truncate", active && "text-primary")}>{g.name}</div>
+                <div className="text-[11.5px] text-muted truncate">
+                  {g.members.length ? g.members.map(nameOf).join(", ") : "멤버 없음"} · 메뉴 {g.menus.length}
+                </div>
+              </button>
+            );
+          })}
+        </nav>
+      </Card>
+      {group && (
+        <Card>
+          <GroupDetail key={`${group.id}:${JSON.stringify(draftOf(group))}`} group={group} repos={gd.repos} members={members} canEdit={canEdit} />
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function RolesTab() {
+  return (
+    <Card>
+      <CardHeader title="역할별 작업 권한" sub="역할은 할 수 있는 일만 정해요. 무엇이 보이는지는 멤버가 속한 그룹이 정해요." />
+      <TableWrap>
+        <table className="tbl">
+          <thead>
+            <tr>
+              <th>할 수 있는 일</th>
+              {ROLES.map((r) => (
+                <th key={r}>{r}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {PERMS.map(([label, ...vals]) => (
+              <tr key={label}>
+                <td>{label}</td>
+                {vals.map((v, i) => (
+                  <td key={i}>
+                    {v === 1 ? (
+                      <span className="text-ok">
+                        <Icon name="check" />
+                      </span>
+                    ) : v === 0 ? (
+                      <span className="text-faint">—</span>
+                    ) : (
+                      <Chip tone="warn">{v}</Chip>
+                    )}
+                  </td>
                 ))}
               </tr>
-            </thead>
-            <tbody>
-              {PERMS.map(([label, ...vals]) => (
-                <tr key={label}>
-                  <td>{label}</td>
-                  {vals.map((v, i) => (
-                    <td key={i}>
-                      {v === 1 ? (
-                        <span className="text-ok">
-                          <Icon name="check" />
-                        </span>
-                      ) : v === 0 ? (
-                        <span className="text-faint">—</span>
-                      ) : (
-                        <Chip tone="warn">{v}</Chip>
-                      )}
-                    </td>
-                  ))}
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </TableWrap>
-      </Card>
-    </>
+            ))}
+          </tbody>
+        </table>
+      </TableWrap>
+    </Card>
   );
 }
 
