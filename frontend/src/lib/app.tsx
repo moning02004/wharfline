@@ -216,7 +216,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           {m.render(closeModal)}
         </ModalShell>
       ))}
-      <div className="fixed right-4 bottom-4 z-[80] flex flex-col gap-2 pointer-events-none">
+      <div className="fixed inset-x-0 bottom-[max(16px,env(safe-area-inset-bottom))] z-[80] flex flex-col items-center gap-2 px-4 pointer-events-none">
         {toasts.map((t) => (
           <div
             key={t.id}
