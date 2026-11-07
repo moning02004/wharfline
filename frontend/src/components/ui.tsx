@@ -1,11 +1,20 @@
 import {
+  Children,
   forwardRef,
+  Fragment,
+  isValidElement,
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useRef,
+  useState,
   type ButtonHTMLAttributes,
   type InputHTMLAttributes,
   type ReactNode,
-  type SelectHTMLAttributes,
   type TextareaHTMLAttributes,
 } from "react";
+import { createPortal } from "react-dom";
 import { Icon, type IconName } from "./Icon";
 import type { Status } from "../lib/types";
 
@@ -212,15 +221,226 @@ export const Input = forwardRef<HTMLInputElement, InputHTMLAttributes<HTMLInputE
   return <input ref={ref} className={cx(inputBase, "h-8 px-2.5", mono && "font-mono text-[12.5px]", className)} {...rest} />;
 });
 
-export function Select({ className, mono, children, ...rest }: SelectHTMLAttributes<HTMLSelectElement> & { mono?: boolean }) {
+/* ---------- select (div-based "select-only combobox") ---------- */
+
+interface SelectOption {
+  value: string;
+  label: ReactNode;
+  text: string;
+  disabled: boolean;
+}
+
+/** Plain text of a React node, for type-ahead and for <option> without a value. */
+function textOf(node: ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") return "";
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return "";
+}
+
+/** Reads <option> children (also inside fragments and arrays) like a native <select> would. */
+function readOptions(children: ReactNode): SelectOption[] {
+  const out: SelectOption[] = [];
+  Children.forEach(children, (child) => {
+    if (!isValidElement<{ value?: string | number; children?: ReactNode; disabled?: boolean }>(child)) return;
+    if (child.type === Fragment) {
+      out.push(...readOptions(child.props.children));
+    } else if (child.type === "option") {
+      const { value, children: label, disabled } = child.props;
+      out.push({ value: value !== undefined ? String(value) : textOf(label), label, text: textOf(label), disabled: !!disabled });
+    }
+  });
+  return out;
+}
+
+interface SelectProps {
+  value?: string | number;
+  onChange?: (e: { target: { value: string } }) => void;
+  children?: ReactNode;
+  id?: string;
+  mono?: boolean;
+  className?: string;
+  disabled?: boolean;
+  placeholder?: string;
+  autoFocus?: boolean;
+  "aria-label"?: string;
+}
+
+/**
+ * Dropdown built from divs instead of a native <select>, keeping the same API:
+ * <option> children and onChange(e) with e.target.value. The list is portaled to
+ * <body> so cards and modals never clip it, and it flips upward near the bottom.
+ */
+export function Select({ value, onChange, children, id, mono, className, disabled, placeholder, autoFocus, "aria-label": ariaLabel }: SelectProps) {
+  const options = readOptions(children);
+  const current = String(value ?? "");
+  const selectedIndex = options.findIndex((o) => o.value === current);
+  const selected = options[selectedIndex];
+  const listId = useId();
+  const trigger = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
+  const typed = useRef({ text: "", at: 0 });
+
+  const place = useCallback(() => {
+    const r = trigger.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom - 8;
+    const above = r.top - 8;
+    const want = Math.min(280, options.length * 34 + 10);
+    const up = below < want && above > below;
+    setPos({ left: r.left, width: Math.max(r.width, 160), maxHeight: Math.max(120, Math.min(280, up ? above : below)), ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }) });
+  }, [options.length]);
+
+  const enabled = (i: number) => i >= 0 && i < options.length && !options[i].disabled;
+  const step = (from: number, dir: 1 | -1) => {
+    for (let i = from + dir; i >= 0 && i < options.length; i += dir) if (enabled(i)) return i;
+    return from;
+  };
+  const openList = (at = selectedIndex >= 0 ? selectedIndex : step(-1, 1)) => {
+    if (disabled || !options.length) return;
+    setActive(at);
+    place();
+    setOpen(true);
+  };
+  const close = (focus = true) => {
+    setOpen(false);
+    if (focus) trigger.current?.focus();
+  };
+  const choose = (i: number) => {
+    if (!enabled(i)) return;
+    if (options[i].value !== current) onChange?.({ target: { value: options[i].value } });
+    close();
+  };
+
+  useEffect(() => {
+    if (autoFocus) trigger.current?.focus();
+  }, [autoFocus]);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    place();
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!trigger.current?.contains(t) && !list.current?.contains(t)) close(false);
+    };
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true); // capture: also follows scrolling inside modals
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [open, place]);
+
+  useEffect(() => {
+    if (open) list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [open, active]);
+
+  const typeAhead = (ch: string) => {
+    const now = Date.now();
+    typed.current = { text: (now - typed.current.at < 600 ? typed.current.text : "") + ch.toLowerCase(), at: now };
+    const start = open ? active : selectedIndex;
+    const order = [...options.keys()].map((k) => (k + Math.max(start, 0) + (typed.current.text.length === 1 ? 1 : 0)) % options.length);
+    const hit = order.find((i) => enabled(i) && options[i].text.toLowerCase().startsWith(typed.current.text));
+    if (hit === undefined) return;
+    if (open) setActive(hit);
+    else choose(hit);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (disabled) return;
+    const k = e.key;
+    if (!open) {
+      if (k === "ArrowDown" || k === "ArrowUp" || k === "Enter" || k === " ") {
+        e.preventDefault();
+        openList(k === "ArrowUp" && selectedIndex < 0 ? step(options.length, -1) : undefined);
+      } else if (k.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        typeAhead(k);
+      }
+      return;
+    }
+    if (k === "ArrowDown") (e.preventDefault(), setActive((a) => step(a, 1)));
+    else if (k === "ArrowUp") (e.preventDefault(), setActive((a) => step(a, -1)));
+    else if (k === "Home") (e.preventDefault(), setActive(step(-1, 1)));
+    else if (k === "End") (e.preventDefault(), setActive(step(options.length, -1)));
+    else if (k === "Enter" || k === " ") (e.preventDefault(), choose(active));
+    else if (k === "Escape") (e.preventDefault(), e.stopPropagation(), close());
+    else if (k === "Tab") close(false);
+    else if (k.length === 1 && !e.metaKey && !e.ctrlKey && !e.altKey) typeAhead(k);
+  };
+
   return (
-    <div className="relative">
-      <select className={cx(inputBase, "h-8 pl-2.5 pr-8 appearance-none", mono && "font-mono text-[12.5px]", className)} {...rest}>
-        {children}
-      </select>
+    <div className={cx("relative", className ?? "w-full")}>
+      <div
+        ref={trigger}
+        id={id}
+        role="combobox"
+        tabIndex={disabled ? -1 : 0}
+        aria-haspopup="listbox"
+        aria-expanded={open}
+        aria-controls={listId}
+        aria-activedescendant={open && enabled(active) ? `${listId}-${active}` : undefined}
+        aria-disabled={disabled || undefined}
+        aria-label={ariaLabel}
+        aria-labelledby={!ariaLabel && id ? `${id}-label` : undefined}
+        onClick={() => (open ? close() : openList())}
+        onKeyDown={onKeyDown}
+        className={cx(
+          inputBase,
+          "h-8 pl-2.5 pr-8 flex items-center cursor-pointer select-none outline-none",
+          open && "border-accent shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_18%,transparent)]",
+          disabled && "opacity-50 cursor-not-allowed hover:border-line-strong",
+          mono && "font-mono text-[12.5px]",
+        )}
+      >
+        <span className={cx("truncate", !selected && "text-faint")}>{selected ? selected.label : placeholder ?? "선택하세요"}</span>
+      </div>
       <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-faint">
-        <Icon name="chev" className="size-3.5" />
+        <Icon name="chev" className={cx("size-3.5 transition-transform duration-150", open && "rotate-180")} />
       </span>
+      {open &&
+        pos &&
+        createPortal(
+          <div
+            ref={list}
+            id={listId}
+            role="listbox"
+            aria-labelledby={id ? `${id}-label` : undefined}
+            aria-label={ariaLabel}
+            style={{ position: "fixed", left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom, maxHeight: pos.maxHeight }}
+            className="z-[70] overflow-auto scroll-soft rounded-xl bg-surface shadow-pop p-1 animate-fade"
+          >
+            {options.map((o, i) => (
+              <div
+                key={`${o.value}-${i}`}
+                id={`${listId}-${i}`}
+                data-index={i}
+                role="option"
+                aria-selected={i === selectedIndex}
+                aria-disabled={o.disabled || undefined}
+                onMouseEnter={() => enabled(i) && setActive(i)}
+                onMouseDown={(e) => e.preventDefault()} // keep focus on the trigger
+                onClick={() => choose(i)}
+                className={cx(
+                  "flex items-center gap-2 min-h-[30px] px-2 py-1 rounded-lg text-[13px] cursor-pointer",
+                  mono && "font-mono text-[12.5px]",
+                  i === active && "bg-hover",
+                  i === selectedIndex && "font-medium text-primary",
+                  o.disabled && "opacity-40 cursor-not-allowed",
+                )}
+              >
+                <span className="flex-1 min-w-0 truncate">{o.label}</span>
+                {i === selectedIndex && <Icon name="check" className="size-3.5 flex-none" strokeWidth={2.4} />}
+              </div>
+            ))}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -235,7 +455,12 @@ export function Field({ label, hint, htmlFor, children, right, error }: { label?
       {(label || right) && (
         <div className="flex items-center justify-between gap-2 flex-wrap">
           {label && (
-            <label htmlFor={htmlFor} className="text-[12.5px] font-medium">
+            <label
+              htmlFor={htmlFor}
+              id={htmlFor ? `${htmlFor}-label` : undefined}
+              className="text-[12.5px] font-medium"
+              onClick={() => htmlFor && document.getElementById(htmlFor)?.getAttribute("role") === "combobox" && document.getElementById(htmlFor)?.focus()}
+            >
               {label}
             </label>
           )}
