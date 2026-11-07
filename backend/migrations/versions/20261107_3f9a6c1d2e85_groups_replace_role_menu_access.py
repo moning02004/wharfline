@@ -26,8 +26,8 @@ branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 
 ROLES = ("Admin", "Deployer", "Viewer")
-# The sample Owner's email was a masked placeholder; login now needs a real member email.
-SAMPLE_OWNER_OLD, SAMPLE_OWNER_NEW = "moning·····@gmail.com", "jeonghoon@acme.kr"
+# The very first seed used a placeholder Owner email; login needs a real member email.
+SAMPLE_OWNER_OLD, SAMPLE_OWNER_NEW = "owner@example.invalid", "jeonghoon@acme.kr"
 
 
 def upgrade() -> None:
