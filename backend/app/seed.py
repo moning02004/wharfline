@@ -13,7 +13,7 @@ from sqlalchemy.orm import Session
 
 from . import models as m
 from . import sshkeys
-from .store import CLIENT_IP, COMPOSE_TPL
+from .store import BUILTIN_BOOK, BUILTIN_REPO, BUILTIN_URL, CLIENT_IP
 
 keys: list[dict] = [
     {"id": "k1", "kind": "ssh", "name": "prod-deploy", "type": "ED25519", "fingerprint": "SHA256:9fK2mQx7Lr0aZp4c1VtY8sNw3bHdE6uJ", "createdBy": "정훈", "createdAt": "2026-09-14", "lastUsed": "12분 전", "usedCount": 3},
@@ -42,9 +42,10 @@ inventories: list[dict] = [
 ]
 
 repos: list[dict] = [
-    {"name": "infra/ansible-deploy", "kind": "git", "url": "https://github.com/infra/ansible-deploy.git", "branch": "main", "auth": "토큰 · github-readonly", "commit": "c3e18a0", "books": ["deploy-app.yml", "rollback.yml", "healthcheck.yml"]},
-    {"name": "local-playbooks", "kind": "local", "url": "/var/lib/wharfline/playbooks/local", "branch": "-", "auth": "-", "commit": "-", "books": ["site.yml", "healthcheck.yml"]},
-    {"name": "ops/ansible-playbooks", "kind": "git", "url": "git@git.acme.kr:ops/ansible-playbooks.git", "branch": "main", "auth": "SSH 키 · staging-deploy", "commit": "8f20b6d", "books": ["deploy-worker.yml", "deploy-app.yml"]},
+    {"name": BUILTIN_REPO, "kind": "builtin", "url": BUILTIN_URL, "branch": "-", "auth": "-", "commit": "-"},
+    {"name": "infra/ansible-deploy", "kind": "git", "url": "https://github.com/infra/ansible-deploy.git", "branch": "main", "auth": "토큰 · github-readonly", "commit": "c3e18a0"},
+    {"name": "local-playbooks", "kind": "local", "url": "/var/lib/wharfline/playbooks/local", "branch": "-", "auth": "-", "commit": "-"},
+    {"name": "ops/ansible-playbooks", "kind": "git", "url": "git@git.acme.kr:ops/ansible-playbooks.git", "branch": "main", "auth": "SSH 키 · staging-deploy", "commit": "8f20b6d"},
 ]
 
 registries: list[dict] = [
@@ -95,10 +96,10 @@ envs[2]["history"] = [
 ]
 
 jobs: list[dict] = [
-    {"id": "j1", "method": "ansible", "name": "api-server · production", "image": "ghcr.io/acme/api-server", "tagNow": "v1.8.2", "defaultTag": "latest", "repo": "infra/ansible-deploy", "book": "deploy-app.yml", "inventory": "production", "targets": ["web"], "env": "api-server.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "12분 전", "duration": "1m 42s"}},
-    {"id": "j4", "method": "ansible", "name": "batch-worker · production", "image": "git.acme.kr/acme/batch-worker", "tagNow": "v0.9.4", "defaultTag": "latest", "repo": "ops/ansible-playbooks", "book": "deploy-worker.yml", "inventory": "production", "targets": ["worker"], "env": "api-server.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "어제", "duration": "0m 52s"}},
-    {"id": "j2", "method": "compose", "dir": "/srv/web-front", "compose": COMPOSE_TPL, "name": "web-front · production", "image": "ghcr.io/acme/web-front", "tagNow": "v2.3.0", "defaultTag": "latest", "inventory": "production", "targets": ["web"], "env": "web-front.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "어제", "duration": "2m 05s"}},
-    {"id": "j3", "method": "compose", "dir": "/srv/api-server", "compose": COMPOSE_TPL, "name": "api-server · staging", "image": "ghcr.io/acme/api-server", "tagNow": "v1.8.1", "defaultTag": "latest", "inventory": "staging", "targets": [], "env": "api-server.staging", "hook": True, "protected": False, "lock": True, "rollback": False, "last": {"status": "bad", "time": "2시간 전", "duration": "0m 38s"}},
+    {"id": "j1", "name": "api-server · production", "image": "ghcr.io/acme/api-server", "tagNow": "v1.8.2", "defaultTag": "latest", "repo": "infra/ansible-deploy", "book": "deploy-app.yml", "inventory": "production", "targets": ["web"], "env": "api-server.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "12분 전", "duration": "1m 42s"}},
+    {"id": "j4", "name": "batch-worker · production", "image": "git.acme.kr/acme/batch-worker", "tagNow": "v0.9.4", "defaultTag": "latest", "repo": "ops/ansible-playbooks", "book": "deploy-worker.yml", "inventory": "production", "targets": ["worker"], "env": "api-server.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "어제", "duration": "0m 52s"}},
+    {"id": "j2", "name": "web-front · production", "image": "ghcr.io/acme/web-front", "tagNow": "v2.3.0", "defaultTag": "latest", "repo": BUILTIN_REPO, "book": BUILTIN_BOOK, "inventory": "production", "targets": ["web"], "env": "web-front.production", "hook": False, "protected": True, "lock": True, "rollback": True, "last": {"status": "ok", "time": "어제", "duration": "2m 05s"}},
+    {"id": "j3", "name": "api-server · staging", "image": "ghcr.io/acme/api-server", "tagNow": "v1.8.1", "defaultTag": "latest", "repo": BUILTIN_REPO, "book": BUILTIN_BOOK, "inventory": "staging", "targets": [], "env": "api-server.staging", "hook": True, "protected": False, "lock": True, "rollback": False, "last": {"status": "bad", "time": "2시간 전", "duration": "0m 38s"}},
 ]
 
 runs: list[dict] = [
@@ -189,7 +190,8 @@ def seed_if_empty(db: Session) -> bool:
         db.add(m.Inventory(id=inv["id"], name=inv["name"], key=inv["key"], hosts=[
             m.Host(name=h["name"], ip=h["ip"], port=h["port"], ssh_user=h["user"], grp=h["group"], host_key=h["hostKey"], status=h["status"])
             for h in inv["hosts"]]))
-    db.add_all(m.Repo(**r) for r in repos)
+    existing = set(db.scalars(select(m.Repo.name)))  # the migration already adds the built-in repo
+    db.add_all(m.Repo(**r) for r in repos if r["name"] not in existing)
     for r in registries:
         reg = m.Registry(id=r["id"], name=r["name"], host=r["host"], namespace=r["namespace"], auth=r["auth"], user=r["user"])
         reg.set_secret("example_pull_token_" + secrets.token_hex(16))
@@ -206,8 +208,8 @@ def seed_if_empty(db: Session) -> bool:
             env.versions.append(v)
         db.add(env)
     for j in jobs:
-        db.add(m.Job(id=j["id"], method=j["method"], name=j["name"], image=j["image"], tag_now=j["tagNow"], default_tag=j["defaultTag"],
-                     repo=j.get("repo"), book=j.get("book"), dir=j.get("dir"), compose=j.get("compose"), inventory=j["inventory"],
+        db.add(m.Job(id=j["id"], name=j["name"], image=j["image"], tag_now=j["tagNow"], default_tag=j["defaultTag"],
+                     repo=j["repo"], book=j["book"], inventory=j["inventory"],
                      targets=j["targets"], env=j["env"], hook=j["hook"], protected=j["protected"], lock=j["lock"], rollback=j["rollback"],
                      last_status=j["last"]["status"], last_time=j["last"]["time"], last_duration=j["last"]["duration"]))
     db.add_all(m.Run(no=r["no"], job=r["job"], job_id=r["jobId"], target=r["target"], tag=r["tag"], status=r["status"], by=r["by"],

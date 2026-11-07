@@ -15,10 +15,7 @@ from ..deps import require_login, require_sudo
 
 router = APIRouter(prefix="/api", tags=["resources"], dependencies=[Depends(require_login)])
 
-LOCAL_ROOT = "/var/lib/wharfline/playbooks/"
 NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ ·-]{0,63}$")
-IMAGE_RE = re.compile(r"^[a-z0-9.-]+(:\d+)?(/[a-z0-9._-]+)+$")
-TAG_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$")
 
 
 # ---------- registries & images ----------
@@ -72,59 +69,17 @@ def add_registry(body: RegistryIn, db: Session = Depends(get_db)):
 
 
 class ImageIn(BaseModel):
-    ref: str
-    registry: str | None = None
-    tags: list[str] = []
-    sourceRepo: str = ""
-
-
-REPO_RE = re.compile(r"^[^/\s]+(/[^/\s]+)+$")  # owner/name, or group/subgroup/name on GitLab
+    image: str
 
 
 @router.post("/images")
 def add_image(body: ImageIn, db: Session = Depends(get_db)):
-    """Register an image to deploy. Tags are entered by hand here; digests are pinned at deploy time.
+    """Register an image from "name:tag". The registry is matched by host; digests are pinned at deploy time.
 
-    Registering an image that already exists only adds the new tags (and the build repo if it had none).
+    Registering an image that already exists only adds the new tag.
     """
-    ref = body.ref.strip().lower().removeprefix("https://").split("@")[0]
-    tags = list(body.tags)
-    if ":" in ref.split("/")[-1]:
-        ref, tag = ref.rsplit(":", 1)
-        tags = [tag, *tags]
-    if not IMAGE_RE.match(ref):
-        raise HTTPException(400, "이미지 주소는 ghcr.io/조직/이름처럼 소문자로 넣어 주세요.")
-    # "latest" is not stored: Wharfline treats the newest known tag as latest.
-    tags = list(dict.fromkeys(t.strip() for t in tags if t.strip() and t.strip() != "latest"))
-    if not tags:
-        raise HTTPException(400, "버전 태그를 하나 이상 넣어 주세요. 예: v1.2.0 (latest는 가장 최신 태그로 정해져요)")
-    if any(not TAG_RE.match(t) for t in tags):
-        raise HTTPException(400, "태그는 영문, 숫자, . _ - 만 쓸 수 있어요. 예: v1.2.0")
-    host = ref.split("/")[0]
-    if body.registry:
-        reg = db.get(m.Registry, body.registry)
-        if not reg:
-            raise HTTPException(400, "레지스트리를 찾을 수 없어요.")
-        if reg.host != host:
-            raise HTTPException(400, f"이미지 주소가 고른 레지스트리({reg.host})로 시작하지 않아요.")
-    else:  # no registry picked: use the one on the same host, if any
-        reg = db.scalar(select(m.Registry).where(m.Registry.host == host).order_by(m.Registry.ord).limit(1))
-    repo = body.sourceRepo.strip().lower().removesuffix(".git")
-    if repo and not REPO_RE.match(repo):
-        raise HTTPException(400, "빌드 레포는 owner/name 형식으로 넣어 주세요. GitLab 하위 그룹은 group/sub/name도 돼요.")
-    img = db.get(m.Image, ref)
-    created = img is None
-    if not img:
-        img = m.Image(ref=ref, registry_id=reg.id if reg else None)
-        db.add(img)
-    if repo and not img.source_repo:
-        img.source_repo = repo
-    known = {t.name for t in img.tags}
-    # The first tag given is the newest: give it the latest timestamp.
-    now = time.time()
-    added = [t for t in tags if t not in known]
-    for i, t in enumerate(added):
-        img.tags.append(m.ImageTag(name=t, digest="", pushed="방금 등록", pushed_at=now - i * 0.001))
+    ref, tag = s.parse_image(body.image)
+    img, created, added = s.ensure_image(db, ref, tag)
     s.log_act(db, "이미지 등록" if created else "이미지 태그 추가", f"{ref} ({', '.join(added) or '새 태그 없음'})")
     db.commit()
     return {**img.to_dict(), "created": created, "addedTags": added}
@@ -134,55 +89,12 @@ def add_image(body: ImageIn, db: Session = Depends(get_db)):
 
 @router.get("/repos")
 def list_repos(db: Session = Depends(get_db)):
-    return [r.to_dict() for r in db.scalars(select(m.Repo).order_by(m.Repo.id))]
-
-
-class RepoIn(BaseModel):
-    name: str = ""
-    kind: str = Field(pattern="^(git|local)$")
-    url: str = ""
-    branch: str = "main"
-    key: str = ""
-    path: str = ""
-
-
-def _add_repo(db: Session, repo: m.Repo, log: tuple[str, str]) -> dict:
-    if db.scalar(select(m.Repo).where(m.Repo.name == repo.name)):
-        raise HTTPException(400, "같은 이름의 레포가 있어요.")
-    db.add(repo)
-    s.log_act(db, *log)
+    """Repos are created when a job is saved. The built-in playbook repo is always listed first."""
+    s.builtin_repo(db)
     db.commit()
-    return repo.to_dict()
-
-
-@router.post("/repos")
-def add_repo(body: RepoIn, db: Session = Depends(get_db)):
-    if body.kind == "local":
-        p = body.path.strip().rstrip("/")
-        if not p.startswith(LOCAL_ROOT) or ".." in p:
-            raise HTTPException(400, f"경로는 {LOCAL_ROOT} 아래여야 하고 ..은 쓸 수 없어요.")
-        repo = m.Repo(name=body.name.strip() or p.split("/")[-1], kind="local", url=p, branch="-", auth="-", commit="-", books=["site.yml", "deploy-app.yml"])
-        return _add_repo(db, repo, ("플레이북 경로 연결", p))
-    u = body.url.strip()
-    found = re.search(r"[:/]([^/:]+/[^/]+?)(\.git)?$", u)
-    if not found or not re.match(r"^(git@|ssh://|https://)", u):
-        raise HTTPException(400, "저장소 주소를 확인해 주세요. 예: git@github.com:org/ansible.git 또는 https://github.com/org/ansible.git")
-    is_ssh = bool(re.match(r"^(git@|ssh://)", u))
-    key = None
-    if body.key:
-        key = db.scalar(select(m.Key).where(m.Key.name == body.key))
-        if not key:
-            raise HTTPException(400, "고른 키를 찾을 수 없어요.")
-        if key.kind != ("ssh" if is_ssh else "token"):
-            raise HTTPException(400, "SSH 주소에는 SSH 키를, HTTPS 주소에는 액세스 토큰을 골라 주세요.")
-    elif is_ssh:
-        raise HTTPException(400, "SSH 주소는 SSH 키가 있어야 해요.")
-    auth = (("SSH 키 · " if is_ssh else "토큰 · ") + key.name) if key else "공개 저장소"
-    name = body.name.strip() or found.group(1)
-    repo = m.Repo(name=name, kind="git", url=u, branch=body.branch.strip() or "main", auth=auth, commit="1a2b3c4", books=["site.yml", "deploy-app.yml"])
-    if key:
-        key.used_count += 1
-    return _add_repo(db, repo, ("플레이북 레포 연결", name))
+    jobs = list(db.scalars(select(m.Job).order_by(m.Job.ord)))
+    repos = db.scalars(select(m.Repo).order_by((m.Repo.kind != "builtin"), m.Repo.id))
+    return [{**r.to_dict(), "usedBy": [{"job": j.name, "path": j.book} for j in jobs if j.repo == r.name]} for r in repos]
 
 
 # ---------- inventory ----------

@@ -126,16 +126,15 @@ class Repo(Base):
     __tablename__ = "repos"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), unique=True)
-    kind: Mapped[str] = mapped_column(String(16))  # git | local
+    kind: Mapped[str] = mapped_column(String(16))  # git | local | builtin
     url: Mapped[str] = mapped_column(Text)
     branch: Mapped[str] = mapped_column(String(128))
     auth: Mapped[str] = mapped_column(String(255))
     commit: Mapped[str] = mapped_column(String(64))
-    books: Mapped[list[str]] = mapped_column(JSONB, default=list)
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "kind": self.kind, "url": self.url, "branch": self.branch, "auth": self.auth,
-                "commit": self.commit, "books": self.books}
+                "commit": self.commit}
 
 
 class Registry(EncryptedSecret, Base):
@@ -249,15 +248,12 @@ class Job(Base):
     __tablename__ = "jobs"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
-    method: Mapped[str] = mapped_column(String(16))  # compose | ansible
     name: Mapped[str] = mapped_column(String(255), unique=True)
-    image: Mapped[str] = mapped_column(String(512))
+    image: Mapped[str | None] = mapped_column(String(512))  # ref without tag; None when the playbook needs no image
     tag_now: Mapped[str] = mapped_column(String(128), default="-")
     default_tag: Mapped[str] = mapped_column(String(128), default="latest")
-    repo: Mapped[str | None] = mapped_column(String(255))
-    book: Mapped[str | None] = mapped_column(String(255))
-    dir: Mapped[str | None] = mapped_column(String(512))
-    compose: Mapped[str | None] = mapped_column(Text)
+    repo: Mapped[str] = mapped_column(String(255))  # Repo.name
+    book: Mapped[str] = mapped_column(String(255))  # playbook path inside the repo
     inventory: Mapped[str] = mapped_column(String(128))
     targets: Mapped[list[str]] = mapped_column(JSONB, default=list)
     env: Mapped[str] = mapped_column(String(255))
@@ -268,17 +264,16 @@ class Job(Base):
     last_status: Mapped[str] = mapped_column(String(16), default="warn")
     last_time: Mapped[str] = mapped_column(String(64), default="아직 실행 안 함")
     last_duration: Mapped[str] = mapped_column(String(32), default="-")
+    playbook_repo: Mapped[Repo | None] = relationship(primaryjoin="foreign(Job.repo) == Repo.name", viewonly=True)
 
     def to_dict(self) -> dict[str, Any]:
-        d = {"id": self.id, "method": self.method, "name": self.name, "image": self.image, "tagNow": self.tag_now,
-             "defaultTag": self.default_tag, "inventory": self.inventory, "targets": self.targets, "env": self.env,
-             "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
-             "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration}}
-        if self.method == "compose":
-            d.update(dir=self.dir, compose=self.compose)
-        else:
-            d.update(repo=self.repo, book=self.book)
-        return d
+        r = self.playbook_repo
+        return {"id": self.id, "name": self.name, "image": self.image, "tagNow": self.tag_now, "defaultTag": self.default_tag,
+                "playbook": {"repo": self.repo, "kind": r.kind if r else "git", "url": r.url if r else "",
+                             "branch": r.branch if r else "-", "path": self.book},
+                "inventory": self.inventory, "targets": self.targets, "env": self.env,
+                "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
+                "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration}}
 
 
 # Run numbers continue after the sample history (#179–#184).
