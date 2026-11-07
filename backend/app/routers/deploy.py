@@ -22,6 +22,7 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None) -> dict:
     j = job.to_dict()
     inv = s.inv_of(db, j)
     img = s.image_of(db, j)
+    has_image = bool(j["image"])
     with_skip = lambda hs: [{**h, "skip": s.host_skip(h)} for h in hs]  # noqa: E731
     return {
         **j,
@@ -32,7 +33,7 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None) -> dict:
         "imageTags": img["tags"],
         "latestTag": img["tags"][0]["name"] if img["tags"] else None,
         "prevTag": s.prev_tag(db, j, img),
-        "build": githooks.build_for_image(db, j["image"], scope),
+        "build": githooks.build_for_image(db, j["image"], scope) if has_image else None,
     }
 
 
@@ -67,17 +68,20 @@ def list_jobs(db: Session = Depends(get_db), scope: set[str] | None = Depends(bu
     return [job_view(db, j, scope) for j in all_jobs(db)]
 
 
+class PlaybookIn(BaseModel):
+    source: str = Field(pattern="^(git|builtin)$")
+    url: str = ""
+    branch: str = "main"
+    path: str = ""
+    key: str = ""
+
+
 class JobIn(BaseModel):
     name: str
-    image: str
-    defaultTag: str = "latest"
-    method: str = Field(pattern="^(compose|ansible)$")
+    playbook: PlaybookIn
     inventory: str
     targets: list[str] = []
-    dir: str | None = None
-    compose: str | None = None
-    repo: str | None = None
-    book: str | None = None
+    image: str = ""
     envMode: str = Field(default="paste", pattern="^(paste|existing|none)$")
     envName: str | None = None
     envVars: list[list[str]] = []
@@ -85,6 +89,9 @@ class JobIn(BaseModel):
     protected: bool = True
     lock: bool = True
     rollback: bool = True
+
+
+BAD_PATH = "플레이북 경로는 레포 안의 .yml 파일이에요. 예: deploy/app.yml"
 
 
 @router.post("/jobs")
@@ -102,18 +109,21 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     unknown = set(body.targets) - {h.grp for h in inv.hosts}
     if unknown:
         raise HTTPException(400, f"인벤토리에 없는 그룹이에요: {', '.join(sorted(unknown))}")
-    if not db.get(m.Image, body.image):
-        raise HTTPException(400, "이미지를 먼저 등록해 주세요.")
-    if body.method == "compose":
-        bad = s.compose_risk(body.compose or "")
-        if bad:
-            raise HTTPException(400, f"compose.yml에 서버 권한을 넘기는 설정이 있어 저장할 수 없어요: {', '.join(bad)}")
-        if not re.match(r"^(/srv/|~/|/home/deploy/)", body.dir or "") or ".." in (body.dir or ""):
-            raise HTTPException(400, "배포 경로는 /srv/ 또는 deploy 사용자의 홈 아래여야 해요.")
+
+    pb = body.playbook
+    image_text = body.image.strip()
+    ref, tag = s.parse_image(image_text) if image_text else (None, "latest")
+    if pb.source == "builtin":
+        if not ref:
+            raise HTTPException(400, "기본 플레이북은 띄울 이미지가 있어야 해요.")
+        path = s.BUILTIN_BOOK
     else:
-        repo = s.repo_by_name(db, body.repo)
-        if not repo or body.book not in repo["books"]:
-            raise HTTPException(400, "플레이북 레포와 플레이북을 골라 주세요.")
+        path = pb.path.strip()
+        if not s.PLAYBOOK_PATH_RE.match(path):
+            raise HTTPException(400, BAD_PATH)
+    repo = s.builtin_repo(db) if pb.source == "builtin" else s.ensure_git_repo(db, pb.url, pb.branch, pb.key.strip())
+    if ref:
+        s.ensure_image(db, ref, tag)
 
     if body.envMode == "none":
         env_name = ""  # no .env for this job; one can be attached later
@@ -131,16 +141,12 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         db.add(env)
 
     job = m.Job(
-        id=s.new_id("j"), name=name, image=body.image, default_tag=body.defaultTag or "latest", method=body.method,
+        id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name, book=path,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, protected=body.protected,
         lock=body.lock, rollback=body.rollback,
     )
-    if body.method == "compose":
-        job.dir, job.compose = body.dir, body.compose
-    else:
-        job.repo, job.book = body.repo, body.book
     db.add(job)
-    s.log_act(db, "배포 작업 생성", f"{name} · {runner.METHODS[body.method]}")
+    s.log_act(db, "배포 작업 생성", f"{name} · {repo.name}/{path}")
     db.commit()
     return job_view(db, job, scope)
 
@@ -160,7 +166,15 @@ async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # a
     hosts = [h for h in s.target_hosts(s.inv_of(db, j), body.groups) if not s.host_skip(h)]
     if not hosts:
         raise HTTPException(400, "배포할 수 있는 서버가 없어요.")
-    return runner.start_run(db, j, body.groups, body.tag, "되돌리기" if body.rollback else "수동 실행")
+    tag = body.tag.strip() or "latest"
+    if job.image:
+        if tag != "latest" and not s.TAG_RE.match(tag):
+            raise HTTPException(400, "태그는 영문, 숫자, . _ - 만 쓸 수 있어요. 예: v1.2.0")
+        s.ensure_image(db, job.image, tag, pushed="직접 입력")  # a typed tag is remembered on the image
+        db.flush()
+    else:
+        tag = "-"  # nothing to pull; the tag is ignored
+    return runner.start_run(db, j, body.groups, tag, "되돌리기" if body.rollback else "수동 실행")
 
 
 @router.get("/runs")
@@ -176,8 +190,9 @@ def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Dep
     job = db.get(m.Job, rec.job_id)
     base = rec.to_dict()
     if job:
-        base.update(method=runner.METHODS[job.method], image=job.image, inventory=job.inventory)
-        built = githooks.build_for_tag(db, job.image, rec.tag, scope)
+        j = job.to_dict()
+        base.update(method=runner.method_label(j), playbook=j["playbook"], image=job.image, inventory=job.inventory)
+        built = githooks.build_for_tag(db, job.image, rec.tag, scope) if job.image else None
         base["build"] = built.to_dict() if built else None
     if no in runner.live:
         return {**base, "live": not runner.live[no]["done"], "events": runner.live[no]["events"]}
