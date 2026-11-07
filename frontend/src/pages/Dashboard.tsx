@@ -1,9 +1,11 @@
+import type { ReactNode } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
 import type { Dashboard as D } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
 import { useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
+import { Icon, type IconName } from "../components/Icon";
 import { Banner, Button, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
 
 export default function Dashboard() {
@@ -35,17 +37,24 @@ export default function Dashboard() {
         </Banner>
       )}
 
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {[
-          ["오늘 배포", stats.today, <span className="text-muted">성공 {stats.todayOk} · 실패 {stats.todayBad}</span>],
-          ["최근 30일 성공률", stats.successRate, <span className="text-ok">지난달보다 {stats.successDelta}</span>],
-          ["연결된 서버", `${stats.hostsOnline}/${stats.hostsTotal}`, <span className="text-muted">{stats.hostsTotal - stats.hostsOnline}대 응답 없음</span>],
-          ["평균 배포 시간", stats.avgDuration, <span className="text-muted">최근 20회 기준</span>],
-        ].map(([label, value, sub], i) => (
-          <Card key={i} className="px-4 py-3.5">
-            <small className="text-muted text-[12.5px] font-medium">{label}</small>
-            <b className="block text-[22px] font-semibold tracking-[-0.02em] mt-0.5 tabular-nums leading-tight">{value}</b>
-            <span className="text-[12.5px]">{sub}</span>
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
+        {(
+          [
+            ["오늘 배포", stats.today, <span className="text-muted">성공 {stats.todayOk} · 실패 {stats.todayBad}</span>, "rocket", "text-primary bg-primary-soft"],
+            ["최근 30일 성공률", stats.successRate, <span className="text-ok">지난달보다 {stats.successDelta}</span>, "check", "text-ok bg-ok-soft"],
+            ["연결된 서버", `${stats.hostsOnline}/${stats.hostsTotal}`, <span className="text-muted">{stats.hostsTotal - stats.hostsOnline}대 응답 없음</span>, "server", "text-warn bg-warn-soft"],
+            ["평균 배포 시간", stats.avgDuration, <span className="text-muted">최근 20회 기준</span>, "history", "text-muted bg-surface-2"],
+          ] as [string, ReactNode, ReactNode, IconName, string][]
+        ).map(([label, value, sub, icon, tint], i) => (
+          <Card key={i} hover className="px-4 py-4 flex items-start gap-3">
+            <span className={`grid place-items-center size-9 rounded-lg flex-none shadow-[inset_0_0_0_1px_rgba(16,24,40,.04)] ${tint}`}>
+              <Icon name={icon} className="size-[17px]" />
+            </span>
+            <div className="min-w-0">
+              <small className="text-muted text-[12.5px] font-medium">{label}</small>
+              <b className="block text-[24px] font-semibold tracking-[-0.03em] mt-0.5 tabular-nums leading-tight">{value}</b>
+              <span className="text-[12.5px]">{sub}</span>
+            </div>
           </Card>
         ))}
       </div>

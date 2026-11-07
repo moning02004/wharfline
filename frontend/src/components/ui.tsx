@@ -15,13 +15,14 @@ export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Bool
 
 type BtnVariant = "default" | "primary" | "ghost" | "danger" | "dangerGhost";
 const btnBase =
-  "inline-flex items-center justify-center gap-1.5 rounded-md font-medium whitespace-nowrap select-none " +
-  "transition-colors duration-100 disabled:opacity-40 disabled:pointer-events-none";
+  "inline-flex items-center justify-center gap-1.5 rounded-lg font-medium whitespace-nowrap select-none " +
+  "transition-[background,box-shadow,transform,color,border-color] duration-150 active:translate-y-px disabled:opacity-40 disabled:pointer-events-none";
 const btnVariants: Record<BtnVariant, string> = {
-  default: "bg-surface text-fg border border-line-strong shadow-[0_1px_1px_rgba(0,0,0,.03)] hover:bg-hover",
-  primary: "bg-primary text-primary-fg border border-primary hover:opacity-90",
+  default: "bg-surface text-fg border border-line-strong shadow-xs hover:bg-surface-2 hover:shadow-[var(--elev-xs),0_2px_6px_-2px_rgba(16,24,40,.08)]",
+  primary:
+    "text-primary-fg border border-black/5 bg-[linear-gradient(180deg,color-mix(in_srgb,var(--primary)_88%,white),var(--primary))] shadow-primary hover:brightness-110 hover:-translate-y-px active:shadow-xs",
   ghost: "text-muted hover:text-fg hover:bg-hover",
-  danger: "bg-surface text-bad border border-line-strong hover:bg-bad-soft hover:border-bad/40",
+  danger: "bg-surface text-bad border border-line-strong shadow-xs hover:bg-bad-soft hover:border-bad/40",
   dangerGhost: "text-bad hover:bg-bad-soft",
 };
 const btnSizes = { md: "h-8 px-3 text-[13px]", sm: "h-7 px-2.5 text-[12.5px]", lg: "h-9 px-4 text-[13.5px]" };
@@ -54,7 +55,13 @@ export const Button = forwardRef<HTMLButtonElement, BtnProps>(function Button(
 
 export function Card({ className, children, hover }: { className?: string; children: ReactNode; hover?: boolean }) {
   return (
-    <div className={cx("bg-surface rounded-lg border border-line min-w-0", hover && "transition-colors duration-100 hover:border-line-strong", className)}>
+    <div
+      className={cx(
+        "bg-surface rounded-xl shadow-soft min-w-0 overflow-hidden", // clip table headers to the rounded corners
+        hover && "transition-[box-shadow,transform] duration-200 ease-(--ease-soft) hover:shadow-lift hover:-translate-y-0.5",
+        className,
+      )}
+    >
       {children}
     </div>
   );
@@ -62,7 +69,7 @@ export function Card({ className, children, hover }: { className?: string; child
 
 export function CardHeader({ title, sub, children, className }: { title: ReactNode; sub?: ReactNode; children?: ReactNode; className?: string }) {
   return (
-    <div className={cx("flex items-center justify-between gap-3 px-4 py-3 border-b border-line flex-wrap", className)}>
+    <div className={cx("flex items-center justify-between gap-3 px-5 py-3.5 border-b border-line flex-wrap", className)}>
       <div className="min-w-0">
         <h2 className="m-0 text-[13px] font-semibold">{title}</h2>
         {sub && <p className="mt-0.5 text-[12px] text-muted">{sub}</p>}
@@ -76,7 +83,7 @@ export function PageHeader({ title, desc, children }: { title: ReactNode; desc?:
   return (
     <div className="flex items-end justify-between gap-4 flex-wrap">
       <div className="min-w-0">
-        <h1 className="m-0 text-[20px] font-semibold tracking-[-0.02em] leading-tight">{title}</h1>
+        <h1 className="m-0 text-[22px] font-semibold tracking-[-0.025em] leading-tight">{title}</h1>
         {desc && <p className="mt-1.5 text-muted max-w-[72ch] text-[13px] leading-relaxed">{desc}</p>}
       </div>
       {children && <div className="flex items-center gap-2 flex-wrap">{children}</div>}
@@ -93,7 +100,7 @@ export function ListItem({ icon, title, sub, children, className }: { icon?: Ico
   return (
     <div className={cx("flex items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0 min-w-0", className)}>
       {icon && (
-        <span className="grid place-items-center size-7 rounded-md border border-line bg-surface-2 text-muted flex-none">
+        <span className="grid place-items-center size-8 rounded-lg bg-surface-2 text-muted shadow-[inset_0_0_0_1px_var(--border)] flex-none">
           <Icon name={icon} className="size-3.5" />
         </span>
       )}
@@ -177,8 +184,8 @@ export function Banner({ tone = "info", icon, title, children }: { tone?: "info"
   return (
     <div
       className={cx(
-        "flex gap-2.5 items-start px-3.5 py-3 rounded-lg border text-[13px] text-muted",
-        tone === "warn" ? "bg-warn-soft border-warn/25" : "bg-surface border-line",
+        "flex gap-2.5 items-start px-4 py-3 rounded-xl text-[13px] text-muted",
+        tone === "warn" ? "bg-warn-soft shadow-[inset_0_0_0_1px_color-mix(in_srgb,var(--warn)_28%,transparent),var(--elev-xs)]" : "bg-surface shadow-soft",
       )}
     >
       <Icon name={icon} className={cx("size-4 mt-px flex-none", tone === "warn" ? "text-warn" : "text-accent")} />
@@ -193,7 +200,7 @@ export function Banner({ tone = "info", icon, title, children }: { tone?: "info"
 /* ---------- form ---------- */
 
 const inputBase =
-  "w-full min-w-0 rounded-md bg-surface border border-line-strong shadow-[0_1px_1px_rgba(0,0,0,.02)] " +
+  "w-full min-w-0 rounded-lg bg-surface border border-line-strong shadow-xs " +
   "transition-[border-color,box-shadow] duration-100 hover:border-faint " +
   "focus:outline-none focus:border-accent focus:shadow-[0_0_0_3px_color-mix(in_srgb,var(--accent)_18%,transparent)] " +
   "placeholder:text-faint disabled:opacity-50";
@@ -252,7 +259,7 @@ export function ErrorText({ children }: { children?: ReactNode }) {
 
 export function Seg<T extends string>({ options, value, onChange }: { options: { value: T; label: ReactNode }[]; value: T; onChange: (v: T) => void }) {
   return (
-    <div className="inline-flex p-0.5 rounded-md bg-surface-2 border border-line gap-0.5" role="tablist">
+    <div className="inline-flex p-[3px] rounded-lg bg-hover shadow-[inset_0_1px_2px_rgba(16,24,40,.06)] gap-0.5" role="tablist">
       {options.map((o) => (
         <button
           key={o.value}
@@ -261,8 +268,8 @@ export function Seg<T extends string>({ options, value, onChange }: { options: {
           aria-selected={value === o.value}
           onClick={() => onChange(o.value)}
           className={cx(
-            "px-2.5 h-6 rounded-[5px] text-[12.5px] font-medium transition-colors duration-100",
-            value === o.value ? "bg-surface text-fg shadow-[0_1px_2px_rgba(0,0,0,.06),0_0_0_1px_var(--border)]" : "text-muted hover:text-fg",
+            "px-2.5 h-6 rounded-md text-[12.5px] font-medium transition-all duration-150",
+            value === o.value ? "bg-surface text-fg shadow-[0_0_0_1px_rgba(16,24,40,.06),0_1px_3px_rgba(16,24,40,.12)]" : "text-muted hover:text-fg",
           )}
         >
           {o.label}
@@ -323,9 +330,9 @@ export function Empty({ children }: { children: ReactNode }) {
 export function Loading() {
   return (
     <div className="flex flex-col gap-4 animate-fade">
-      <div className="h-6 w-48 rounded-md bg-surface border border-line" />
-      <div className="h-32 rounded-lg bg-surface border border-line" />
-      <div className="h-56 rounded-lg bg-surface border border-line" />
+      <div className="h-6 w-48 rounded-md bg-surface shadow-soft" />
+      <div className="h-32 rounded-xl bg-surface shadow-soft" />
+      <div className="h-56 rounded-xl bg-surface shadow-soft" />
     </div>
   );
 }

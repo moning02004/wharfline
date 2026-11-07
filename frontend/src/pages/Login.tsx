@@ -41,7 +41,7 @@ export default function Login() {
       <form
         key={step}
         onSubmit={step === 1 ? first : second}
-        className="relative w-full max-w-[390px] flex flex-col gap-5 bg-surface rounded-xl border border-line px-6 py-7 shadow-[var(--elev-2)] animate-rise"
+        className="relative w-full max-w-[390px] flex flex-col gap-5 bg-surface rounded-2xl px-7 py-8 shadow-pop animate-rise"
       >
         {step === 1 ? (
           <>

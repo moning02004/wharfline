@@ -89,7 +89,7 @@ export function GroupSelect({ groups, value, onChange }: { groups: Record<string
           ref={menu}
           role="listbox"
           className={cx(
-            "absolute inset-x-0 z-20 max-h-[260px] overflow-auto scroll-soft rounded-lg border border-line bg-surface shadow-pop p-1 flex flex-col animate-rise",
+            "absolute inset-x-0 z-20 max-h-[260px] overflow-auto scroll-soft rounded-xl bg-surface shadow-pop p-1 flex flex-col animate-rise",
             up ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+6px)]",
           )}
         >

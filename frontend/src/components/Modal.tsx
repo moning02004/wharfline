@@ -19,13 +19,13 @@ export function ModalShell({ size = "sm", onClose, children, top }: { size?: Mod
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade bg-black/45"
+      className="fixed inset-0 z-50 flex items-center justify-center p-4 animate-fade bg-[rgba(10,12,20,.42)] backdrop-blur-[3px]"
       onMouseDown={(e) => e.target === e.currentTarget && onClose()}
     >
       <div
         role="dialog"
         aria-modal="true"
-        className={cx("bg-surface rounded-xl border border-line shadow-pop w-full max-h-full flex flex-col min-h-0 animate-rise overflow-hidden", sizes[size])}
+        className={cx("bg-surface rounded-2xl shadow-pop w-full max-h-full flex flex-col min-h-0 animate-rise overflow-hidden", sizes[size])}
       >
         {children}
       </div>

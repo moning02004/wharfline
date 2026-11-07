@@ -98,11 +98,11 @@ export function Layout({ children }: { children: ReactNode }) {
 
   return (
     <div className="min-h-full flex flex-col bg-canvas">
-      <header className="sticky top-0 z-30 bg-surface border-b border-line">
+      <header className="sticky top-0 z-30 bg-surface/95 backdrop-blur-md shadow-bar">
         {/* row 1: brand, sections, tools */}
         <div className="max-w-[1280px] mx-auto px-4 md:px-8 h-14 flex items-center gap-3 md:gap-6">
           <div className="flex items-center gap-2 flex-none">
-            <div className="grid place-items-center size-[26px] rounded-[7px] bg-primary text-primary-fg">
+            <div className="grid place-items-center size-[28px] rounded-lg text-primary-fg bg-[linear-gradient(180deg,color-mix(in_srgb,var(--primary)_85%,white),var(--primary))] shadow-primary">
               <Icon name="arrow" className="size-3.5" strokeWidth={2.6} />
             </div>
             <b className="font-semibold tracking-[-0.01em] text-[15px] max-sm:hidden">Wharfline</b>
@@ -132,7 +132,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <button
             type="button"
             onClick={openQuick}
-            className="max-md:hidden flex items-center gap-2 h-8 w-[220px] px-2.5 rounded-lg border border-line bg-surface text-faint text-[13px] hover:border-line-strong transition-colors"
+            className="max-md:hidden flex items-center gap-2 h-8 w-[220px] px-2.5 rounded-lg border border-line bg-surface-2 text-faint text-[13px] shadow-[inset_0_1px_2px_rgba(16,24,40,.05)] hover:border-line-strong transition-colors"
           >
             <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
               <circle cx="11" cy="11" r="7" />
@@ -150,7 +150,7 @@ export function Layout({ children }: { children: ReactNode }) {
           )}
           <div className="flex items-center gap-1 flex-none">
             <span
-              className="grid place-items-center size-[30px] rounded-full bg-primary-soft text-primary font-semibold text-[11px]"
+              className="grid place-items-center size-[30px] rounded-full bg-primary-soft text-primary font-semibold text-[11px] shadow-[0_0_0_2px_var(--surface),0_0_0_3px_color-mix(in_srgb,var(--primary)_25%,transparent)]"
               title={`${session?.me.name} · ${session?.me.role} · 2FA 사용 중`}
             >
               JY
@@ -168,8 +168,8 @@ export function Layout({ children }: { children: ReactNode }) {
                 end
                 className={({ isActive }) =>
                   cx(
-                    "h-[30px] px-3 rounded-md inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap transition-colors",
-                    isActive ? "bg-surface-2 border border-line text-fg font-medium" : "border border-transparent text-muted hover:text-fg hover:bg-hover",
+                    "h-[30px] px-3 rounded-lg inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap transition-all duration-150",
+                    isActive ? "bg-surface text-fg font-medium shadow-[0_0_0_1px_rgba(16,24,40,.06),0_1px_3px_rgba(16,24,40,.1)]" : "text-muted hover:text-fg hover:bg-hover",
                   )
                 }
               >

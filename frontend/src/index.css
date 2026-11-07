@@ -2,13 +2,13 @@
 
 /*
   Design tokens: a calm, precise "pro tool" look. Neutral gray ground, white
-  surfaces separated by hairline borders rather than shadows, small radii,
+  surfaces lifted with a hairline ring and soft layered shadows, small radii,
   one indigo accent for primary actions, the active tab, focus and selection,
   and status shown as small colored dots.
 */
 :root {
   --bg: #f4f4f5;
-  --canvas: #ffffff;
+  --canvas: #f5f6f8;
   --surface: #ffffff;
   --surface-2: #f8f8f9;
   --hover: #f1f1f3;
@@ -32,16 +32,20 @@
   --log-bg: #0c0c0e;
   --log-fg: #d4d4d8;
   --log-dim: #63636b;
-  --elev-1: 0 1px 2px rgba(24, 24, 27, 0.04);
-  --elev-2: 0 1px 2px rgba(24, 24, 27, 0.05), 0 4px 12px rgba(24, 24, 27, 0.06);
-  --elev-pop: 0 0 0 1px rgba(24, 24, 27, 0.06), 0 4px 8px rgba(24, 24, 27, 0.04), 0 16px 40px -8px rgba(24, 24, 27, 0.18);
+  /* Elevation: a hairline ring plus soft layered shadows. Cards sit on 1, hover lifts to 2, menus and modals float on pop. */
+  --elev-xs: 0 1px 2px rgba(16, 24, 40, 0.06);
+  --elev-1: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px -2px rgba(16, 24, 40, 0.06);
+  --elev-2: 0 0 0 1px rgba(16, 24, 40, 0.07), 0 4px 8px -2px rgba(16, 24, 40, 0.07), 0 14px 28px -8px rgba(16, 24, 40, 0.14);
+  --elev-pop: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 12px 24px -6px rgba(16, 24, 40, 0.14), 0 32px 64px -12px rgba(16, 24, 40, 0.24);
+  --elev-bar: 0 1px 0 rgba(16, 24, 40, 0.06), 0 6px 20px -10px rgba(16, 24, 40, 0.18);
+  --elev-primary: 0 1px 2px rgba(67, 56, 202, 0.35), 0 6px 16px -4px rgba(79, 70, 229, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
   color-scheme: light;
 }
 
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --bg: #09090b;
-    --canvas: #0c0c0e;
+    --canvas: #0a0a0c;
     --surface: #121214;
     --surface-2: #17171a;
     --hover: #1c1c20;
@@ -64,16 +68,19 @@
     --bad-soft: #2a1213;
     --log-bg: #08080a;
     --log-dim: #5a5a63;
-    --elev-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-    --elev-2: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.4);
-    --elev-pop: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 16px 40px -8px rgba(0, 0, 0, 0.7);
+    --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+    --elev-1: 0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -8px rgba(0, 0, 0, 0.6);
+    --elev-2: 0 0 0 1px rgba(255, 255, 255, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 8px -2px rgba(0, 0, 0, 0.5), 0 18px 36px -10px rgba(0, 0, 0, 0.75);
+    --elev-pop: 0 0 0 1px rgba(255, 255, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 24px 56px -12px rgba(0, 0, 0, 0.85);
+    --elev-bar: 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px -12px rgba(0, 0, 0, 0.8);
+    --elev-primary: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 18px -6px rgba(129, 140, 248, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.25);
     color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
   --bg: #09090b;
-  --canvas: #0c0c0e;
+  --canvas: #0a0a0c;
   --surface: #121214;
   --surface-2: #17171a;
   --hover: #1c1c20;
@@ -96,9 +103,12 @@
   --bad-soft: #2a1213;
   --log-bg: #08080a;
   --log-dim: #5a5a63;
-  --elev-1: 0 1px 2px rgba(0, 0, 0, 0.4);
-  --elev-2: 0 1px 2px rgba(0, 0, 0, 0.4), 0 4px 12px rgba(0, 0, 0, 0.4);
-  --elev-pop: 0 0 0 1px rgba(255, 255, 255, 0.07), 0 16px 40px -8px rgba(0, 0, 0, 0.7);
+  --elev-xs: 0 1px 2px rgba(0, 0, 0, 0.5);
+  --elev-1: 0 0 0 1px rgba(255, 255, 255, 0.06), inset 0 1px 0 rgba(255, 255, 255, 0.04), 0 1px 2px rgba(0, 0, 0, 0.5), 0 8px 24px -8px rgba(0, 0, 0, 0.6);
+  --elev-2: 0 0 0 1px rgba(255, 255, 255, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 8px -2px rgba(0, 0, 0, 0.5), 0 18px 36px -10px rgba(0, 0, 0, 0.75);
+  --elev-pop: 0 0 0 1px rgba(255, 255, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 24px 56px -12px rgba(0, 0, 0, 0.85);
+  --elev-bar: 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px -12px rgba(0, 0, 0, 0.8);
+  --elev-primary: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 18px -6px rgba(129, 140, 248, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.25);
   color-scheme: dark;
 }
 
@@ -128,9 +138,12 @@
   --color-log-bg: var(--log-bg);
   --color-log-fg: var(--log-fg);
   --color-log-dim: var(--log-dim);
+  --shadow-xs: var(--elev-xs);
   --shadow-soft: var(--elev-1);
   --shadow-lift: var(--elev-2);
   --shadow-pop: var(--elev-pop);
+  --shadow-bar: var(--elev-bar);
+  --shadow-primary: var(--elev-primary);
   --font-sans: "Geist", "IBM Plex Sans KR", system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif;
   --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
@@ -184,7 +197,7 @@
     box-shadow: 0 0 0 2.5px color-mix(in srgb, var(--dot, var(--faint)) 18%, transparent);
   }
   .tbl { width: 100%; border-collapse: separate; border-spacing: 0; font-size: 13px; }
-  .tbl th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 8px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .tbl th { text-align: left; font-weight: 500; color: var(--muted); font-size: 12px; padding: 9px 16px; background: var(--surface-2); border-bottom: 1px solid var(--border); white-space: nowrap; }
   .tbl td { padding: 10px 16px; border-bottom: 1px solid var(--border); vertical-align: middle; white-space: nowrap; transition: background 0.1s; }
   .tbl tr:last-child td { border-bottom: 0; }
   .tbl tr.click { cursor: pointer; }
