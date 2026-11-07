@@ -94,8 +94,10 @@ def add_image(body: ImageIn, db: Session = Depends(get_db)):
         img = m.Image(ref=ref, registry_id=body.registry)
         db.add(img)
     known = {t.name for t in img.tags}
-    # New tags go first (lower id = newer).
-    img.tags = [m.ImageTag(name=t, digest="", pushed="방금 등록") for t in tags if t not in known] + list(img.tags)
+    # The first tag given is the newest: give it the latest timestamp.
+    now = time.time()
+    for i, t in enumerate(t for t in tags if t not in known):
+        img.tags.append(m.ImageTag(name=t, digest="", pushed="방금 등록", pushed_at=now - i * 0.001))
     s.log_act(db, "이미지 등록", f"{ref} ({', '.join(tags)})")
     db.commit()
     return img.to_dict()

@@ -60,7 +60,7 @@ def _tag(name, digest, pushed):
 images: list[dict] = [
     {"ref": "ghcr.io/acme/api-server", "registry": "r1", "tags": [_tag("v1.8.2", "4f1ca92e", "2시간 전"), _tag("sha-77d1e0b", "0c7e9b12", "2시간 전"), _tag("v1.8.1", "9b03d7c1", "3일 전"), _tag("v1.8.0", "e61a0f55", "8일 전")]},
     {"ref": "ghcr.io/acme/web-front", "registry": "r1", "tags": [_tag("v2.3.0", "a2b4c6d8", "어제"), _tag("v2.2.4", "1f3e5d7c", "6일 전"), _tag("v2.2.3", "6d0e2f19", "12일 전")]},
-    {"ref": "git.acme.kr/acme/batch-worker", "registry": "r2", "tags": [_tag("v0.9.4", "77aa01bc", "어제"), _tag("v0.9.3", "5c5c9e20", "5일 전")]},
+    {"ref": "git.acme.kr/acme/batch-worker", "registry": "r2", "sourceRepo": "acme/batch-worker", "tags": [_tag("v0.9.4", "77aa01bc", "어제"), _tag("v0.9.3", "5c5c9e20", "5일 전")]},
 ]
 
 envs: list[dict] = [
@@ -192,7 +192,7 @@ def seed_if_empty(db: Session) -> bool:
         db.add(reg)
     db.flush()
     for img in images:
-        db.add(m.Image(ref=img["ref"], registry_id=img["registry"], tags=[m.ImageTag(**t) for t in img["tags"]]))
+        db.add(m.Image(ref=img["ref"], registry_id=img["registry"], source_repo=img.get("sourceRepo"), tags=[m.ImageTag(**t, pushed_at=1e9 - i) for i, t in enumerate(img["tags"])]))  # listed newest first
     for e in envs:
         env = m.EnvSet(id=e["id"], name=e["name"], ver=e["ver"], updated=e["updated"])
         env.set_vars(e["vars"])

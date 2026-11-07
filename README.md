@@ -119,6 +119,22 @@ make kms-down      # 모든 데이터 키를 로컬 키 파일로 되돌린 뒤(
 
 Vault가 응답하지 않으면 API는 시작하지 않고, 실행 중이라면 복호화 요청이 일반 오류로 실패해요(값을 평문으로 다루는 대체 경로는 없어요).
 
+## Gitea 연동 (빌드 상태와 새 이미지 자동 배포)
+
+Gitea Actions가 이미지를 빌드하는 동안 배포 작업에 `빌드 중`을 띄우고, 이미지가 푸시되면 새 태그를 등록해요. 자동 배포가 켜진 작업은 `v`로 시작하는 새 태그가 오면 바로 배포해요.
+
+1. **이미지 레지스트리 → Gitea 연동**에서 비밀값을 만들어요(봉투 암호화로 저장, 한 번만 보여줘요).
+2. Gitea 저장소(또는 조직) **설정 → 웹훅 → 웹훅 추가 → Gitea**
+   - 대상 URL: `https://<wharfline 주소>/api/hooks/gitea` · HTTP 메서드 POST · 콘텐츠 유형 `application/json`
+   - 비밀: 1번의 값
+   - 트리거: 사용자 지정 이벤트 → **Workflow run**, **Workflow job**, **패키지**
+3. 이미지 표에서 이미지마다 **빌드 레포**(`owner/name`)를 연결해요.
+
+- 요청은 `X-Gitea-Signature`(HMAC-SHA256) 서명이 맞아야만 받아요. 비밀값이 없으면 503, 서명이 틀리면 401이에요.
+- Gitea 서버가 Wharfline 주소에 접속할 수 있어야 해요.
+- 실제 Gitea 없이 확인하려면 이미지 표의 **시험 빌드** / **실패 시험**을 누르면 같은 처리 경로로 이벤트가 흘러가요.
+- 웹훅 비밀값도 `make key-status` / `key-verify` / `key-rotate` 대상이에요.
+
 ## 로컬 개발
 
 ```bash
@@ -145,6 +161,7 @@ cd frontend && npm install && npm run dev     # http://localhost:5173 (/api는 :
 | `registries`, `images`, `image_tags` | 레지스트리와 이미지 태그 |
 | `env_sets`, `env_versions` | 환경 변수와 버전 기록. 값은 `ciphertext`(암호문), `wrapped_dek`, `nonce`, `kek_id`로 저장 |
 | `jobs`, `runs` | 배포 작업, 실행 기록 (끝난 실행의 로그 포함). 실행 번호는 `run_no_seq` 시퀀스 |
+| `builds` | Gitea Actions 빌드 기록 (레포, 실행 번호, 상태, 현재 단계, 푸시한 태그) |
 | `activity`, `logins` | 활동 기록, 로그인 이력 |
 | `members`, `device_sessions`, `menu_access` | 멤버, 로그인된 기기, 역할별 메뉴 |
 | `settings` | 보안 정책, 데모 사용자 세션 상태 |

@@ -1,13 +1,19 @@
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useApi, useApp } from "../lib/app";
 import type { Job, Run } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
 import { MethodLine, useRun } from "../modals/RunModals";
+import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
 
 export function Jobs() {
-  const { data } = useApi<Job[]>("/jobs");
+  // Refresh every few seconds while a CI build or a deploy is in progress.
+  const [poll, setPoll] = useState(0);
+  const { data } = useApi<Job[]>("/jobs", poll);
+  useEffect(() => {
+    setPoll(data?.some((j) => j.build?.active || j.last.status === "run") ? 3000 : 0);
+  }, [data]);
   const { openModal, toast } = useApp();
   const { confirm } = useRun();
   const [open, setOpen] = useState<string | null>(null);
@@ -66,6 +72,11 @@ export function Jobs() {
                               ↑ {j.latestTag}
                             </Chip>
                           </span>
+                        )}
+                        {j.build && (
+                          <div className="mt-1">
+                            <BuildBadge build={j.build} />
+                          </div>
                         )}
                       </td>
                       <td>

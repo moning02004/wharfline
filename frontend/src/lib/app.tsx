@@ -198,12 +198,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** Fetch helper that refetches whenever the app version bumps. */
-export function useApi<T>(path: string | null) {
+/** Fetch helper that refetches whenever the app version bumps, and every `pollMs` while it is set. */
+export function useApi<T>(path: string | null, pollMs = 0) {
   const { version } = useApp();
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [local, setLocal] = useState(0);
+  const reload = useCallback(() => setLocal((x) => x + 1), []);
+  useEffect(() => {
+    if (!path || !pollMs) return;
+    const t = setInterval(reload, pollMs);
+    return () => clearInterval(t);
+  }, [path, pollMs, reload]);
   useEffect(() => {
     if (!path) return;
     let alive = true;
@@ -215,5 +221,5 @@ export function useApi<T>(path: string | null) {
       alive = false;
     };
   }, [path, version, local]);
-  return { data, error, reload: () => setLocal((x) => x + 1), setData };
+  return { data, error, reload, setData };
 }

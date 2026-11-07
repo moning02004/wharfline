@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import gitea
 from .. import models as m
 from .. import runner
 from .. import store as s
@@ -31,6 +32,7 @@ def job_view(db: Session, job: m.Job) -> dict:
         "imageTags": img["tags"],
         "latestTag": img["tags"][0]["name"] if img["tags"] else None,
         "prevTag": s.prev_tag(db, j, img),
+        "build": gitea.build_for_image(db, j["image"]),
     }
 
 

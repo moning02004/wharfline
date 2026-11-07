@@ -3,6 +3,7 @@ import { useApi, useApp } from "../lib/app";
 import type { Dashboard as D } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
 import { useRun } from "../modals/RunModals";
+import { BuildBadge } from "../components/BuildBadge";
 import { Banner, Button, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
 
 export default function Dashboard() {
@@ -97,6 +98,7 @@ export default function Dashboard() {
                   </span>
                 }
               >
+                <BuildBadge build={j.build} />
                 <Button size="sm" icon="play" onClick={() => confirm(j)}>
                   실행
                 </Button>

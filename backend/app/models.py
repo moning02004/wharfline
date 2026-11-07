@@ -7,9 +7,10 @@ JSONB columns must be reassigned (not mutated in place) to be saved.
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -162,14 +163,16 @@ class Image(Base):
     ref: Mapped[str] = mapped_column(String(512), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
     registry_id: Mapped[str | None] = mapped_column(ForeignKey("registries.id", ondelete="SET NULL"))
-    tags: Mapped[list[ImageTag]] = relationship(order_by="ImageTag.id", cascade="all, delete-orphan")
+    # Repository whose CI builds this image ("owner/name"), used to match Gitea build events.
+    source_repo: Mapped[str | None] = mapped_column(String(255), index=True)
+    tags: Mapped[list[ImageTag]] = relationship(order_by="ImageTag.pushed_at.desc()", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"ref": self.ref, "registry": self.registry_id, "tags": [t.to_dict() for t in self.tags]}
+        return {"ref": self.ref, "registry": self.registry_id, "sourceRepo": self.source_repo, "tags": [t.to_dict() for t in self.tags]}
 
 
 class ImageTag(Base):
-    """Newest tag first: lower id = more recent (tag polling inserts in that order)."""
+    """Listed newest first by pushed_at (epoch seconds when the tag was seen)."""
 
     __tablename__ = "image_tags"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -177,6 +180,7 @@ class ImageTag(Base):
     name: Mapped[str] = mapped_column(String(128))
     digest: Mapped[str] = mapped_column(String(128))
     pushed: Mapped[str] = mapped_column(String(64))
+    pushed_at: Mapped[float] = mapped_column(Float, default=time.time)
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "digest": self.digest, "pushed": self.pushed}
@@ -369,3 +373,33 @@ class MenuAccess(Base):
     __tablename__ = "menu_access"
     menu: Mapped[str] = mapped_column(String(32), primary_key=True)
     roles: Mapped[list[str]] = mapped_column(JSONB, default=list)
+
+
+class Build(Base):
+    """A CI workflow run reported by Gitea (workflow_run / workflow_job / package webhooks)."""
+
+    __tablename__ = "builds"
+    __table_args__ = (UniqueConstraint("repo", "run_id"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    repo: Mapped[str] = mapped_column(String(255), index=True)  # owner/name, lower case
+    run_id: Mapped[int] = mapped_column(BigInteger)
+    run_number: Mapped[int | None] = mapped_column(Integer)
+    workflow: Mapped[str] = mapped_column(String(255), default="")
+    title: Mapped[str] = mapped_column(String(512), default="")
+    status: Mapped[str] = mapped_column(String(16))  # queued | in_progress | success | failure | cancelled | skipped
+    branch: Mapped[str | None] = mapped_column(String(255))
+    sha: Mapped[str | None] = mapped_column(String(64))
+    url: Mapped[str | None] = mapped_column(Text)
+    step: Mapped[str | None] = mapped_column(String(255))  # current job name while running
+    tag: Mapped[str | None] = mapped_column(String(128))  # image tag pushed by this run
+    started_at: Mapped[float] = mapped_column(Float)
+    updated_at: Mapped[float] = mapped_column(Float)
+
+    @property
+    def active(self) -> bool:
+        return self.status in ("queued", "in_progress")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "repo": self.repo, "runId": self.run_id, "runNumber": self.run_number, "workflow": self.workflow,
+                "title": self.title, "status": self.status, "active": self.active, "branch": self.branch, "sha": self.sha,
+                "url": self.url, "step": self.step, "tag": self.tag, "startedAt": self.started_at, "updatedAt": self.updated_at}

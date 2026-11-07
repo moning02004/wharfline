@@ -64,6 +64,25 @@ export interface Job {
   imageTags: ImageTag[];
   latestTag: string | null;
   prevTag: string | null;
+  build: Build | null;
+}
+
+export interface Build {
+  id: number;
+  repo: string;
+  runId: number;
+  runNumber: number | null;
+  workflow: string;
+  title: string;
+  status: "queued" | "in_progress" | "success" | "failure" | "cancelled" | "skipped";
+  active: boolean;
+  branch: string | null;
+  sha: string | null;
+  url: string | null;
+  step: string | null;
+  tag: string | null;
+  startedAt: number;
+  updatedAt: number;
 }
 
 export interface Run {
@@ -108,6 +127,7 @@ export interface Registry {
 export interface Image {
   ref: string;
   registry: string;
+  sourceRepo: string | null;
   tags: ImageTag[];
   usedBy: string[];
 }
