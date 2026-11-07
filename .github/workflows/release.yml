@@ -1,0 +1,94 @@
+# Every push to main: build and push the Docker images, then create a tag and a GitHub release.
+#
+# Tag format: <date>-<build number of the day>, e.g. 2026.11.08-1, 2026.11.08-2 (date in Asia/Seoul).
+# Images go to GitHub Container Registry with that tag and `latest`:
+#   ghcr.io/<owner>/wharfline-backend
+#   ghcr.io/<owner>/wharfline-frontend
+name: release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: {}
+
+permissions:
+  contents: write   # create the tag and the release
+  packages: write   # push to ghcr.io
+
+# One release at a time, so two quick pushes never pick the same build number.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pick the next tag
+        id: tag
+        run: |
+          git fetch --tags --force
+          today=$(TZ=Asia/Seoul date +%Y.%m.%d)
+          last=$(git tag -l "${today}-*" | sed "s/^${today}-//" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+          tag="${today}-$(( ${last:-0} + 1 ))"
+          owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "backend=ghcr.io/${owner}/wharfline-backend" >> "$GITHUB_OUTPUT"
+          echo "frontend=ghcr.io/${owner}/wharfline-frontend" >> "$GITHUB_OUTPUT"
+          echo "Release ${tag}"
+
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push backend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./backend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.backend }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.tag.outputs.backend }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=backend
+          cache-to: type=gha,mode=max,scope=backend
+
+      - name: Build and push frontend
+        uses: docker/build-push-action@v6
+        with:
+          context: ./frontend
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ steps.tag.outputs.frontend }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.tag.outputs.frontend }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=frontend
+          cache-to: type=gha,mode=max,scope=frontend
+
+      # Last, so a release always means its images exist.
+      - name: Create tag and release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.tag.outputs.tag }}
+          BACKEND: ${{ steps.tag.outputs.backend }}
+          FRONTEND: ${{ steps.tag.outputs.frontend }}
+        run: |
+          notes=$(printf '## 이미지\n\n```\n%s:%s\n%s:%s\n```\n' "$BACKEND" "$TAG" "$FRONTEND" "$TAG")
+          gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes "$notes" --generate-notes

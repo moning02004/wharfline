@@ -154,6 +154,20 @@ Wharfline 계정, DB, 서버 중 하나라도 의심되면 이 순서로 해요.
 4. **웹훅 비밀값과 토큰을 다시 발급**해요. Git 연동 비밀값, 레지스트리 토큰, Git 액세스 토큰은 발급한 곳에서 먼저 취소하고 새로 넣어요.
 5. **활동 기록을 확인**해요. 모르는 로그인, 키·인벤토리 변경, 승인 없는 배포가 있었는지 봐요.
 
+## 릴리스 (GitHub Actions)
+
+`main`에 푸시하면 `.github/workflows/release.yml`이 돌아요.
+
+1. 오늘 날짜(한국 시간)와 그날의 빌드 번호로 태그를 정해요. 예: `2026.11.08-1`, 같은 날 두 번째는 `2026.11.08-2`.
+2. 백엔드와 프론트엔드 이미지를 amd64·arm64로 빌드해 GitHub Container Registry에 올려요.
+   - `ghcr.io/moning02004/wharfline-backend:<태그>` (와 `latest`)
+   - `ghcr.io/moning02004/wharfline-frontend:<태그>` (와 `latest`)
+3. 이미지가 다 올라간 뒤 태그와 GitHub 릴리스를 만들어요. 릴리스 노트에는 이미지 주소와 바뀐 커밋 목록이 들어가요.
+
+동시에 두 번 푸시해도 한 번에 하나씩 돌아서 번호가 겹치지 않아요. Actions 화면의 "Run workflow"로 직접 돌릴 수도 있어요.
+
+처음 한 번 확인할 것: 저장소 **Settings → Actions → General → Workflow permissions**가 "Read and write permissions"인지. 패키지는 처음엔 비공개로 만들어져요. 서버에서 로그인 없이 받으려면 GitHub의 패키지 설정에서 공개로 바꾸세요.
+
 ## 로컬 개발
 
 ```bash
