@@ -1,9 +1,10 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { NavLink, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { ROUTES, useApp } from "../lib/app";
 import type { Session } from "../lib/types";
-import { Icon, type IconName } from "./Icon";
+import { Icon } from "./Icon";
+import { QuickNav } from "./QuickNav";
 import { Button, cx } from "./ui";
 import { useRun } from "../modals/RunModals";
 
@@ -51,19 +52,29 @@ function SudoTimer() {
   );
 }
 
+/** Top-level sections, derived from each route's group. */
+const SECTIONS = [
+  { grp: "", label: "대시보드" },
+  { grp: "배포", label: "배포" },
+  { grp: "리소스", label: "리소스" },
+  { grp: "관리", label: "관리" },
+  { grp: "프로토타입", label: "설계 노트" },
+];
+
 export function Layout({ children }: { children: ReactNode }) {
-  const { session, setSession, canSee, viewAs, version } = useApp();
+  const { session, setSession, canSee, viewAs, version, openModal } = useApp();
   const { runById } = useRun();
-  const [open, setOpen] = useState(false);
   const { dark, toggle } = useTheme();
   const loc = useLocation();
+  const nav = useNavigate();
   const route = ROUTES.find((r) => r.path === loc.pathname) ?? ROUTES[0];
 
-  useEffect(() => {
-    setOpen(false);
-  }, [loc.pathname]);
+  const sections = useMemo(
+    () => SECTIONS.map((s) => ({ ...s, pages: ROUTES.filter((r) => r.grp === s.grp && canSee(r.id)) })).filter((s) => s.pages.length),
+    [canSee],
+  );
+  const current = sections.find((s) => s.grp === route.grp);
 
-  let lastGrp: string | null = null;
   const [counts, setCounts] = useState<Record<string, number>>({});
   useEffect(() => {
     Promise.all([api.get<unknown[]>("/jobs"), api.get<{ hosts: unknown[] }[]>("/inventory"), api.get<unknown[]>("/keys")])
@@ -71,106 +82,111 @@ export function Layout({ children }: { children: ReactNode }) {
       .catch(() => {});
   }, [loc.pathname, version]);
 
-  const logout = async () => {
-    const s = await api.post<Session>("/auth/logout");
-    setSession(s);
-  };
+  const openQuick = () => openModal((c) => <QuickNav onClose={c} />, "sm");
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+        e.preventDefault();
+        openQuick();
+      }
+    };
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+  }, []); // openModal is stable, so the shortcut is registered once
+
+  const logout = async () => setSession(await api.post<Session>("/auth/logout"));
 
   return (
-    <div className="grid h-full md:grid-cols-[232px_minmax(0,1fr)]">
-      {/* sidebar */}
-      <aside
-        className={cx(
-          "flex flex-col min-h-0 bg-bg border-r border-line z-30",
-          "max-md:fixed max-md:inset-y-0 max-md:left-0 max-md:w-[260px] max-md:shadow-pop max-md:transition-transform max-md:duration-200",
-          !open && "max-md:-translate-x-full",
-        )}
-      >
-        <div className="h-12 flex items-center gap-2 px-4 border-b border-line flex-none">
-          <div className="grid place-items-center size-6 rounded-md bg-primary text-primary-fg">
-            <Icon name="arrow" className="size-3.5" strokeWidth={2.6} />
+    <div className="min-h-full flex flex-col bg-canvas">
+      <header className="sticky top-0 z-30 bg-surface border-b border-line">
+        {/* row 1: brand, sections, tools */}
+        <div className="max-w-[1280px] mx-auto px-4 md:px-8 h-14 flex items-center gap-3 md:gap-6">
+          <div className="flex items-center gap-2 flex-none">
+            <div className="grid place-items-center size-[26px] rounded-[7px] bg-primary text-primary-fg">
+              <Icon name="arrow" className="size-3.5" strokeWidth={2.6} />
+            </div>
+            <b className="font-semibold tracking-[-0.01em] text-[15px] max-sm:hidden">Wharfline</b>
+            <span className="text-line-strong max-sm:hidden">/</span>
+            <span className="h-7 px-2 rounded-md bg-surface-2 border border-line text-[12.5px] font-medium inline-flex items-center max-sm:hidden">acme</span>
           </div>
-          <b className="font-semibold tracking-[-0.01em] text-[14px]">Wharfline</b>
-          <span className="ml-auto text-[10.5px] text-faint border border-line rounded px-1.5 h-[18px] inline-flex items-center">beta</span>
-        </div>
-        <div className="mx-2 mt-2 mb-1 px-2.5 h-8 rounded-md flex items-center justify-between text-[13px] font-medium hover:bg-hover transition-colors cursor-default">
-          <span className="flex items-center gap-2">
-            <span className="grid place-items-center size-5 rounded bg-surface border border-line text-[10px] font-semibold">A</span>
-            acme
-          </span>
-          <Icon name="chev" className="size-3.5 text-faint" />
-        </div>
-        <nav className="flex-1 overflow-auto scroll-soft px-2 pb-3 flex flex-col gap-px">
-          {ROUTES.filter((r) => canSee(r.id)).map((r) => {
-            const head = r.grp !== lastGrp && r.grp ? <h6 className="mt-4 mb-1 mx-2.5 text-[11px] font-medium text-faint">{r.grp}</h6> : null;
-            lastGrp = r.grp;
-            return (
-              <div key={r.id} className="contents">
-                {head}
-                <NavLink
-                  to={r.path}
-                  end
-                  className={({ isActive }) =>
-                    cx(
-                      "group flex items-center gap-2.5 px-2.5 h-8 rounded-md text-[13px] font-medium transition-colors duration-100",
-                      isActive ? "bg-surface text-fg border border-line shadow-[0_1px_1px_rgba(0,0,0,.03)]" : "text-muted border border-transparent hover:bg-hover hover:text-fg",
-                    )
-                  }
-                >
-                  {({ isActive }) => (
-                    <>
-                      <Icon name={r.icon as IconName} className={cx("size-[15px]", isActive ? "text-accent" : "text-faint group-hover:text-muted")} />
-                      {r.label}
-                      {counts[r.id] ? <span className="ml-auto text-[11px] text-faint tabular-nums">{counts[r.id]}</span> : null}
-                    </>
+          <nav aria-label="주 메뉴" className="flex items-stretch h-14 gap-0.5 overflow-x-auto scroll-soft min-w-0">
+            {sections.map((s) => {
+              const active = s.grp === route.grp;
+              return (
+                <button
+                  key={s.label}
+                  type="button"
+                  onClick={() => nav(s.pages[0].path)}
+                  aria-current={active ? "page" : undefined}
+                  className={cx(
+                    "px-3 text-[13.5px] whitespace-nowrap transition-colors",
+                    active ? "text-fg font-semibold shadow-[inset_0_-2px_0_var(--primary)]" : "text-muted hover:text-fg",
                   )}
-                </NavLink>
-              </div>
-            );
-          })}
-        </nav>
-        <div className="px-3 py-2.5 flex items-center gap-2.5 border-t border-line">
-          <div className="grid place-items-center size-7 rounded-full bg-surface border border-line font-semibold text-[10.5px]">JY</div>
-          <div className="flex-1 min-w-0">
-            <b className="block font-medium text-[12.5px] leading-tight">
-              {session?.me.name} <span className="text-faint font-normal">· {session?.me.role}</span>
-            </b>
-            <small className="block text-faint text-[11px] truncate">2FA 사용 중</small>
-          </div>
-          <Button variant="ghost" size="sm" iconOnly icon="logout" title="로그아웃" aria-label="로그아웃" onClick={logout} />
-        </div>
-      </aside>
-      {open && <div className="fixed inset-0 z-20 bg-black/30 md:hidden animate-fade" onClick={() => setOpen(false)} />}
-
-      {/* main panel */}
-      <div className="flex flex-col min-w-0 min-h-0 bg-canvas">
-        <header className="h-12 flex-none flex items-center gap-2 px-4 md:px-6 border-b border-line bg-surface">
-          <Button variant="ghost" size="sm" iconOnly icon="menu" aria-label="메뉴" className="md:hidden" onClick={() => setOpen(true)} />
-          <div className="text-[13px] text-muted truncate min-w-0">
-            acme <span className="text-faint mx-1">/</span> <b className="text-fg font-medium">{route.label}</b>
-          </div>
+                >
+                  {s.label}
+                </button>
+              );
+            })}
+          </nav>
           <div className="flex-1" />
+          <button
+            type="button"
+            onClick={openQuick}
+            className="max-md:hidden flex items-center gap-2 h-8 w-[220px] px-2.5 rounded-lg border border-line bg-surface text-faint text-[13px] hover:border-line-strong transition-colors"
+          >
+            <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7" />
+              <path d="M20 20l-3.5-3.5" />
+            </svg>
+            <span className="flex-1 text-left">이동하거나 실행하기</span>
+            <kbd className="font-mono text-[11px] border border-line rounded px-1.5">⌘K</kbd>
+          </button>
           <SudoTimer />
           <Button variant="ghost" size="sm" iconOnly icon={dark ? "sun" : "moon"} title="테마 전환" aria-label="테마 전환" onClick={toggle} />
           {canSee("jobs") && viewAs !== "Viewer" && (
-            <Button
-              variant="primary"
-              size="sm"
-              icon="play"
-              className="max-sm:hidden"
-              onClick={() => runById("j1")}
-            >
+            <Button variant="primary" size="sm" icon="play" className="max-sm:hidden" onClick={() => runById("j1")}>
               배포 실행
             </Button>
           )}
-        </header>
-        <main className="flex-1 overflow-auto scroll-soft relative" id="content">
-          <div className="max-w-[1180px] mx-auto flex flex-col gap-5 px-4 md:px-8 pt-6 pb-12">
-            {viewAs !== "Owner" && <PreviewBar />}
-            {canSee(route.id) ? children : <Denied label={route.label} />}
+          <div className="flex items-center gap-1 flex-none">
+            <span
+              className="grid place-items-center size-[30px] rounded-full bg-primary-soft text-primary font-semibold text-[11px]"
+              title={`${session?.me.name} · ${session?.me.role} · 2FA 사용 중`}
+            >
+              JY
+            </span>
+            <Button variant="ghost" size="sm" iconOnly icon="logout" title="로그아웃" aria-label="로그아웃" onClick={logout} />
           </div>
-        </main>
-      </div>
+        </div>
+        {/* row 2: pages of the current section */}
+        {current && current.pages.length > 1 && (
+          <div className="max-w-[1280px] mx-auto px-4 md:px-8 h-11 flex items-center gap-1 overflow-x-auto scroll-soft">
+            {current.pages.map((r) => (
+              <NavLink
+                key={r.id}
+                to={r.path}
+                end
+                className={({ isActive }) =>
+                  cx(
+                    "h-[30px] px-3 rounded-md inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap transition-colors",
+                    isActive ? "bg-surface-2 border border-line text-fg font-medium" : "border border-transparent text-muted hover:text-fg hover:bg-hover",
+                  )
+                }
+              >
+                {r.label}
+                {counts[r.id] ? <span className="text-[11px] text-faint tabular-nums">{counts[r.id]}</span> : null}
+              </NavLink>
+            ))}
+          </div>
+        )}
+      </header>
+
+      <main className="flex-1" id="content">
+        <div className="max-w-[1280px] mx-auto flex flex-col gap-6 px-4 md:px-8 pt-7 pb-14">
+          {viewAs !== "Owner" && <PreviewBar />}
+          {canSee(route.id) ? children : <Denied label={route.label} />}
+        </div>
+      </main>
     </div>
   );
 }
@@ -179,7 +195,7 @@ function PreviewBar() {
   const { viewAs, setViewAs, toast } = useApp();
   return (
     <div className="flex items-center justify-between gap-3 flex-wrap pl-3.5 pr-1.5 py-1.5 rounded-lg border border-accent/25 bg-accent-soft text-accent text-[13px] font-medium animate-fade">
-      <span>{viewAs} 역할로 미리 보는 중이에요. 사이드바와 화면이 이 역할 기준으로 보여요.</span>
+      <span>{viewAs} 역할로 미리 보는 중이에요. 메뉴와 화면이 이 역할 기준으로 보여요.</span>
       <Button
         size="sm"
         onClick={() => {

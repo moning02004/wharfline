@@ -3,12 +3,12 @@
 /*
   Design tokens: a calm, precise "pro tool" look. Neutral gray ground, white
   surfaces separated by hairline borders rather than shadows, small radii,
-  one accent color (blue) for focus, selection and links, and status shown
-  as small colored dots.
+  one indigo accent for primary actions, the active tab, focus and selection,
+  and status shown as small colored dots.
 */
 :root {
   --bg: #f4f4f5;
-  --canvas: #f7f7f8;
+  --canvas: #ffffff;
   --surface: #ffffff;
   --surface-2: #f8f8f9;
   --hover: #f1f1f3;
@@ -17,11 +17,11 @@
   --fg: #18181b;
   --muted: #52525b;
   --faint: #a1a1aa;
-  --primary: #18181b;
+  --primary: #4f46e5;
   --primary-fg: #ffffff;
-  --primary-soft: #f4f4f5;
-  --accent: #2563eb;
-  --accent-soft: #eff4ff;
+  --primary-soft: #eef0ff;
+  --accent: #4f46e5;
+  --accent-soft: #eef0ff;
   --on-accent: #ffffff;
   --ok: #16a34a;
   --warn: #ca8a04;
@@ -50,12 +50,12 @@
     --fg: #fafafa;
     --muted: #a1a1aa;
     --faint: #6b6b74;
-    --primary: #fafafa;
-    --primary-fg: #18181b;
-    --primary-soft: #1c1c20;
-    --accent: #3b82f6;
-    --accent-soft: #15203a;
-    --on-accent: #ffffff;
+    --primary: #818cf8;
+    --primary-fg: #13122b;
+    --primary-soft: #1d1b3a;
+    --accent: #818cf8;
+    --accent-soft: #1d1b3a;
+    --on-accent: #13122b;
     --ok: #22c55e;
     --warn: #eab308;
     --bad: #ef4444;
@@ -82,12 +82,12 @@
   --fg: #fafafa;
   --muted: #a1a1aa;
   --faint: #6b6b74;
-  --primary: #fafafa;
-  --primary-fg: #18181b;
-  --primary-soft: #1c1c20;
-  --accent: #3b82f6;
-  --accent-soft: #15203a;
-  --on-accent: #ffffff;
+  --primary: #818cf8;
+  --primary-fg: #13122b;
+  --primary-soft: #1d1b3a;
+  --accent: #818cf8;
+  --accent-soft: #1d1b3a;
+  --on-accent: #13122b;
   --ok: #22c55e;
   --warn: #eab308;
   --bad: #ef4444;
@@ -144,6 +144,10 @@
 }
 @keyframes rise {
   from { opacity: 0; transform: translateY(4px) scale(0.995); }
+}
+@keyframes indeterminate {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(300%); }
 }
 @keyframes pulse-dot {
   50% { opacity: 0.3; }

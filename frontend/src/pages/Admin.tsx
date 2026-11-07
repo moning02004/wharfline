@@ -294,7 +294,7 @@ export function Security() {
   return (
     <>
       <PageHeader title="보안" desc="내 계정 보호 수단과 워크스페이스 보안 정책이에요." />
-      <div className="grid lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-5 items-start">
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-5 items-start">
         <div className="flex flex-col gap-4">
           <Card>
             <CardHeader title="2단계 인증">

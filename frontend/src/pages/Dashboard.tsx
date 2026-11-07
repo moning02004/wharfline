@@ -50,7 +50,7 @@ export default function Dashboard() {
         ))}
       </div>
 
-      <div className="grid lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-4 items-start">
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-4 items-start">
         <Card>
           <CardHeader title="최근 실행">
             <Button size="sm" variant="ghost" onClick={() => nav("/runs")}>

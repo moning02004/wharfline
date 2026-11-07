@@ -107,7 +107,9 @@ def set_source_repo(body: SourceRepoIn, db: Session = Depends(get_db)):
 
 
 @router.get("/builds")
-def list_builds(db: Session = Depends(get_db)):
+def list_builds(image: str | None = None, db: Session = Depends(get_db)):
+    if image:
+        return gitea.builds_for_image(db, image)
     return [b.to_dict() for b in db.scalars(select(m.Build).order_by(m.Build.updated_at.desc()).limit(30))]
 
 

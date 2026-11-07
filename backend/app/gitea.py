@@ -169,13 +169,34 @@ def handle_package(db: Session, payload: dict) -> list[tuple[m.Image, str]]:
 
 
 def build_for_image(db: Session, image_ref: str) -> dict[str, Any] | None:
-    """The build worth showing next to a job: one running now, or one that failed in the last day."""
+    """The build worth showing next to a job: running now, succeeded in the last 15 minutes, or failed in the last day."""
     img = db.get(m.Image, image_ref)
     if not img or not img.source_repo:
         return None
     b = db.scalar(select(m.Build).where(m.Build.repo == img.source_repo).order_by(m.Build.updated_at.desc()).limit(1))
     if not b:
         return None
-    if b.active or (b.status == "failure" and b.updated_at > time.time() - 86400):
+    age = time.time() - b.updated_at
+    if b.active or (b.status == "success" and age < 900) or (b.status == "failure" and age < 86400):
         return b.to_dict()
     return None
+
+
+def builds_for_image(db: Session, image_ref: str, limit: int = 5) -> list[dict[str, Any]]:
+    img = db.get(m.Image, image_ref)
+    if not img or not img.source_repo:
+        return []
+    return [b.to_dict() for b in db.scalars(select(m.Build).where(m.Build.repo == img.source_repo).order_by(m.Build.updated_at.desc()).limit(limit))]
+
+
+def build_for_tag(db: Session, image_ref: str, tag: str) -> m.Build | None:
+    """The CI run that pushed this tag, if Gitea told us about it."""
+    img = db.get(m.Image, image_ref)
+    if not img or not img.source_repo:
+        return None
+    return db.scalar(select(m.Build).where(m.Build.repo == img.source_repo, m.Build.tag == tag).order_by(m.Build.updated_at.desc()).limit(1))
+
+
+def build_line(b: m.Build) -> str:
+    ref = f"{b.branch or '-'}@{(b.sha or '')[:7]}" if b.sha else (b.branch or "-")
+    return f"빌드: {b.repo} #{b.run_number or b.run_id} · {ref} · {'성공' if b.status == 'success' else b.status} → {b.tag}"

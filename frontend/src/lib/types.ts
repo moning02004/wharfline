@@ -111,6 +111,7 @@ export interface RunDetail extends Run {
   method?: string;
   image?: string;
   inventory?: string;
+  build?: Build | null;
 }
 
 export interface Registry {

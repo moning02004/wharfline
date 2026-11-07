@@ -168,7 +168,7 @@ function GiteaCard() {
       <CardHeader title="Gitea 연동" sub="Gitea Actions의 빌드 진행과 새 이미지 푸시를 실시간으로 받아요.">
         {settings?.secretSet ? <Dot tone="ok">연결 준비됨</Dot> : <Dot tone="warn">비밀값 필요</Dot>}
       </CardHeader>
-      <div className="grid lg:grid-cols-2 gap-x-8 gap-y-5 p-4">
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-x-8 gap-y-5 p-4">
         <div className="flex flex-col gap-3.5">
           <Field label="웹훅 주소 (대상 URL)">
             <div className="flex gap-1.5">

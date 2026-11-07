@@ -176,6 +176,8 @@ def get_run(no: int, db: Session = Depends(get_db)):
     base = rec.to_dict()
     if job:
         base.update(method=runner.METHODS[job.method], image=job.image, inventory=job.inventory)
+        built = gitea.build_for_tag(db, job.image, rec.tag)
+        base["build"] = built.to_dict() if built else None
     if no in runner.live:
         return {**base, "live": not runner.live[no]["done"], "events": runner.live[no]["events"]}
     if rec.log is not None:

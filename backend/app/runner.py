@@ -17,6 +17,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from . import gitea
 from . import models as m
 from . import store as s
 from .db import SessionLocal
@@ -47,6 +48,9 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
         ("", f"대상: {job['inventory']} / {s.target_label(groups, inv)} → {', '.join(h['ip'] for h in all_hosts)}"),
         ("", f"잠금 획득: {names} (동시 실행 금지)"),
     ]
+    built = gitea.build_for_tag(db, job["image"], tag)
+    if built:
+        head_lines.insert(4, ("", gitea.build_line(built)))
     head = {"name": "준비", "lines": head_lines}
     tail = {"name": "마무리", "lines": [("", f"잠금 해제: {names}"), ("g", f"✔ 배포 성공 · {short}:{tag} · 서버 {len(hosts)}대")]}
     masked: list[Line] = [("m", f"  {k}=••••••••") for k in (env["keys"][:3] if env else [])]

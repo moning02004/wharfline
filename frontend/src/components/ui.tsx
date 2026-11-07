@@ -85,7 +85,8 @@ export function PageHeader({ title, desc, children }: { title: ReactNode; desc?:
 }
 
 export function TableWrap({ children }: { children: ReactNode }) {
-  return <div className="overflow-x-auto scroll-soft">{children}</div>;
+  // relative: absolutely positioned children (e.g. sr-only labels) stay inside the scroll box instead of widening the page
+  return <div className="relative overflow-x-auto scroll-soft">{children}</div>;
 }
 
 export function ListItem({ icon, title, sub, children, className }: { icon?: IconName; title: ReactNode; sub?: ReactNode; children?: ReactNode; className?: string }) {

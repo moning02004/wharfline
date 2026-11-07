@@ -29,7 +29,7 @@ export default function Notes() {
   return (
     <>
       <PageHeader title="설계 노트" desc="요청한 기능이 화면 어디에 있는지, 제가 더한 것과 일부러 뺀 것을 정리했어요." />
-      <div className="grid lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-4">
         <NoteList
           title="요청한 기능"
           items={[

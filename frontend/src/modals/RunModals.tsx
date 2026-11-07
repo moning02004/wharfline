@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
-import { useApp } from "../lib/app";
-import type { Job, RunDetail, RunEvent, Status } from "../lib/types";
+import { useApi, useApp } from "../lib/app";
+import type { Build, Job, RunDetail, RunEvent, Status } from "../lib/types";
+import { buildNo, buildState, elapsed } from "../components/BuildBadge";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
@@ -75,24 +76,50 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
   const [sel, setSel] = useState<string[]>([...job.targets]);
   const [busy, setBusy] = useState(false);
 
-  const resolved = tag === "latest" ? job.latestTag ?? "latest" : tag;
-  const info = job.imageTags.find((t) => t.name === resolved) ?? { name: resolved, digest: "00000000", pushed: "-" };
+  // Latest CI build of this image, polled while it runs, so a deploy can wait for a fresh tag.
+  const [poll, setPoll] = useState(2500);
+  const builds = useApi<Build[]>(`/builds?image=${encodeURIComponent(job.image)}`, poll).data;
+  const latest = builds?.[0];
+  const showBuild = !!latest && (latest.active || Date.now() / 1000 - latest.updatedAt < 3600);
+  const [waitForBuild, setWaitForBuild] = useState(false);
+  useEffect(() => {
+    if (builds) setPoll(latest?.active ? 2500 : 0);
+  }, [builds, latest?.active]);
+
+  const freshTag = latest?.status === "success" && latest.tag && !job.imageTags.some((t) => t.name === latest.tag) ? latest.tag : null;
+  const tagOptions = freshTag ? [{ name: freshTag, digest: "", pushed: "방금" }, ...job.imageTags] : job.imageTags;
+  const latestTag = freshTag ?? job.latestTag;
+  const resolved = tag === "latest" ? latestTag ?? "latest" : tag;
+  const info = tagOptions.find((t) => t.name === resolved) ?? { name: resolved, digest: "", pushed: "-" };
   const hosts = Object.values(job.groups)
     .flat()
     .filter((h) => !sel.length || sel.includes(h.group));
   const ready = hosts.filter((h) => !h.skip);
   const changed = JSON.stringify([...sel].sort()) !== JSON.stringify([...job.targets].sort());
 
-  const go = async () => {
+  const go = async (useTag = tag) => {
     setBusy(true);
     try {
-      const r = await api.post<{ no: number }>(`/jobs/${job.id}/runs`, { tag, groups: sel, rollback: !!opt.rollback });
+      const r = await api.post<{ no: number }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel, rollback: !!opt.rollback });
       onStarted(r.no);
     } catch (e) {
       toast(errMsg(e));
       setBusy(false);
     }
   };
+
+  // "Deploy when the build finishes": start as soon as the pushed tag arrives; stop on failure.
+  useEffect(() => {
+    if (!waitForBuild || !latest) return;
+    if (latest.status === "success" && latest.tag) {
+      setWaitForBuild(false);
+      setTag(latest.tag);
+      go(latest.tag);
+    } else if (!latest.active) {
+      setWaitForBuild(false);
+      toast(`빌드 #${latest.runNumber ?? latest.runId}이 ${latest.status === "failure" ? "실패해서" : "끝났지만 새 태그가 없어서"} 배포하지 않았어요`);
+    }
+  }, [waitForBuild, latest?.status, latest?.tag]); // react only to build state changes
 
   return (
     <>
@@ -102,6 +129,15 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
         onClose={onClose}
       />
       <ModalBody>
+        {showBuild && latest && !opt.rollback && (
+          <BuildPanel
+            build={latest}
+            selected={resolved === latest.tag}
+            waiting={waitForBuild}
+            onUseTag={() => latest.tag && setTag(latest.tag)}
+            onWait={setWaitForBuild}
+          />
+        )}
         <Field
           label="이미지 태그"
           htmlFor="cTag"
@@ -118,8 +154,8 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
           }
         >
           <Select id="cTag" mono value={tag} onChange={(e) => setTag(e.target.value)}>
-            <option value="latest">latest · 지금 {job.latestTag ?? "-"}</option>
-            {job.imageTags.map((t) => (
+            <option value="latest">latest · 지금 {latestTag ?? "-"}</option>
+            {tagOptions.map((t) => (
               <option key={t.name} value={t.name}>
                 {t.name}
                 {t.name === job.tagNow ? "  · 지금 배포됨" : ""}
@@ -164,11 +200,67 @@ function ConfirmRun({ job, opt, onClose, onStarted }: { job: Job; opt: { tag?: s
       </ModalBody>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
-        <Button variant="primary" icon="play" disabled={!ready.length || busy} onClick={go} autoFocus>
-          서버 {ready.length}대에 배포
+        <Button variant="primary" icon="play" disabled={!ready.length || busy || waitForBuild} onClick={() => go()} autoFocus>
+          {waitForBuild ? "빌드 끝나길 기다리는 중…" : `서버 ${ready.length}대에 배포`}
         </Button>
       </ModalFoot>
     </>
+  );
+}
+
+/** The image's latest CI build inside the deploy dialog: number, step, result, and what to do with it. */
+function BuildPanel({ build, selected, waiting, onUseTag, onWait }: { build: Build; selected: boolean; waiting: boolean; onUseTag: () => void; onWait: (v: boolean) => void }) {
+  const { tone, label } = buildState(build);
+  const color = { accent: "border-accent/30 bg-accent-soft", ok: "border-ok/25 bg-ok-soft", bad: "border-bad/25 bg-bad-soft", neutral: "border-line bg-surface-2" }[tone];
+  const text = { accent: "text-accent", ok: "text-ok", bad: "text-bad", neutral: "text-muted" }[tone];
+  return (
+    <div className={cx("rounded-lg border p-3 flex flex-col gap-2 animate-fade", color)}>
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className={cx("size-2 rounded-full", { accent: "bg-accent animate-pulse-dot", ok: "bg-ok", bad: "bg-bad", neutral: "bg-faint" }[tone])} />
+        <b className={cx("font-semibold", text)}>
+          {label} <span className="font-mono">{buildNo(build)}</span>
+        </b>
+        <span className="text-muted text-[12px]">
+          {build.repo} · {build.branch ?? "-"}
+          {build.sha ? `@${build.sha.slice(0, 7)}` : ""}
+        </span>
+        {build.url && (
+          <a href={build.url} target="_blank" rel="noreferrer noopener" className="ml-auto text-[12px] text-accent hover:underline">
+            Gitea에서 보기
+          </a>
+        )}
+      </div>
+      {build.active && (
+        <>
+          <div className="text-[12.5px] text-muted">
+            {build.step ? `지금 단계: ${build.step}` : "러너를 기다리는 중"} · {elapsed(build.startedAt)}
+          </div>
+          <div className="h-1 rounded-full bg-surface overflow-hidden">
+            <div className="h-full w-1/3 rounded-full bg-accent animate-[indeterminate_1.4s_ease-in-out_infinite]" />
+          </div>
+          <label className="flex items-center gap-2 text-[12.5px] cursor-pointer">
+            <input type="checkbox" className="accent-(--accent) size-3.5" checked={waiting} onChange={(e) => onWait(e.target.checked)} />
+            빌드가 성공하면 새 태그로 바로 배포 <span className="text-faint">(이 창을 열어 두세요)</span>
+          </label>
+        </>
+      )}
+      {build.status === "success" && build.tag && (
+        <div className="flex items-center gap-2 flex-wrap text-[12.5px]">
+          <span>
+            새 이미지 <span className="font-mono font-medium">{build.tag}</span>가 올라왔어요.
+          </span>
+          {selected ? (
+            <span className="text-ok font-medium">이 태그로 배포해요</span>
+          ) : (
+            <Button size="sm" onClick={onUseTag}>
+              {build.tag}로 배포
+            </Button>
+          )}
+        </div>
+      )}
+      {build.status === "success" && !build.tag && <div className="text-[12.5px] text-muted">빌드는 성공했지만 아직 이미지 푸시 알림이 오지 않았어요.</div>}
+      {build.status === "failure" && <div className="text-[12.5px] text-bad">이 빌드는 실패했어요. 이미 올라와 있는 태그만 배포할 수 있어요.</div>}
+    </div>
   );
 }
 
@@ -273,6 +365,15 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
                 {short}:{run.tag}
               </span>{" "}
               · {run.method} · {run.inventory} / {run.target}
+              {run.build && (
+                <span className="block mt-1 text-[12px]">
+                  <span className={run.build.status === "success" ? "text-ok" : "text-muted"}>
+                    {buildState(run.build).label} <span className="font-mono">{buildNo(run.build)}</span>
+                  </span>{" "}
+                  · {run.build.repo} · {run.build.branch ?? "-"}
+                  {run.build.sha ? `@${run.build.sha.slice(0, 7)}` : ""} → <span className="font-mono">{run.build.tag}</span>
+                </span>
+              )}
             </>
           )
         }
@@ -283,7 +384,7 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
           </span>
         }
       />
-      <div className="grid md:grid-cols-[220px_minmax(0,1fr)] max-md:grid-rows-[auto_minmax(0,1fr)] flex-1 min-h-0">
+      <div className="grid grid-cols-[minmax(0,1fr)] md:grid-cols-[220px_minmax(0,1fr)] max-md:grid-rows-[auto_minmax(0,1fr)] flex-1 min-h-0">
         <div className="md:border-r max-md:border-b border-line p-3 flex md:flex-col gap-0.5 overflow-auto scroll-soft">
           {(run?.steps ?? []).map((name, i) => {
             const st = steps[i]?.state ?? "";
