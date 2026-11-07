@@ -2,8 +2,7 @@
 #
 #   cp .env.example .env        # fill in every value
 #   (create secrets/master_keys, see README.md)
-#   docker compose up -d                    # behind your own reverse proxy / HTTPS
-#   docker compose --profile https up -d    # or let the bundled Caddy get a certificate
+#   docker compose up -d        # HTTPS comes from your reverse proxy (e.g. Nginx Proxy Manager)
 #
 # Upgrade: change WHARFLINE_VERSION in .env, then `docker compose pull && docker compose up -d`.
 
@@ -73,29 +72,9 @@ services:
     depends_on:
       backend:
         condition: service_healthy
-    # Only on localhost by default: put HTTPS in front (your proxy, or the `https` profile below).
+    # HTTPS is your reverse proxy's job. Bind to localhost, or to this VM's LAN IP when the proxy runs elsewhere.
     ports:
       - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:80"
-    logging: *logging
-
-  # Optional: automatic HTTPS with Let's Encrypt. `docker compose --profile https up -d`
-  # Needs WHARFLINE_DOMAIN pointing at this server and ports 80/443 open.
-  caddy:
-    image: caddy:2.8-alpine
-    profiles: [https]
-    restart: unless-stopped
-    environment:
-      WHARFLINE_DOMAIN: ${WHARFLINE_DOMAIN:-}
-    ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
-    depends_on:
-      - frontend
     logging: *logging
 
 # Master key for envelope encryption. Never commit it; keep an encrypted backup elsewhere.
@@ -105,5 +84,3 @@ secrets:
 
 volumes:
   pgdata:
-  caddy_data:
-  caddy_config:

@@ -2,13 +2,13 @@
 
 GitHub 릴리스로 만들어진 이미지(`ghcr.io/moning02004/wharfline-*`)를 받아서 실행해요. 서버에서 빌드하지 않고, 샘플 데이터도 넣지 않아요. 처음 띄우면 `.env`에 적은 Owner 한 명만 만들어져요.
 
-필요한 것: Docker Engine과 Compose 플러그인(`docker compose version`), 이 폴더의 파일 세 개(`docker-compose.yml`, `Caddyfile`, `.env.example`).
+필요한 것: Docker Engine과 Compose 플러그인(`docker compose version`), 이 폴더의 파일 두 개(`docker-compose.yml`, `.env.example`).
 
 ## 1. 폴더 만들기
 
 ```bash
 sudo mkdir -p /opt/wharfline && sudo chown "$USER" /opt/wharfline && cd /opt/wharfline
-# 이 폴더의 docker-compose.yml, Caddyfile, .env.example을 여기로 복사해요
+# 이 폴더의 docker-compose.yml, .env.example을 여기로 복사해요
 cp .env.example .env && chmod 600 .env
 ```
 
@@ -47,22 +47,13 @@ openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -in secrets/master_keys -out maste
 | `POSTGRES_PASSWORD` | `openssl rand -base64 32`로 만든 긴 값 |
 | `WHARFLINE_OWNER_EMAIL` / `_NAME` / `_PASSWORD` | 처음 만들 Owner. 비밀번호는 10자 이상, 첫 로그인 때 바꾸게 돼요 |
 | `WHARFLINE_COOKIE_SECURE` | HTTPS면 `1`(기본). HTTP로만 시험할 때만 `0` |
-| `WEB_BIND`, `WEB_PORT` | 웹 포트. 기본은 `127.0.0.1:8080`이라 바깥에서 바로 못 들어와요 |
-| `WHARFLINE_DOMAIN` | 아래 Caddy(자동 HTTPS)를 쓸 때의 도메인 |
+| `WEB_BIND`, `WEB_PORT` | 웹 포트. 기본은 `127.0.0.1:8080`. 프록시가 다른 VM이면 이 VM의 내부 IP |
 
 Owner가 생긴 뒤에는 `WHARFLINE_OWNER_PASSWORD`를 `.env`에서 지워도 돼요(빈 DB일 때만 쓰여요).
 
 ## 5. 띄우기
 
-HTTPS를 어떻게 붙이느냐에 따라 둘 중 하나예요.
-
-**A. 함께 들어 있는 Caddy로 자동 HTTPS** (도메인이 이 서버를 가리키고 80/443 포트가 열려 있어야 해요)
-
-```bash
-docker compose --profile https up -d
-```
-
-**B. 이미 쓰는 리버스 프록시(nginx 등)가 있을 때**: `127.0.0.1:8080`으로 넘기고 `X-Forwarded-For`를 붙여 주세요.
+HTTPS는 앞단 리버스 프록시가 맡아요. 이 구성은 HTTP 포트 하나만 열어요.
 
 ```bash
 docker compose up -d
@@ -70,7 +61,7 @@ docker compose up -d
 
 ### Nginx Proxy Manager(NPM)를 앞에 둘 때
 
-공유기 → NPM → 이 VM 구성이면 HTTPS는 NPM이 맡으니 **Caddy와 `Caddyfile`은 필요 없어요.** `--profile https` 없이 `docker compose up -d`로 띄우면 돼요.
+공유기 → NPM → 이 VM 구성 예시예요.
 
 1. NPM이 다른 VM·LXC에 있으면 `127.0.0.1`로는 닿지 않아요. `.env`에서 웹 포트를 이 VM의 내부 IP에 열어요.
    ```
