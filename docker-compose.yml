@@ -14,16 +14,32 @@ services:
       timeout: 3s
       retries: 10
 
+  # One-off: waits for the DB, applies migrations, seeds an empty DB, then exits.
+  # The API only starts after this succeeds, so API replicas never race on migrations.
+  migrate:
+    build: ./backend
+    image: wharfline-backend
+    command: ["python", "-m", "app.prestart"]
+    restart: "no"
+    environment: &backend-env
+      DATABASE_URL: postgresql+psycopg://wharfline:${POSTGRES_PASSWORD:-wharfline}@db:5432/wharfline
+      WHARFLINE_MASTER_KEYS_FILE: /run/secrets/master_keys
+    secrets: [master_keys]
+    depends_on:
+      db:
+        condition: service_healthy
+
   backend:
     build: ./backend
     image: wharfline-backend
     restart: unless-stopped
     environment:
-      DATABASE_URL: postgresql+psycopg://wharfline:${POSTGRES_PASSWORD:-wharfline}@db:5432/wharfline
+      <<: *backend-env
       CORS_ORIGINS: http://localhost:${WEB_PORT:-8080}
+    secrets: [master_keys]
     depends_on:
-      db:
-        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
     expose:
       - "8000"
 
@@ -36,6 +52,12 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_PORT:-8080}:80"
+
+# Master keys for envelope encryption. Created by `make keygen`, never committed.
+# Mounted read-only at /run/secrets/master_keys; not visible in `docker inspect`.
+secrets:
+  master_keys:
+    file: ./secrets/master_keys
 
 volumes:
   pgdata:

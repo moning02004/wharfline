@@ -85,19 +85,18 @@ export default function Envs() {
                 return (
                   <div
                     key={v.key}
-                    className="grid grid-cols-[minmax(0,1fr)_auto] sm:grid-cols-[minmax(120px,240px)_minmax(0,1fr)_auto] gap-x-4 gap-y-1 items-center px-5 py-2.5 border-b border-line last:border-b-0 font-mono text-[12.5px] hover:bg-surface-2 transition-colors"
+                    className="grid grid-cols-1 sm:grid-cols-[minmax(120px,240px)_minmax(0,1fr)] gap-x-4 gap-y-1 items-center px-5 py-2.5 border-b border-line last:border-b-0 font-mono text-[12.5px] hover:bg-surface-2 transition-colors"
                   >
                     <span>{v.key}</span>
                     <span
                       className={cx(
-                        "truncate max-sm:col-span-2 max-sm:row-start-2 transition-all duration-300",
+                        "truncate transition-all duration-300",
                         shown ? "text-fg" : "text-faint tracking-[.05em]",
                       )}
                       style={shown ? { animation: `fade .3s ${i * 30}ms both` } : undefined}
                     >
                       {shown ? value : "••••••••••••••••"}
                     </span>
-                    <span className="text-faint text-[11.5px]">{v.length}자</span>
                   </div>
                 );
               })}

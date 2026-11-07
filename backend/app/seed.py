@@ -174,8 +174,13 @@ def seed_if_empty(db: Session) -> bool:
     for img in images:
         db.add(m.Image(ref=img["ref"], registry_id=img["registry"], tags=[m.ImageTag(**t) for t in img["tags"]]))
     for e in envs:
-        db.add(m.EnvSet(id=e["id"], name=e["name"], ver=e["ver"], updated=e["updated"], vars=e["vars"],
-                        versions=[m.EnvVersion(ver=h["ver"], updated=h["updated"], vars=h["vars"]) for h in e["history"]]))
+        env = m.EnvSet(id=e["id"], name=e["name"], ver=e["ver"], updated=e["updated"])
+        env.set_vars(e["vars"])
+        for h in e["history"]:
+            v = m.EnvVersion(env_id=e["id"], ver=h["ver"], updated=h["updated"])
+            v.set_vars(h["vars"])
+            env.versions.append(v)
+        db.add(env)
     for j in jobs:
         db.add(m.Job(id=j["id"], method=j["method"], name=j["name"], image=j["image"], tag_now=j["tagNow"], default_tag=j["defaultTag"],
                      repo=j.get("repo"), book=j.get("book"), dir=j.get("dir"), compose=j.get("compose"), inventory=j["inventory"],

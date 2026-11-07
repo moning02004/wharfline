@@ -49,7 +49,7 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
     ]
     head = {"name": "준비", "lines": head_lines}
     tail = {"name": "마무리", "lines": [("", f"잠금 해제: {names}"), ("g", f"✔ 배포 성공 · {short}:{tag} · 서버 {len(hosts)}대")]}
-    masked: list[Line] = [("m", f"  {k}=••••••••") for k, _ in (env["vars"][:3] if env else [])]
+    masked: list[Line] = [("m", f"  {k}=••••••••") for k in (env["keys"][:3] if env else [])]
 
     if job["method"] == "compose":
         def per(fn):

@@ -112,7 +112,10 @@ def create_job(body: JobIn, db: Session = Depends(get_db)):
         env_name = re.sub(r"\s+", "-", re.sub(r"\s*·\s*", ".", name))
         if s.env_by_name(db, env_name):
             raise HTTPException(400, f"환경 변수 {env_name}이(가) 이미 있어요. '저장된 것 쓰기'를 골라 주세요.")
-        db.add(m.EnvSet(id=s.new_id("e"), name=env_name, ver=1, updated=f"방금 · {s.ME['name']}", vars=body.envVars))
+        s.validate_vars(body.envVars)
+        env = m.EnvSet(id=s.new_id("e"), name=env_name, ver=1, updated=f"방금 · {s.ME['name']}")
+        env.set_vars(body.envVars)
+        db.add(env)
 
     job = m.Job(
         id=s.new_id("j"), name=name, image=body.image, default_tag=body.defaultTag or "latest", method=body.method,

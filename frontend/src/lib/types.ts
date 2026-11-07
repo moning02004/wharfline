@@ -139,7 +139,7 @@ export interface EnvSet {
   name: string;
   ver: number;
   updated: string;
-  vars: { key: string; length: number }[];
+  vars: { key: string }[]; // names only; values need /values with a recent sudo
   usedBy: string[];
 }
 

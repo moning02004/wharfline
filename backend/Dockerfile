@@ -22,5 +22,6 @@ EXPOSE 8000
 HEALTHCHECK --interval=10s --timeout=3s --retries=5 --start-period=20s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')" || exit 1
 
-# Migrate (and seed an empty DB) before serving. exec keeps uvicorn as PID 1 for clean shutdowns.
-CMD ["sh", "-c", "python -m app.prestart && exec uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+# Migrations run separately (`python -m app.prestart`, the compose `migrate` service).
+# The API refuses to start if the DB is behind or the master key is missing.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

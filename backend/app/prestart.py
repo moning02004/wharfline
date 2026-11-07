@@ -1,6 +1,11 @@
 """Runs once before the API starts: wait for the DB, apply migrations, load sample data.
 
-    python -m app.prestart            # what the container runs
+In docker compose this is the one-off `migrate` service; the API containers
+only start after it exits successfully, so running several API replicas
+never races on migrations. A Postgres advisory lock also makes concurrent
+runs of this script safe (the second one waits, then finds nothing to do).
+
+    python -m app.prestart            # migrate + seed an empty DB
     python -m app.prestart --no-seed  # migrate only
 """
 
@@ -14,11 +19,13 @@ from alembic.config import Config
 from sqlalchemy import inspect, text
 from sqlalchemy.exc import OperationalError
 
+from . import crypto
 from .db import SessionLocal, engine
 from .seed import seed_if_empty
 
 log = logging.getLogger("wharfline.prestart")
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
+LOCK_ID = 0x5768_6172  # arbitrary app-wide id for pg_advisory_lock ("Whar")
 
 
 def wait_for_db(attempts: int = 30) -> None:
@@ -51,15 +58,27 @@ def migrate() -> None:
     command.upgrade(cfg, "head")
 
 
-def main() -> None:
+def main() -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)-5.5s [%(name)s] %(message)s")
+    try:
+        ring = crypto.keyring()  # fail before touching the DB if no master key is available
+    except crypto.CryptoError as e:
+        log.error("%s", e)
+        return 1
+    log.info("master keys loaded: %s (active: %s)", ", ".join(ring.ids), ring.active_id)
     wait_for_db()
-    migrate()
-    if "--no-seed" not in sys.argv:
-        with SessionLocal() as db:
-            if seed_if_empty(db):
-                log.info("loaded sample data")
+    with engine.connect() as lock_conn:
+        lock_conn.execute(text("select pg_advisory_lock(:id)"), {"id": LOCK_ID})
+        try:
+            migrate()
+            if "--no-seed" not in sys.argv:
+                with SessionLocal() as db:
+                    if seed_if_empty(db):
+                        log.info("loaded sample data")
+        finally:
+            lock_conn.execute(text("select pg_advisory_unlock(:id)"), {"id": LOCK_ID})
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())

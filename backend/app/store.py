@@ -90,7 +90,7 @@ def image_of(db: Session, job: dict) -> dict:
 
 def env_by_name(db: Session, name: str) -> dict | None:
     e = db.scalar(select(m.EnvSet).where(m.EnvSet.name == name))
-    return {"name": e.name, "ver": e.ver, "vars": e.vars} if e else None
+    return {"name": e.name, "ver": e.ver, "keys": e.var_names} if e else None
 
 
 def repo_by_name(db: Session, name: str | None) -> dict | None:
@@ -176,6 +176,27 @@ def compose_risk(txt: str) -> list[str]:
 
 
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+ENV_MAX_VARS = 500
+ENV_MAX_VALUE = 32 * 1024
+
+
+def validate_vars(vars_: list[list[str]]) -> None:
+    from fastapi import HTTPException
+
+    if len(vars_) > ENV_MAX_VARS:
+        raise HTTPException(400, f"변수는 {ENV_MAX_VARS}개까지 넣을 수 있어요.")
+    seen: set[str] = set()
+    for pair in vars_:
+        if len(pair) != 2:
+            raise HTTPException(400, "변수는 [이름, 값] 형식이어야 해요.")
+        k, v = pair
+        if not ENV_KEY_RE.match(k):
+            raise HTTPException(400, f'"{k or "(빈 이름)"}"은(는) 변수 이름으로 쓸 수 없어요.')
+        if len(v) > ENV_MAX_VALUE:
+            raise HTTPException(400, f"{k} 값이 너무 길어요 (최대 32KB).")
+        if k in seen:
+            raise HTTPException(400, f"{k}이(가) 두 번 들어 있어요.")
+        seen.add(k)
 
 
 def diff_vars(a: list[list[str]], b: list[list[str]]) -> dict[str, list[str]]:

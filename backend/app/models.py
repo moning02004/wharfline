@@ -9,10 +9,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from sqlalchemy import Boolean, Float, ForeignKey, Identity, Integer, Sequence, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
+from . import crypto
 from .db import Base
 
 
@@ -127,26 +128,60 @@ class ImageTag(Base):
         return {"name": self.name, "digest": self.digest, "pushed": self.pushed}
 
 
-class EnvSet(Base):
-    """Values are plain text in this prototype. Encrypt with AES-256-GCM before real use."""
+class EncryptedVars:
+    """Variables sealed with envelope encryption (see app/crypto.py).
 
+    Only the variable names are stored readable, for listings and log masking.
+    Values are decrypted on demand and never cached on the row.
+    """
+
+    var_names: Mapped[list[str]] = mapped_column(JSONB, default=list)
+    kek_id: Mapped[str] = mapped_column(String(32))
+    wrapped_dek: Mapped[bytes] = mapped_column(LargeBinary)
+    nonce: Mapped[bytes] = mapped_column(LargeBinary)
+    ciphertext: Mapped[bytes] = mapped_column(LargeBinary)
+
+    def crypto_context(self) -> str:  # binds the ciphertext to this exact row
+        raise NotImplementedError
+
+    @property
+    def envelope(self) -> crypto.Envelope:
+        return crypto.Envelope(self.kek_id, self.wrapped_dek, self.nonce, self.ciphertext)
+
+    @envelope.setter
+    def envelope(self, env: crypto.Envelope) -> None:
+        self.kek_id, self.wrapped_dek, self.nonce, self.ciphertext = env.kek_id, env.wrapped_dek, env.nonce, env.ciphertext
+
+    def set_vars(self, vars_: list[list[str]]) -> None:
+        self.var_names = [k for k, _ in vars_]
+        self.envelope = crypto.seal_json(vars_, self.crypto_context())
+
+    def get_vars(self) -> list[list[str]]:
+        return crypto.open_json(self.envelope, self.crypto_context())
+
+
+class EnvSet(EncryptedVars, Base):
     __tablename__ = "env_sets"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
     name: Mapped[str] = mapped_column(String(255), unique=True)
     ver: Mapped[int] = mapped_column(Integer, default=1)
     updated: Mapped[str] = mapped_column(String(128))
-    vars: Mapped[list[list[str]]] = mapped_column(JSONB, default=list)
     versions: Mapped[list[EnvVersion]] = relationship(order_by="EnvVersion.ver.desc()", cascade="all, delete-orphan")
 
+    def crypto_context(self) -> str:
+        return f"env_set:{self.id}"
 
-class EnvVersion(Base):
+
+class EnvVersion(EncryptedVars, Base):
     __tablename__ = "env_versions"
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     env_id: Mapped[str] = mapped_column(ForeignKey("env_sets.id", ondelete="CASCADE"), index=True)
     ver: Mapped[int] = mapped_column(Integer)
     updated: Mapped[str] = mapped_column(String(128))
-    vars: Mapped[list[list[str]]] = mapped_column(JSONB, default=list)
+
+    def crypto_context(self) -> str:
+        return f"env_version:{self.env_id}:{self.ver}"
 
 
 class Job(Base):
