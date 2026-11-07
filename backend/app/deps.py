@@ -27,6 +27,21 @@ def require_owner(db: Session = Depends(get_db)) -> None:
         raise HTTPException(status_code=403, detail="Owner만 바꿀 수 있어요.")
 
 
+def require(action: str):
+    """Dependency: the signed-in member must be allowed `action` (see store.PERMS). X-View-As is ignored."""
+    if action not in s.PERMS:
+        raise ValueError(f"unknown action {action}")
+
+    def check(db: Session = Depends(get_db)) -> None:
+        me = s.current_member(db)
+        if not me:
+            raise HTTPException(status_code=401, detail="login_required")
+        if not s.can(me, action):
+            raise HTTPException(status_code=403, detail=s.NO_PERM)
+
+    return check
+
+
 def viewer(db: Session = Depends(get_db), x_view_as: str | None = Header(default=None)) -> m.Member | None:
     """Whose view to show: the signed-in member, or, for an Owner previewing, the member named in X-View-As.
 

@@ -193,24 +193,62 @@ def _finish(no: int, status: str) -> None:
         db.commit()
 
 
-def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str) -> dict:
-    no = db.scalar(select(m.run_no_seq.next_value()))
-    tag = s.resolve_tag(s.image_of(db, job), requested_tag) if job.get("image") else "-"
+def run_groups(db: Session, rec: m.Run, job: dict) -> list[str]:
+    """The inventory groups a run targets, read back from its target label."""
+    inv = s.inv_of(db, job)
+    return [] if rec.target == "전체" else [g.strip() for g in rec.target.split(",") if g.strip() in s.groups_of(inv)]
+
+
+def _script(db: Session, job: dict, groups: list[str], no: int, tag: str, trigger: str, requested_tag: str | None) -> list[dict[str, Any]]:
     steps = build_script(db, job, groups, no, tag, trigger)
     if job.get("image") and requested_tag == "latest":
         steps[0]["lines"].insert(3, ("", f"latest → {tag} (digest로 고정해서 배포)"))
     if trigger == "되돌리기":
         steps[0]["lines"][1] = ("y", f"트리거: 되돌리기 · {s.actor_name(db)} · {job['tagNow']} → {tag}")
+    return steps
 
+
+def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str,
+               status: str = "run", requested_by: str | None = None) -> m.Run:
+    """Add the run row (not committed). The tag is pinned now, so an approval later deploys what was asked for."""
+    no = db.scalar(select(m.run_no_seq.next_value()))
+    tag = s.resolve_tag(s.image_of(db, job), requested_tag) if job.get("image") else "-"
+    step_names = [st["name"] for st in build_script(db, job, groups, no, tag, trigger)]
+    rec = m.Run(no=no, job=job["name"], job_id=job["id"], target=s.target_label(groups, s.inv_of(db, job)), tag=tag,
+                status=status, by=s.actor_name(db), trigger=trigger, time="방금", duration="-", steps=step_names,
+                requested_by=requested_by)
+    db.add(rec)
+    db.flush()
+    return rec
+
+
+def launch(db: Session, rec: m.Run, job: dict, groups: list[str], requested_tag: str | None = None, note: str | None = None) -> dict:
+    """Start playing a run row back in a background task; commits. `note` adds a line under the trigger (e.g. who approved)."""
+    steps = _script(db, job, groups, rec.no, rec.tag, rec.trigger, requested_tag)
+    if note:
+        steps[0]["lines"].insert(2, ("y", note))
     step_names = [st["name"] for st in steps]
-    db.add(m.Run(no=no, job=job["name"], job_id=job["id"], target=s.target_label(groups, s.inv_of(db, job)), tag=tag,
-                 status="run", by=s.actor_name(db), trigger=trigger, time="방금", duration="-", steps=step_names, started_at=time.time()))
+    rec.status, rec.time, rec.steps, rec.started_at = "run", "방금", step_names, time.time()
     db.commit()
 
+    no = rec.no
     live[no] = {"events": [], "done": False, "cancelled": False, "t0": time.time(),
-                "job_id": job["id"], "job_name": job["name"], "tag": tag}
+                "job_id": job["id"], "job_name": job["name"], "tag": rec.tag}
     asyncio.get_running_loop().create_task(_play(no, steps))
-    return {"no": no, "tag": tag, "steps": step_names}
+    return {"no": no, "tag": rec.tag, "steps": step_names, "status": "run"}
+
+
+def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None = None) -> dict:
+    rec = create_run(db, job, groups, requested_tag, trigger, requested_by=requested_by)
+    return launch(db, rec, job, groups, requested_tag)
+
+
+def request_approval(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None) -> dict:
+    """A protected job asked to run without the right to: a run waiting for an Owner/Admin. Commits."""
+    rec = create_run(db, job, groups, requested_tag, trigger, status="approval", requested_by=requested_by)
+    s.log_act(db, "배포 승인 요청", f"{job['name']} #{rec.no} · {rec.tag}", "warn")
+    db.commit()
+    return {"no": rec.no, "tag": rec.tag, "steps": rec.steps or [], "status": "approval"}
 
 
 def cancel_run(no: int, by: str) -> bool:
@@ -232,9 +270,7 @@ def mark_interrupted(db: Session) -> None:
 
 def replay_events(db: Session, rec: m.Run, job: dict) -> tuple[list[str], list[dict]]:
     """Rebuild a log for runs that have no saved log (the sample history)."""
-    inv = s.inv_of(db, job)
-    groups = [] if rec.target == "전체" else [g.strip() for g in rec.target.split(",") if g.strip() in s.groups_of(inv)]
-    steps = build_script(db, job, groups, rec.no, rec.tag, rec.trigger)
+    steps = build_script(db, job, run_groups(db, rec, job), rec.no, rec.tag, rec.trigger)
     ok = rec.status == "ok"
     events: list[dict] = []
     for i, st in enumerate(steps):

@@ -2,7 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import { useApi, useApp } from "../lib/app";
 import type { Job, Run } from "../lib/types";
 import { EditJobModal, NewJobModal } from "../modals/NewJobModal";
-import { PlaybookLine, shortImage, useRun } from "../modals/RunModals";
+import { ApprovalButtons, PlaybookLine, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
@@ -14,7 +14,7 @@ export function Jobs() {
   useEffect(() => {
     setPoll(data?.some((j) => j.build?.active || j.last.status === "run") ? 3000 : 0);
   }, [data]);
-  const { openModal } = useApp();
+  const { openModal, can } = useApp();
   const { confirm } = useRun();
   const [open, setOpen] = useState<string | null>(null);
   if (!data) return <Loading />;
@@ -25,12 +25,16 @@ export function Jobs() {
         title="배포 작업"
         desc="플레이북, 서버 그룹, 도커 이미지, 환경 변수를 묶은 실행 단위예요. 행을 누르면 자세한 설정이 보여요."
       >
-        <Button icon="wand" onClick={() => openModal((c) => <NewJobModal onClose={c} guide />, "md")}>
-          배포를 도와드릴까요?
-        </Button>
-        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
-          새 배포 작업
-        </Button>
+        {can("job_create") && (
+          <>
+            <Button icon="wand" onClick={() => openModal((c) => <NewJobModal onClose={c} guide />, "md")}>
+              배포를 도와드릴까요?
+            </Button>
+            <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
+              새 배포 작업
+            </Button>
+          </>
+        )}
       </PageHeader>
       <Card>
         <TableWrap>
@@ -109,9 +113,11 @@ export function Jobs() {
                               편집
                             </Button>
                           )}
-                          <Button size="sm" icon="play" onClick={() => confirm(j)}>
-                            실행
-                          </Button>
+                          {can("run") && (
+                            <Button size="sm" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>
+                              {j.protected && !can("run_protected") ? "승인 요청" : "실행"}
+                            </Button>
+                          )}
                         </span>
                       </td>
                     </tr>
@@ -152,10 +158,19 @@ export function Jobs() {
 export function Runs() {
   const { data } = useApi<Run[]>("/runs");
   const { openLog } = useRun();
+  const { can } = useApp();
   if (!data) return <Loading />;
+  const waiting = data.filter((r) => r.status === "approval").length;
   return (
     <>
-      <PageHeader title="실행 기록" desc="모든 실행의 로그는 90일 동안 보관돼요. 로그 속 비밀 값은 저장 전에 가려져요." />
+      <PageHeader
+        title="실행 기록"
+        desc={
+          waiting
+            ? `승인 대기 ${waiting}건이 있어요. 운영 보호 작업은 Owner나 Admin이 승인해야 실행돼요.`
+            : "모든 실행의 로그는 90일 동안 보관돼요. 로그 속 비밀 값은 저장 전에 가려져요."
+        }
+      />
       <Card>
         <TableWrap>
           <table className="tbl">
@@ -170,6 +185,9 @@ export function Runs() {
                 <th>실행한 사람</th>
                 <th>소요</th>
                 <th>시간</th>
+                <th className="text-right">
+                  <span className="sr-only">동작</span>
+                </th>
               </tr>
             </thead>
             <tbody>
@@ -185,9 +203,19 @@ export function Runs() {
                   </td>
                   <td className="text-muted">{r.trigger}</td>
                   <td className="font-mono">{r.tag}</td>
-                  <td>{r.by}</td>
+                  <td>
+                    {r.by}
+                    {r.decidedByName && (
+                      <div className="text-[12px] text-muted">
+                        {r.status === "rejected" ? "거절" : "승인"} · {r.decidedByName}
+                      </div>
+                    )}
+                  </td>
                   <td className="tabular-nums text-muted">{r.duration}</td>
                   <td className="text-muted">{r.time}</td>
+                  <td className="text-right" onClick={(e) => e.stopPropagation()}>
+                    {r.status === "approval" && can("approve") && <ApprovalButtons no={r.no} />}
+                  </td>
                 </tr>
               ))}
             </tbody>

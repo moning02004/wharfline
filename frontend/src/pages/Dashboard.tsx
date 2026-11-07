@@ -2,14 +2,14 @@ import { useNavigate } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
 import type { Dashboard as D } from "../lib/types";
 import { NewJobModal } from "../modals/NewJobModal";
-import { shortImage, useRun } from "../modals/RunModals";
+import { ApprovalButtons, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Button, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
 
 /** Dashboard: 바로 실행 on top, then 최근 실행 | 알림. */
 export default function Dashboard() {
   const { data } = useApi<D>("/dashboard");
-  const { openModal } = useApp();
+  const { openModal, can } = useApp();
   const { confirm, openLog } = useRun();
   const nav = useNavigate();
   if (!data) return <Loading />;
@@ -19,9 +19,11 @@ export default function Dashboard() {
   return (
     <>
       <PageHeader title={`안녕하세요, ${data.me.name}님`}>
-        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
-          새 배포 작업
-        </Button>
+        {can("job_create") && (
+          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewJobModal onClose={c} />, "md")}>
+            새 배포 작업
+          </Button>
+        )}
       </PageHeader>
 
       <Card>
@@ -42,9 +44,11 @@ export default function Dashboard() {
               }
             >
               <BuildBadge build={j.build} />
-              <Button size="sm" icon="play" onClick={() => confirm(j)}>
-                실행
-              </Button>
+              {can("run") && (
+                <Button size="sm" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>
+                  {j.protected && !can("run_protected") ? "승인 요청" : "실행"}
+                </Button>
+              )}
             </ListItem>
           ))
         ) : (
@@ -93,6 +97,20 @@ export default function Dashboard() {
               보안 설정
             </Button>
           </CardHeader>
+          {data.pendingApprovals.map((r) => (
+            <ListItem
+              key={r.no}
+              icon="lock"
+              title={
+                <button type="button" className="text-left hover:underline" onClick={() => openLog(r.no)}>
+                  승인 대기 · {r.job} <span className="font-mono text-muted font-normal">#{r.no}</span>
+                </button>
+              }
+              sub={`${r.requestedByName ?? r.by}님 요청 · ${r.trigger} · ${r.tag}`}
+            >
+              {can("approve") ? <ApprovalButtons no={r.no} /> : <Dot tone="warn">승인 대기</Dot>}
+            </ListItem>
+          ))}
           {alert && (
             <ListItem icon="alert" title={`${alert.name}의 호스트 키가 바뀌었어요`} sub={`${alert.ip} · 확인 전까지 이 서버로의 배포는 막혀 있어요`}>
               <Button size="sm" variant="ghost" onClick={() => nav("/inventory")}>

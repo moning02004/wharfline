@@ -15,6 +15,7 @@ export function EnvSource({
   existing,
   picked,
   setPicked,
+  existingOnly,
 }: {
   text: string;
   setText: (v: string) => void;
@@ -23,6 +24,8 @@ export function EnvSource({
   existing?: string[];
   picked?: string;
   setPicked?: (v: string) => void;
+  /** Only "저장된 것 쓰기": for members who may not write .env values */
+  existingOnly?: boolean;
 }) {
   const { toast } = useApp();
   const [over, setOver] = useState(false);
@@ -41,10 +44,12 @@ export function EnvSource({
     r.readAsText(f);
   };
 
-  const opts: { value: EnvMode; label: string }[] = [
-    { value: "paste", label: "붙여넣기" },
-    { value: "upload", label: "파일 올리기" },
-  ];
+  const opts: { value: EnvMode; label: string }[] = existingOnly
+    ? []
+    : [
+        { value: "paste", label: "붙여넣기" },
+        { value: "upload", label: "파일 올리기" },
+      ];
   if (existing) opts.push({ value: "existing", label: "저장된 것 쓰기" });
 
   return (

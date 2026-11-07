@@ -17,7 +17,7 @@ from .. import models as m
 from .. import runner
 from .. import store as s
 from ..db import SessionLocal, get_db
-from ..deps import build_scope, require_login, require_sudo
+from ..deps import build_scope, require, require_login, require_sudo
 
 MAX_BODY = 1024 * 1024
 
@@ -26,14 +26,20 @@ router = APIRouter(prefix="/api", tags=["integrations"], dependencies=[Depends(r
 
 
 def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[int]:
-    """Start runs for jobs with auto-deploy on, for each newly pushed release tag."""
+    """Start runs for jobs with auto-deploy on, for each newly pushed release tag.
+
+    A protected job is not started: its run waits for an Owner/Admin to approve it.
+    """
     started: list[int] = []
     for img, tag in released:
         for job in db.scalars(select(m.Job).where(m.Job.image == img.ref, m.Job.hook.is_(True))):
             j = job.to_dict()
             if not [h for h in s.target_hosts(s.inv_of(db, j), j["targets"]) if not s.host_skip(h)]:
                 continue
-            started.append(runner.start_run(db, j, j["targets"], tag, "새 이미지 push")["no"])
+            if job.protected:
+                started.append(runner.request_approval(db, j, j["targets"], tag, "새 이미지 push", None)["no"])
+            else:
+                started.append(runner.start_run(db, j, j["targets"], tag, "새 이미지 push")["no"])
     return started
 
 
@@ -105,7 +111,7 @@ def git_settings(db: Session = Depends(get_db)):
             "lastSeen": seen}
 
 
-@router.post("/integrations/git/secret", dependencies=[Depends(require_sudo)])
+@router.post("/integrations/git/secret", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def git_new_secret(db: Session = Depends(get_db)):
     value = githooks.new_secret(db)
     s.log_act(db, "Git 웹훅 비밀값 발급", "이전 비밀값은 더 이상 쓸 수 없어요", "warn")
@@ -121,7 +127,7 @@ class SourceRepoIn(BaseModel):
     sourceRepo: str
 
 
-@router.put("/images/source")
+@router.put("/images/source", dependencies=[Depends(require("resources"))])
 def set_source_repo(body: SourceRepoIn, db: Session = Depends(get_db)):
     img = db.get(m.Image, body.ref)
     if not img:
@@ -221,7 +227,7 @@ async def _simulate(ref: str, fail: bool, provider: str) -> None:
             process(db, provider, event, payload)
 
 
-@router.post("/integrations/git/test")
+@router.post("/integrations/git/test", dependencies=[Depends(require("resources"))])
 async def git_test(body: TestIn, db: Session = Depends(get_db)):
     img = db.get(m.Image, body.ref)
     if not img:

@@ -15,7 +15,7 @@ const Mono = ({ children }: { children: React.ReactNode }) => <span className="f
 
 export function Registries() {
   const { data } = useApi<{ registries: Registry[]; images: Image[] }>("/registries");
-  const { openModal } = useApp();
+  const { openModal, can } = useApp();
   const git = useApi<GitSettings>("/integrations/git").data;
   const [picked, setProvider] = useState<GitProvider | null>(null);
   const provider = picked ?? lastSeenProvider(git) ?? "gitea";
@@ -23,9 +23,11 @@ export function Registries() {
   return (
     <>
       <PageHeader title="이미지 레지스트리" desc="배포할 도커 이미지와, 이미지를 받아 올 곳이에요. 공개 이미지(postgres, nginx 등)는 레지스트리 없이 바로 받아요. 레지스트리는 비공개 이미지를 받을 토큰이 필요할 때만 추가하세요. GitHub, GitLab, Gitea 레지스트리를 지원하고, 이미지 주소의 호스트로 알아서 골라요.">
-        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
-          레지스트리 추가
-        </Button>
+        {can("resources") && (
+          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
+            레지스트리 추가
+          </Button>
+        )}
       </PageHeader>
       <Card>
         <TableWrap>
@@ -69,7 +71,8 @@ export function Registries() {
 }
 
 function ImagesCard({ images, registries, provider }: { images: Image[]; registries: Registry[]; provider: GitProvider }) {
-  const { runAction, toast, openModal } = useApp();
+  const { runAction, toast, openModal, can } = useApp();
+  const manage = can("resources");
   const [editing, setEditing] = useState<string | null>(null);
   const [repo, setRepo] = useState("");
 
@@ -86,9 +89,11 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
         title="이미지"
         sub="배포 작업에 이미지를 적으면 여기에 저절로 들어와요. 빌드 레포 연결은 선택이에요. 연결하면 Git 호스트(Gitea, GitHub, GitLab)에서 빌드하는 동안 배포 작업에 '빌드 중'이 보이고 새 태그가 들어와요."
       >
-        <Button icon="plus" onClick={() => openModal((c) => <NewImageModal registries={registries} onClose={c} />)}>
-          이미지 추가
-        </Button>
+        {manage && (
+          <Button icon="plus" onClick={() => openModal((c) => <NewImageModal registries={registries} onClose={c} />)}>
+            이미지 추가
+          </Button>
+        )}
       </CardHeader>
       <TableWrap>
         <table className="tbl">
@@ -134,6 +139,8 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
                           취소
                         </Button>
                       </form>
+                    ) : !manage ? (
+                      <span className="font-mono text-[12.5px]">{i.sourceRepo ?? <span className="font-sans text-faint">없음</span>}</span>
                     ) : (
                       <button
                         type="button"
@@ -151,7 +158,7 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
                     <span className="flex gap-1.5">{i.usedBy.length ? i.usedBy.map((n) => <Chip key={n}>{n}</Chip>) : <span className="text-faint">없음</span>}</span>
                   </td>
                   <td className="text-right">
-                    {i.sourceRepo && (
+                    {i.sourceRepo && manage && (
                       <span className="inline-flex gap-1">
                         <Button size="sm" variant="ghost" onClick={() => test(i.ref, false)} title={`${PROVIDER_NAME[provider]} 형식으로 보내요`}>
                           시험 빌드
@@ -212,7 +219,7 @@ const GUIDE: Record<GitProvider, React.ReactNode[]> = {
 };
 
 function GitCard({ settings, provider, onProvider }: { settings: GitSettings | null | undefined; provider: GitProvider; onProvider: (p: GitProvider) => void }) {
-  const { withSudo, openModal, refresh, toast } = useApp();
+  const { withSudo, openModal, refresh, toast, can } = useApp();
   const [poll, setPoll] = useState(0);
   const builds = useApi<Build[]>("/builds", poll).data ?? [];
   useEffect(() => {
@@ -249,9 +256,11 @@ function GitCard({ settings, provider, onProvider }: { settings: GitSettings | n
           >
             <div className="flex items-center gap-2">
               <span className="text-muted">{settings?.secretSet ? `설정됨 · ${new Date((settings.secretCreated ?? 0) * 1000).toLocaleString("ko-KR")}` : "아직 없어요"}</span>
-              <Button size="sm" icon="key" onClick={makeSecret}>
-                {settings?.secretSet ? "새로 만들기" : "비밀값 만들기"}
-              </Button>
+              {can("resources") && (
+                <Button size="sm" icon="key" onClick={makeSecret}>
+                  {settings?.secretSet ? "새로 만들기" : "비밀값 만들기"}
+                </Button>
+              )}
             </div>
           </Field>
           <div>
@@ -436,7 +445,8 @@ function UsedBy({ items, className }: { items: { job: string; path: string }[]; 
 
 export function Inventory() {
   const { data } = useApi<Inv[]>("/inventory");
-  const { openModal, toast } = useApp();
+  const { openModal, toast, can } = useApp();
+  const manage = can("resources");
   const [pinging, setPinging] = useState<string | null>(null);
   if (!data) return <Loading />;
 
@@ -457,9 +467,11 @@ export function Inventory() {
         title="인벤토리"
         desc="배포 대상 서버 묶음이에요. 서버마다 그룹을 정해 두면 배포 작업에서 그룹만 골라 보낼 수 있어요. 처음 연결할 때 호스트 키 지문을 저장하고, 이후 바뀌면 배포를 막아요."
       >
-        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewHostModal inventories={data} onClose={c} />)}>
-          서버 추가
-        </Button>
+        {manage && (
+          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewHostModal inventories={data} onClose={c} />)}>
+            서버 추가
+          </Button>
+        )}
       </PageHeader>
       {data.map((inv) => {
         const gm: Record<string, number> = {};
@@ -482,9 +494,11 @@ export function Inventory() {
                 </span>
               }
             >
-              <Button size="sm" icon="refresh" disabled={pinging === inv.id} onClick={() => ping(inv)}>
-                {pinging === inv.id ? "확인 중…" : "연결 테스트"}
-              </Button>
+              {manage && (
+                <Button size="sm" icon="refresh" disabled={pinging === inv.id} onClick={() => ping(inv)}>
+                  {pinging === inv.id ? "확인 중…" : "연결 테스트"}
+                </Button>
+              )}
             </CardHeader>
             <TableWrap>
               <table className="tbl">
@@ -515,7 +529,7 @@ export function Inventory() {
                       <td>{h.hostKey === "ok" ? <Dot tone="ok">지문 일치</Dot> : <Dot tone="bad">지문 변경됨</Dot>}</td>
                       <td>{h.status === "on" ? <Dot tone="ok">응답</Dot> : <Dot>응답 없음</Dot>}</td>
                       <td className="text-right">
-                        {h.hostKey === "changed" && (
+                        {h.hostKey === "changed" && manage && (
                           <Button size="sm" variant="danger" onClick={() => openModal((c) => <HostKeyModal invId={inv.id} ix={ix} host={h} onClose={c} />)}>
                             지문 확인
                           </Button>
@@ -537,7 +551,8 @@ export function Inventory() {
 
 export function Keys() {
   const { data } = useApi<Key[]>("/keys");
-  const { openModal, toast, withSudo, refresh } = useApp();
+  const { openModal, toast, withSudo, refresh, can } = useApp();
+  const manage = can("resources");
   if (!data) return <Loading />;
 
   const del = (k: Key) => {
@@ -552,9 +567,11 @@ export function Keys() {
   return (
     <>
       <PageHeader title="키 저장소" desc="서버 접속용 SSH 키와 Git 저장소(HTTPS)용 액세스 토큰을 저장해요. 모두 암호화해 저장하고, 저장한 뒤에는 화면에 다시 보여주지 않아요.">
-        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
-          키 추가
-        </Button>
+        {manage && (
+          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
+            키 추가
+          </Button>
+        )}
       </PageHeader>
       <Banner icon="info" title="비공개 키와 토큰은 내려받거나 열람할 수 없어요">
         SSH 키는 공개 키와 지문만, 토큰은 계정과 끝 4자리만 볼 수 있어요. 키를 잃어버렸다면 새로 만들고 서버의 authorized_keys를 바꾸는 쪽이 안전해요.
@@ -593,9 +610,11 @@ export function Keys() {
                           공개 키
                         </Button>
                       )}
-                      <Button size="sm" variant="dangerGhost" onClick={() => del(k)}>
-                        삭제
-                      </Button>
+                      {manage && (
+                        <Button size="sm" variant="dangerGhost" onClick={() => del(k)}>
+                          삭제
+                        </Button>
+                      )}
                     </span>
                   </td>
                 </tr>

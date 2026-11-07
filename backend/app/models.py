@@ -8,9 +8,10 @@ JSONB columns must be reassigned (not mutated in place) to be saved.
 from __future__ import annotations
 
 import time
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Table, Text, UniqueConstraint, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, Column, DateTime, Float, ForeignKey, Identity, Integer, LargeBinary, Sequence, String, Table, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -302,10 +303,16 @@ class Run(Base):
     steps: Mapped[list[str] | None] = mapped_column(JSONB)
     log: Mapped[list[dict] | None] = mapped_column(JSONB)  # masked events, saved when the run ends
     started_at: Mapped[float | None] = mapped_column(Float)
+    # Approval of protected jobs: status "approval" until an Owner/Admin approves ("run") or rejects ("rejected").
+    requested_by: Mapped[str | None] = mapped_column(String(255))  # member email; None for auto-deploy
+    decided_by: Mapped[str | None] = mapped_column(String(255))  # member email of who approved or rejected
+    decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     def to_dict(self) -> dict[str, Any]:
         d = {"no": self.no, "job": self.job, "jobId": self.job_id, "target": self.target, "tag": self.tag,
-             "status": self.status, "by": self.by, "trigger": self.trigger, "time": self.time, "duration": self.duration}
+             "status": self.status, "by": self.by, "trigger": self.trigger, "time": self.time, "duration": self.duration,
+             "requestedBy": self.requested_by, "decidedBy": self.decided_by,
+             "decidedAt": self.decided_at.isoformat() if self.decided_at else None}
         if self.steps:
             d["steps"] = self.steps
         return d
