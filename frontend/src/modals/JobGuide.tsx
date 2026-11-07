@@ -1,5 +1,6 @@
 /** Step ids, and the guide tips that point at each input of the deploy job modal ("배포를 도와드릴까요?"). */
-import { createContext, useContext, type ReactNode } from "react";
+import { createContext, useContext, useEffect, useLayoutEffect, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Icon } from "../components/Icon";
 
 export type JobStepId = "name" | "playbook" | "target" | "image" | "env" | "access" | "review";
@@ -81,6 +82,8 @@ export function tipFor(id: TipId, mode: Mode, opts: { builtin?: boolean } = {}):
 interface GuideState {
   on: boolean;
   tip: TipId | null;
+  /** Bumps on every focus, so the same tip shows again after it faded. */
+  seq: number;
   mode: Mode;
   builtin: boolean;
   /** The tip after this one in the current step, if any. */
@@ -88,41 +91,98 @@ interface GuideState {
   focus: (id: TipId) => void;
 }
 
-export const GuideContext = createContext<GuideState>({ on: false, tip: null, mode: "new", builtin: false, nextOf: () => null, focus: () => {} });
+export const GuideContext = createContext<GuideState>({ on: false, tip: null, seq: 0, mode: "new", builtin: false, nextOf: () => null, focus: () => {} });
+
+/** How long a bubble stays before it fades away. */
+const TIP_MS = 6000;
 
 /**
- * Wraps one input. While the guide is on and this is the active tip, a bubble appears right below
- * the input with an arrow pointing up at it. The modal tracks focus through the data-tip attribute.
+ * Wraps one input. While the guide is on and this is the active tip, a bubble floats right below the
+ * input with an arrow pointing at it. It is portaled and fixed, so it never moves other elements; it
+ * pops in, then fades out after a few seconds or when focus leaves. The modal tracks focus via data-tip.
  */
 export function TipSpot({ id, children, className, arrow = "left" }: { id: TipId; children: ReactNode; className?: string; arrow?: "left" | "right" }) {
   const g = useContext(GuideContext);
   const active = g.on && g.tip === id;
-  const tip = active ? tipFor(id, g.mode, { builtin: g.builtin }) : null;
-  const next = active ? g.nextOf(id) : null;
+  const [phase, setPhase] = useState<"off" | "in" | "out">("off");
+  const [pos, setPos] = useState<{ top: number; left?: number; right?: number; width: number } | null>(null);
+
+  // Show on every activation (g.seq changes on each focus), fade after TIP_MS.
+  useEffect(() => {
+    if (!active) {
+      setPhase((p) => (p === "in" ? "out" : p));
+      return;
+    }
+    setPhase("in");
+    const t = setTimeout(() => setPhase("out"), TIP_MS);
+    return () => clearTimeout(t);
+  }, [active, g.seq]);
+  useEffect(() => {
+    if (phase !== "out") return;
+    const t = setTimeout(() => setPhase("off"), 220);
+    return () => clearTimeout(t);
+  }, [phase]);
+
+  // The anchor is the first element marked with this tip id (the env tip marks the switch in the field header).
+  useLayoutEffect(() => {
+    if (phase === "off") return;
+    const place = () => {
+      const el = document.querySelector<HTMLElement>(`[data-tip="${id}"]`);
+      if (!el) return;
+      const r = el.getBoundingClientRect();
+      const width = Math.min(360, window.innerWidth - 32);
+      setPos(
+        arrow === "right"
+          ? { top: r.bottom + 10, right: Math.max(16, window.innerWidth - r.right), width }
+          : { top: r.bottom + 10, left: Math.min(Math.max(16, r.left), window.innerWidth - width - 16), width },
+      );
+    };
+    place();
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+    };
+  }, [phase, id, arrow]);
+
+  const tip = phase !== "off" ? tipFor(id, g.mode, { builtin: g.builtin }) : null;
+  const next = tip ? g.nextOf(id) : null;
   return (
     <div data-tip={id} className={className ?? "flex flex-col gap-2 min-w-0"}>
       {children}
-      {tip && (
-        <div role="note" className="guide-bubble relative mt-1 rounded-lg px-3 py-2.5 text-[13px] leading-relaxed animate-fade">
-          <span aria-hidden="true" className={`guide-bubble-arrow absolute -top-[6px] size-3 rotate-45 ${arrow === "right" ? "right-8" : "left-5"}`} />
-          <div className="relative flex items-start gap-2">
-            <Icon name="wand" className="guide-bubble-icon size-3.5 mt-[3px] flex-none" />
-            <div className="min-w-0 flex-1">
-              <p className="m-0 text-fg">{tip.text}</p>
-              {tip.example && (
-                <p className="m-0 mt-1 text-muted text-[12px]">
-                  예: <code className="font-mono text-[12px] text-fg break-all">{tip.example}</code>
-                </p>
-              )}
-              {next && (
-                <button type="button" onClick={() => g.focus(next)} className="guide-bubble-next mt-1.5 -ml-1.5 text-[12px] font-medium whitespace-nowrap rounded px-1.5 py-0.5">
-                  다음 칸 →
-                </button>
-              )}
+      {tip &&
+        pos &&
+        createPortal(
+          <div
+            role="note"
+            style={{ position: "fixed", top: pos.top, left: pos.left, right: pos.right, maxWidth: pos.width }}
+            className={`guide-bubble ${phase === "out" ? "is-out" : ""} z-[60] w-max rounded-lg px-3 py-2.5 text-[13px] leading-relaxed`}
+            onMouseDown={(e) => {
+              e.preventDefault(); // keep focus in the input
+              e.stopPropagation(); // not an outside click
+            }}
+          >
+            <span aria-hidden="true" className={`guide-bubble-arrow absolute -top-[6px] size-3 rotate-45 ${arrow === "right" ? "right-6" : "left-5"}`} />
+            <div className="relative flex items-start gap-2">
+              <Icon name="wand" className="guide-bubble-icon size-3.5 mt-[3px] flex-none" />
+              <div className="min-w-0">
+                <p className="m-0">{tip.text}</p>
+                {tip.example && (
+                  <p className="m-0 mt-1 text-[12px]">
+                    예: <code className="font-mono text-[12px] break-all">{tip.example}</code>
+                  </p>
+                )}
+                {next && (
+                  <button type="button" onClick={() => g.focus(next)} className="guide-bubble-next mt-1.5 -ml-1.5 text-[12px] font-medium whitespace-nowrap rounded px-1.5 py-0.5">
+                    다음 칸 →
+                  </button>
+                )}
+              </div>
             </div>
-          </div>
-        </div>
-      )}
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }

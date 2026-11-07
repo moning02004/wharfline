@@ -329,7 +329,12 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     if (step === "env" && envOn && envMode !== "existing" && !envText.trim()) return "env.vars";
     return tipOrder[0] ?? null;
   };
-  const [tip, setTip] = useState<TipId | null>(null);
+  const [tip, setTipState] = useState<TipId | null>(null);
+  const [tipSeq, setTipSeq] = useState(0);
+  const setTip = (id: TipId | null) => {
+    setTipState(id);
+    setTipSeq((n) => n + 1);
+  };
   const focusTip = (id: TipId, textOnly = false) => {
     setTip(id);
     requestAnimationFrame(() => {
@@ -348,6 +353,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const guideState = {
     on: guide,
     tip,
+    seq: tipSeq,
     mode,
     builtin: source === "builtin",
     nextOf: (id: TipId) => tipOrder[tipOrder.indexOf(id) + 1] ?? null,
