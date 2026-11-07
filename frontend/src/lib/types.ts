@@ -40,17 +40,22 @@ export interface ImageTag {
   pushed: string;
 }
 
+export interface JobPlaybook {
+  repo: string;
+  kind: "git" | "local" | "builtin";
+  url: string;
+  branch: string;
+  path: string;
+}
+
 export interface Job {
   id: string;
-  method: "compose" | "ansible";
   name: string;
-  image: string;
+  /** Image ref without a tag; null for a job that runs the playbook without an image */
+  image: string | null;
   tagNow: string;
   defaultTag: string;
-  repo?: string;
-  book?: string;
-  dir?: string;
-  compose?: string;
+  playbook: JobPlaybook;
   inventory: string;
   targets: string[];
   env: string;

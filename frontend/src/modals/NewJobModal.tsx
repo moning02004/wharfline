@@ -1,89 +1,94 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, errMsg, parseEnv } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { EnvSet, Image, Inventory, Repo } from "../lib/types";
+import type { EnvSet, Inventory, Key, Repo } from "../lib/types";
 import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { JobManual, type JobStepId } from "./JobManual";
-import { Button, Check, Chip, ErrorText, Field, Hint, Input, Select, Seg, Textarea, cx } from "../components/ui";
+import { NewKeyModal } from "./ResourceModals";
+import { Button, Chip, ErrorText, Field, Hint, Input, Select, Seg, Switch, cx } from "../components/ui";
 
-const COMPOSE_TPL = `services:
-  app:
-    image: \${IMAGE}:\${IMAGE_TAG}
-    env_file: .env
-    restart: unless-stopped
-    ports:
-      - "8080:8080"
-    healthcheck:
-      test: ["CMD", "wget", "-qO-", "http://localhost:8080/healthz"]
-      interval: 10s
-`;
+/* Same rules as the server (docs/deploy-simplify.md). */
+const PATH_RE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml$/;
+const IMAGE_RE = /^[a-z0-9.-]+(:\d+)?(\/[a-z0-9._-]+)+$/;
+const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
+const NO_KEY = "";
 
-const RISKY: [RegExp, string][] = [
-  [/privileged:\s*true/, "privileged: true"],
-  [/network_mode:\s*["']?host/, "network_mode: host"],
-  [/docker\.sock/, "docker.sock 마운트"],
-  [/^\s*build:/m, "build:"],
-  [/pid:\s*["']?host/, "pid: host"],
-  [/cap_add:/, "cap_add"],
-];
+/** parse_image from the design doc: "postgres:15" -> docker.io/library/postgres + 15. */
+function parseImage(text: string): { ref: string; tag: string } | { error: string } {
+  const t = text.trim().replace(/^https:\/\//, "");
+  if (t.includes("@")) return { error: "digest(@sha256:…)는 쓸 수 없어요. 태그로 적어 주세요." };
+  const slash = t.lastIndexOf("/");
+  const colon = t.indexOf(":", slash + 1);
+  let ref = (colon >= 0 ? t.slice(0, colon) : t).toLowerCase();
+  const tag = colon >= 0 ? t.slice(colon + 1) : "latest";
+  const parts = ref.split("/");
+  if (!/[.:]/.test(parts[0]) && parts[0] !== "localhost") ref = parts.length === 1 ? `docker.io/library/${ref}` : `docker.io/${ref}`;
+  if (!IMAGE_RE.test(ref)) return { error: "이미지 이름을 확인해 주세요. 예: postgres:15, ghcr.io/acme/api:v1.2" };
+  if (!TAG_RE.test(tag)) return { error: "태그는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)으로 적어 주세요." };
+  return { ref, tag };
+}
 
-type StepId = JobStepId;
-const STEPS: { id: StepId; label: string; desc: string; skip?: string }[] = [
-  { id: "basic", label: "기본 정보", desc: "작업 이름과 배포할 이미지를 정해요." },
-  { id: "target", label: "배포 대상", desc: "어느 서버 묶음의 어떤 그룹에 보낼지 골라요." },
-  { id: "method", label: "배포 방식", desc: "Compose로 바로 교체하거나, 연결한 Ansible 플레이북을 실행해요." },
-  { id: "env", label: "환경 변수", desc: "앱이 읽을 .env예요. 없어도 배포할 수 있어요.", skip: ".env 없이 진행" },
-  { id: "safety", label: "안전장치", desc: "실행 방식과 실패했을 때의 동작이에요.", skip: "기본값 사용" },
-  { id: "review", label: "확인", desc: "내용을 확인하고 만들어요." },
+const isSsh = (url: string) => /^(git@|ssh:\/\/)/.test(url.trim());
+
+const VARS: [string, string][] = [
+  ["image", "이미지 주소 (태그 없이)"],
+  ["image_tag", "배포할 태그"],
+  ["image_ref", "이미지 주소:태그"],
+  ["env_file", "서버에 둔 .env 경로"],
+  ["app_name", "작업 이름으로 만든 이름"],
 ];
 
 export function NewJobModal({ onClose }: { onClose: () => void }) {
-  const { toast, refresh } = useApp();
+  const { toast, refresh, openModal } = useApp();
   const nav = useNavigate();
-  const images = useApi<{ images: Image[] }>("/registries").data?.images ?? [];
   const inventories = useApi<Inventory[]>("/inventory").data ?? [];
-  const repos = useApi<Repo[]>("/repos").data ?? [];
+  const repos = (useApi<Repo[]>("/repos").data ?? []).filter((r) => r.kind === "git");
+  const keys = useApi<Key[]>("/keys").data ?? [];
   const envs = useApi<EnvSet[]>("/envs").data ?? [];
 
-  const [step, setStep] = useState(0);
-  const [status, setStatus] = useState<Partial<Record<StepId, "done" | "skipped">>>({});
-  const [name, setName] = useState("batch-worker · staging");
-  const [image, setImage] = useState("git.acme.kr/acme/batch-worker");
-  const [tag, setTag] = useState("latest");
-  const [inv, setInv] = useState("staging");
-  const [targets, setTargets] = useState<string[]>(["worker"]);
-  const [method, setMethod] = useState<"compose" | "ansible">("compose");
-  const [dir, setDir] = useState("/srv/batch-worker");
-  const [compose, setCompose] = useState(COMPOSE_TPL);
-  const [repo, setRepo] = useState("");
-  const [book, setBook] = useState("");
+  const [name, setName] = useState("");
+  const [source, setSource] = useState<"git" | "builtin">("git");
+  const [url, setUrl] = useState("");
+  const [branch, setBranch] = useState("main");
+  const [path, setPath] = useState("");
+  const [key, setKey] = useState(NO_KEY);
+  const [inv, setInv] = useState("");
+  const [targets, setTargets] = useState<string[]>([]);
+  const [image, setImage] = useState("");
+  const [envOn, setEnvOn] = useState(true);
   const [envMode, setEnvMode] = useState<EnvMode>("paste");
-  const [envText, setEnvText] = useState("NODE_ENV=production\nDATABASE_URL=postgres://user:pass@10.0.3.31:5432/app\nJWT_SECRET=change-me");
+  const [envText, setEnvText] = useState("");
   const [envPick, setEnvPick] = useState("");
+  const [adv, setAdv] = useState(false);
   const [hook, setHook] = useState(false);
   const [prot, setProt] = useState(true);
   const [lock, setLock] = useState(true);
   const [rb, setRb] = useState(true);
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const [manual, setManual] = useState(false);
+  const errRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (!repo && repos[0]) setRepo(repos[0].name);
-  }, [repos, repo]);
-  const books = repos.find((r) => r.name === repo)?.books ?? [];
-  useEffect(() => {
-    if (!books.includes(book)) setBook(books[0] ?? "");
-  }, [books, book]);
+    if (!inv && inventories[0]) setInv(inventories[0].name);
+  }, [inventories, inv]);
   useEffect(() => {
     if (!envPick && envs[0]) setEnvPick(envs[0].name);
   }, [envs, envPick]);
 
-  const img = images.find((i) => i.ref === image);
+  // Keys that fit the URL: SSH keys for git@/ssh:// (one is required), tokens for https (optional).
+  const ssh = isSsh(url);
+  const keyOptions = keys.filter((k) => k.kind === (ssh ? "ssh" : "token"));
+  useEffect(() => {
+    if (key && keyOptions.some((k) => k.name === key)) return;
+    setKey(ssh ? keyOptions[0]?.name ?? NO_KEY : NO_KEY);
+  }, [ssh, keys.length]); // re-pick when the scheme changes or a key is added
+
+  // Same URL + branch as a connected repo: the server reuses it and ignores the key.
+  const reused = repos.find((r) => r.url === url.trim() && r.branch === (branch.trim() || "main"));
+
   const invObj = inventories.find((i) => i.name === inv);
   const groups = useMemo(() => {
     const m: Record<string, Inventory["hosts"]> = {};
@@ -91,354 +96,360 @@ export function NewJobModal({ onClose }: { onClose: () => void }) {
     return m;
   }, [invObj]);
   const hosts = invObj?.hosts.filter((h) => !targets.length || targets.includes(h.group)) ?? [];
-  const envSkipped = status.env === "skipped";
-  const cur = STEPS[step];
 
-  /** Client-side check for the current step; the server validates everything again on create. */
-  const validate = (id: StepId): string => {
-    if (id === "basic") {
-      if (!name.trim()) return "이름을 넣어 주세요.";
-      if (!image) return "이미지를 골라 주세요.";
+  const parsed = image.trim() ? parseImage(image) : null;
+  const envVars = parseEnv(envText);
+
+  /** Client-side check; the server validates everything again. */
+  const validate = (): string => {
+    if (!name.trim()) return "이름을 넣어 주세요.";
+    if (source === "git") {
+      if (!/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim()))
+        return "저장소 주소를 확인해 주세요. 예: git@github.com:org/ansible.git 또는 https://github.com/org/ansible.git";
+      if (!PATH_RE.test(path.trim())) return "플레이북 경로는 레포 안의 .yml 파일이에요. 예: deploy/app.yml";
+      if (ssh && !reused && !key) return "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요.";
     }
-    if (id === "target" && !hosts.length) return "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
-    if (id === "method") {
-      if (method === "compose") {
-        const bad = RISKY.filter(([re]) => re.test(compose)).map((r) => r[1]);
-        if (bad.length) return `compose.yml에 서버 권한을 넘기는 설정이 있어요: ${bad.join(", ")}`;
-        if (!/^(\/srv\/|~\/|\/home\/deploy\/)/.test(dir) || dir.includes("..")) return "배포 경로는 /srv/ 또는 deploy 사용자의 홈 아래여야 해요.";
-      } else if (!repo || !book) return "플레이북 레포와 플레이북을 골라 주세요.";
-    }
-    if (id === "env" && envMode !== "existing" && !parseEnv(envText).length) return "인식된 변수가 없어요. 필요 없다면 '.env 없이 진행'을 누르세요.";
+    if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요.";
+    if (parsed && "error" in parsed) return parsed.error;
+    if (!hosts.length) return "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
+    if (envOn && envMode !== "existing" && !envVars.length) return "인식된 .env 변수가 없어요. 필요 없다면 '없음'을 고르세요.";
+    if (envOn && envMode === "existing" && !envPick) return "저장된 환경 변수를 골라 주세요.";
     return "";
   };
 
-  const go = (i: number) => {
-    setErr("");
-    setStep(i);
+  const fail = (m: string) => {
+    setErr(m);
+    requestAnimationFrame(() => errRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" }));
   };
-  const next = () => {
-    const e = validate(cur.id);
-    if (e) return setErr(e);
-    setStatus((s) => ({ ...s, [cur.id]: "done" }));
-    go(step + 1);
-  };
-  const skip = () => {
-    setManual(false);
-    if (cur.id === "safety") {
-      setHook(false);
-      setProt(true);
-      setLock(true);
-      setRb(true);
-    }
-    setStatus((s) => ({ ...s, [cur.id]: "skipped" }));
-    go(step + 1);
-  };
-  // A step can be opened once every step before it is done or skipped.
-  const reachable = (i: number) => STEPS.slice(0, i).every((s) => status[s.id]);
 
-  const create = async () => {
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const v = validate();
+    if (v) return fail(v);
     setErr("");
     setBusy(true);
     try {
       await api.post("/jobs", {
-        name, image, defaultTag: tag || "latest", method, inventory: inv, targets,
-        dir, compose, repo, book,
-        envMode: envSkipped ? "none" : envMode === "existing" ? "existing" : "paste",
-        envName: envPick,
-        envVars: envSkipped || envMode === "existing" ? [] : parseEnv(envText),
-        hook, protected: prot, lock, rollback: rb,
+        name: name.trim(),
+        playbook:
+          source === "git"
+            ? { source: "git", url: url.trim(), branch: branch.trim() || "main", path: path.trim(), key: reused ? NO_KEY : key }
+            : { source: "builtin" },
+        inventory: inv,
+        targets,
+        image: image.trim(),
+        envMode: !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
+        envName: envOn && envMode === "existing" ? envPick : null,
+        envVars: envOn && envMode !== "existing" ? envVars : [],
+        hook,
+        protected: prot,
+        lock,
+        rollback: rb,
       });
       onClose();
       refresh();
       nav("/jobs");
       toast("배포 작업을 만들었어요");
     } catch (e) {
-      setErr(errMsg(e));
+      fail(errMsg(e));
       setBusy(false);
     }
   };
 
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    setManual(false);
-    if (cur.id === "review") create();
-    else next();
-  };
+  const keyHint = reused
+    ? `이미 연결된 레포를 그대로 써요 · ${reused.auth}`
+    : ssh
+      ? key
+        ? `${key}의 공개 키를 저장소의 Deploy key(읽기 전용)로 등록해 두세요.`
+        : "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요."
+      : key
+        ? "이 토큰으로 저장소를 읽어요. 읽기 전용 권한이면 충분해요."
+        : "공개 저장소면 그대로 두고, 비공개 저장소면 토큰을 고르세요.";
 
   return (
     <>
-      <ModalHead
-        title={
-          <span className="flex items-center gap-1">
-            새 배포 작업
-            <button
-              type="button"
-              onClick={() => setManual((m) => !m)}
-              aria-pressed={manual}
-              aria-label="매뉴얼 보기"
-              title="매뉴얼 보기"
-              className={cx(
-                "grid place-items-center size-7 rounded-full transition-colors",
-                manual ? "bg-accent-soft text-accent" : "text-faint hover:bg-hover hover:text-fg",
-              )}
-            >
-              <Icon name="info" className="size-4" />
-            </button>
-          </span>
-        }
-        sub={cur.desc}
-        onClose={onClose}
-      />
-      <Stepper step={step} status={status} reachable={reachable} onPick={go} />
-      <form id="jobForm" onSubmit={submit} className="contents">
-        <ModalBody className="h-[min(400px,62vh)] flex-none">
-          {manual && (
-            <div key={`manual-${cur.id}`} className="flex flex-col gap-3 animate-rise">
-              <div className="flex items-center gap-2 text-[13px] font-semibold">
-                <span className="grid place-items-center size-7 rounded-full bg-accent-soft text-accent">
-                  <Icon name="book" className="size-3.5" />
-                </span>
-                {cur.label} 매뉴얼
-                <Button size="sm" variant="ghost" className="ml-auto" onClick={() => setManual(false)}>
-                  입력으로 돌아가기
-                </Button>
-              </div>
-              <JobManual step={cur.id} image={image} />
-            </div>
-          )}
-          <div key={cur.id} className={cx("flex flex-col gap-4 animate-rise", manual && "hidden")}>
-            {cur.id === "basic" && (
-              <>
-                <Field label="이름" htmlFor="jName">
-                  <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-                </Field>
-                <Field label="도커 이미지" htmlFor="jImage" hint={img?.tags[0] && `최신 ${img.tags[0].name} · ${img.tags[0].pushed}`}>
-                  <Select id="jImage" mono value={image} onChange={(e) => setImage(e.target.value)}>
-                    {images.map((i) => (
-                      <option key={i.ref}>{i.ref}</option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="기본 태그" htmlFor="jTag" hint="latest면 실행할 때 가장 최근 태그를 digest로 고정해서 배포해요. 실행할 때마다 바꿀 수도 있어요.">
-                  <Input id="jTag" mono value={tag} onChange={(e) => setTag(e.target.value)} list="jTagList" autoComplete="off" spellCheck={false} />
-                  <datalist id="jTagList">
-                    {["latest", ...(img?.tags.map((t) => t.name) ?? [])].map((t) => (
-                      <option key={t} value={t} />
-                    ))}
-                  </datalist>
-                </Field>
-              </>
-            )}
+      <ModalHead title="새 배포 작업" sub="플레이북과 배포 대상만 정하면 돼요. 나머지는 필요할 때만 채우세요." onClose={onClose} />
+      <form id="jobForm" onSubmit={submit} className="contents" noValidate>
+        <ModalBody>
+          <Field label="이름" htmlFor="jName">
+            <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" autoFocus />
+          </Field>
 
-            {cur.id === "target" && (
-              <>
-                <Field label="인벤토리" htmlFor="jInv">
-                  <Select
-                    id="jInv"
-                    value={inv}
-                    onChange={(e) => {
-                      setInv(e.target.value);
-                      setTargets([]);
-                    }}
-                    autoFocus
-                  >
-                    {inventories.map((i) => (
-                      <option key={i.id} value={i.name}>
-                        {i.name} · 서버 {i.hosts.length}대
-                      </option>
-                    ))}
-                  </Select>
-                </Field>
-                <Field label="배포 대상 그룹" hint={targets.length ? undefined : "그룹을 고르지 않으면 전체 서버에 배포해요."}>
-                  <GroupSelect groups={groups} value={targets} onChange={setTargets} />
-                </Field>
-                <div className="rounded-lg border border-line overflow-hidden">
-                  {hosts.map((h) => (
-                    <div key={h.name} className="flex items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0 text-[13px]">
-                      <Chip tone="accent" mono>
-                        {h.group}
-                      </Chip>
-                      <span className="flex-1 font-medium truncate">{h.name}</span>
-                      <span className="font-mono text-[12.5px] text-muted">{h.ip}</span>
-                    </div>
+          <Field
+            label="플레이북"
+            hint={
+              <span className="block mt-1">
+                <span className="block mb-1">플레이북은 아래 변수를 받아요. 이미지나 .env가 없으면 그 변수는 빠져요.</span>
+                <span className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-0.5">
+                  {VARS.map(([v, d]) => (
+                    <span key={v} className="contents">
+                      <code className="font-mono text-[11.5px] text-fg">{`{{ ${v} }}`}</code>
+                      <span className="text-faint truncate">{d}</span>
+                    </span>
                   ))}
-                  {!hosts.length && <div className="px-4 py-6 text-center text-muted text-[13px]">이 인벤토리에 서버가 없어요.</div>}
-                </div>
-              </>
-            )}
-
-            {cur.id === "method" && (
-              <>
-                <div>
-                  <Seg
-                    options={[
-                      { value: "compose", label: "Docker Compose" },
-                      { value: "ansible", label: "Ansible 플레이북" },
-                    ]}
-                    value={method}
-                    onChange={(m) => {
-                      setMethod(m);
-                      setErr("");
-                    }}
-                  />
-                </div>
-                {method === "compose" ? (
-                  <>
-                    <Field label="서버의 배포 경로" htmlFor="jDir" hint="/srv 아래나 deploy 사용자의 홈 아래만 쓸 수 있어요.">
-                      <Input id="jDir" mono value={dir} onChange={(e) => setDir(e.target.value)} />
-                    </Field>
-                    <Field label="compose.yml" htmlFor="jCompose" hint={<>이미지 자리의 <span className="font-mono">{"${IMAGE}:${IMAGE_TAG}"}</span>는 실행할 때 채워져요.</>}>
-                      <Textarea id="jCompose" rows={7} spellCheck={false} value={compose} onChange={(e) => setCompose(e.target.value)} />
-                    </Field>
-                  </>
-                ) : (
-                  <>
-                    <Hint>연결한 플레이북 레포의 플레이북을 실행해요. 넘기는 변수는 image, image_tag, image_digest, env_file, target_group뿐이에요.</Hint>
-                    <Field label="플레이북 레포" htmlFor="jRepo">
-                      <Select id="jRepo" mono value={repo} onChange={(e) => setRepo(e.target.value)}>
-                        {repos.map((r) => (
-                          <option key={r.name}>{r.name}</option>
-                        ))}
-                      </Select>
-                    </Field>
-                    <Field label="플레이북" htmlFor="jBook">
-                      <Select id="jBook" mono value={book} onChange={(e) => setBook(e.target.value)}>
-                        {books.map((b) => (
-                          <option key={b}>{b}</option>
-                        ))}
-                      </Select>
-                    </Field>
-                  </>
+                </span>
+              </span>
+            }
+          >
+            <div>
+              <Seg
+                options={[
+                  { value: "git", label: "Git 레포" },
+                  { value: "builtin", label: "기본 플레이북" },
+                ]}
+                value={source}
+                onChange={(s) => {
+                  setSource(s);
+                  setErr("");
+                }}
+              />
+            </div>
+            {source === "git" ? (
+              <div key="git" className="flex flex-col gap-3 animate-fade">
+                {repos.length > 0 && (
+                  <div className="flex flex-col gap-1.5">
+                    <Hint>연결된 레포에서 고르기</Hint>
+                    <div className="flex flex-wrap gap-1.5">
+                      {repos.map((r) => {
+                        const on = reused?.name === r.name;
+                        return (
+                          <button
+                            key={r.name}
+                            type="button"
+                            onClick={() => {
+                              setUrl(r.url);
+                              setBranch(r.branch);
+                              setErr("");
+                            }}
+                            aria-pressed={on}
+                            title={r.url}
+                            className={cx(
+                              "inline-flex items-center gap-1.5 max-w-full h-7 px-2.5 rounded-lg border text-[12.5px] transition-colors",
+                              on ? "border-accent bg-accent-soft text-accent" : "border-line-strong bg-surface hover:bg-hover",
+                            )}
+                          >
+                            <Icon name="git" className="size-3.5 flex-none" />
+                            <span className="font-medium truncate">{r.name}</span>
+                            <span className={cx("font-mono text-[11px] flex-none", on ? "text-accent" : "text-faint")}>{r.branch}</span>
+                            <span className={cx("text-[11px] truncate", on ? "text-accent" : "text-muted")}>· {r.auth}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
                 )}
-              </>
+                <Field label="저장소 URL" htmlFor="jUrl">
+                  <Input
+                    id="jUrl"
+                    mono
+                    value={url}
+                    onChange={(e) => setUrl(e.target.value)}
+                    placeholder="git@github.com:org/ansible.git"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                </Field>
+                <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3">
+                  <Field label="브랜치" htmlFor="jBranch">
+                    <Input id="jBranch" mono value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" autoComplete="off" spellCheck={false} />
+                  </Field>
+                  <Field label="플레이북 경로" htmlFor="jPath">
+                    <Input id="jPath" mono value={path} onChange={(e) => setPath(e.target.value)} placeholder="deploy/app.yml" autoComplete="off" spellCheck={false} />
+                  </Field>
+                </div>
+                <Field
+                  label={ssh ? "SSH 키" : "토큰"}
+                  htmlFor="jKey"
+                  hint={keyHint}
+                  error={!reused && ssh && !key}
+                  right={
+                    !reused && (
+                      <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
+                        키 추가
+                      </Button>
+                    )
+                  }
+                >
+                  <Select id="jKey" value={reused ? NO_KEY : key} onChange={(e) => setKey(e.target.value)} disabled={!!reused} placeholder={ssh ? "SSH 키를 추가해 주세요" : undefined}>
+                    {reused && <option value={NO_KEY}>연결된 레포의 인증을 그대로 써요</option>}
+                    {!reused && !ssh && <option value={NO_KEY}>공개 저장소(키 없음)</option>}
+                    {!reused &&
+                      keyOptions.map((k) => (
+                        <option key={k.id} value={k.name}>
+                          {k.name} · {k.type}
+                        </option>
+                      ))}
+                  </Select>
+                </Field>
+              </div>
+            ) : (
+              <div key="builtin" className="flex gap-2.5 items-start rounded-lg bg-surface-2 border border-line px-3.5 py-3 text-[13px] animate-fade">
+                <Icon name="box" className="size-4 mt-px flex-none text-accent" />
+                <div className="min-w-0">
+                  <b className="block font-semibold mb-0.5">
+                    Wharfline 기본 플레이북 <span className="font-mono font-normal text-[12px] text-muted">container.yml</span>
+                  </b>
+                  <span className="text-muted">이미지 하나를 .env와 함께 컨테이너로 띄워요. 플레이북이 없을 때 쓰세요. 아래에서 이미지를 꼭 넣어 주세요.</span>
+                </div>
+              </div>
             )}
+          </Field>
 
-            {cur.id === "env" && (
+          <Field
+            label="배포 대상"
+            hint={
+              hosts.length ? (
+                <>
+                  서버 {hosts.length}대{targets.length ? "" : " · 그룹을 고르지 않으면 전체 서버에 배포해요"}
+                </>
+              ) : (
+                "이 인벤토리와 그룹에 서버가 없어요."
+              )
+            }
+            error={!!invObj && !hosts.length}
+          >
+            <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,2fr)_minmax(0,3fr)] gap-2">
+              <Select
+                id="jInv"
+                aria-label="인벤토리"
+                value={inv}
+                onChange={(e) => {
+                  setInv(e.target.value);
+                  setTargets([]);
+                }}
+                placeholder="인벤토리 선택"
+              >
+                {inventories.map((i) => (
+                  <option key={i.id} value={i.name}>
+                    {i.name} · 서버 {i.hosts.length}대
+                  </option>
+                ))}
+              </Select>
+              <GroupSelect groups={groups} value={targets} onChange={setTargets} />
+            </div>
+            {hosts.length > 0 && (
+              <div className="flex flex-wrap gap-1.5">
+                {hosts.slice(0, 8).map((h) => (
+                  <Chip key={h.name} mono>
+                    {h.name} <span className="text-faint">{h.ip}</span>
+                  </Chip>
+                ))}
+                {hosts.length > 8 && <Chip>+{hosts.length - 8}대</Chip>}
+              </div>
+            )}
+          </Field>
+
+          <Field
+            label={
+              <>
+                이미지 {source === "builtin" ? <span className="text-accent font-normal text-[12.5px]">필수</span> : <span className="text-muted font-normal text-[12.5px]">선택</span>}
+              </>
+            }
+            htmlFor="jImage"
+            error={!!parsed && "error" in parsed}
+            hint={
+              parsed && "error" in parsed
+                ? parsed.error
+                : "레지스트리 주소가 없으면 Docker Hub예요. 비공개 이미지는 레지스트리에 토큰을 등록해 두면 자동으로 써요."
+            }
+          >
+            <Input
+              id="jImage"
+              mono
+              value={image}
+              onChange={(e) => setImage(e.target.value)}
+              placeholder="postgres:15 또는 ghcr.io/acme/api:v1.2"
+              autoComplete="off"
+              spellCheck={false}
+            />
+            {parsed && "ref" in parsed && (
+              <div className="flex items-center gap-1.5 text-[12px] text-muted min-w-0 animate-fade">
+                <Icon name="check" className="size-3 flex-none text-ok" strokeWidth={2.6} />
+                <span className="font-mono truncate">{parsed.ref}</span>
+                <span className="text-faint">·</span>
+                <span className="font-mono flex-none">{parsed.tag}</span>
+                {parsed.tag === "latest" && <span className="text-faint truncate">실행할 때 가장 최근 태그로 고정해요</span>}
+              </div>
+            )}
+          </Field>
+
+          <Field
+            label={
+              <>
+                환경 변수 <span className="text-muted font-normal text-[12.5px]">선택</span>
+              </>
+            }
+            right={
+              <Seg
+                options={[
+                  { value: "on", label: "넣기" },
+                  { value: "none", label: "없음" },
+                ]}
+                value={envOn ? "on" : "none"}
+                onChange={(v) => setEnvOn(v === "on")}
+              />
+            }
+            hint={!envOn && "앱이 읽을 .env 없이 배포해요. 나중에 작업을 고쳐서 넣을 수도 있어요."}
+          >
+            {envOn && (
               <EnvSource text={envText} setText={setEnvText} mode={envMode} setMode={setEnvMode} existing={envs.map((e) => e.name)} picked={envPick} setPicked={setEnvPick} />
             )}
+          </Field>
 
-            {cur.id === "safety" && (
-              <div className="flex flex-col">
-                <Check checked={prot} onChange={setProt} title="보호된 작업" desc="Deployer가 실행하면 Admin의 승인을 받은 뒤 시작돼요." />
-                <Check checked={lock} onChange={setLock} title="동시 실행 금지" desc="같은 서버에 다른 배포가 돌고 있으면 기다려요." />
-                <Check checked={rb} onChange={setRb} title="실패하면 이전 이미지 태그로 롤백" desc="상태 확인이 실패하면 직전에 성공한 태그로 되돌려요." />
-                <Check checked={hook} onChange={setHook} title="새 이미지 태그가 올라오면 자동 배포" desc="레지스트리 webhook의 서명을 검증하고, v로 시작하는 릴리스 태그만 받아요." />
+          <div className="flex flex-col gap-1">
+            <button
+              type="button"
+              onClick={() => setAdv((a) => !a)}
+              aria-expanded={adv}
+              className="self-start inline-flex items-center gap-1.5 h-7 -ml-1 px-1 rounded-md text-[13px] font-medium text-muted hover:text-fg transition-colors"
+            >
+              <Icon name="chev" className={cx("size-3.5 transition-transform", adv ? "" : "-rotate-90")} />
+              고급
+              {!adv && (
+                <span className="text-faint font-normal text-[12px]">
+                  · {[prot && "운영 보호", lock && "동시 실행 잠금", rb && "실패 시 되돌리기", hook && "자동 배포"].filter(Boolean).join(", ") || "모두 꺼짐"}
+                </span>
+              )}
+            </button>
+            {adv && (
+              <div className="flex flex-col rounded-lg border border-line divide-y divide-line animate-fade">
+                <Toggle checked={hook} onChange={setHook} title="자동 배포" desc="새 이미지 태그가 올라오면 바로 배포해요. 레지스트리 webhook의 서명을 검증하고, v로 시작하는 릴리스 태그만 받아요." />
+                <Toggle checked={prot} onChange={setProt} title="운영 보호" desc="Deployer가 실행하면 Admin의 승인을 받은 뒤 시작돼요." />
+                <Toggle checked={lock} onChange={setLock} title="동시 실행 잠금" desc="같은 서버에 다른 배포가 돌고 있으면 기다려요." />
+                <Toggle checked={rb} onChange={setRb} title="실패 시 되돌리기" desc="상태 확인이 실패하면 직전에 성공한 태그로 되돌려요." />
               </div>
             )}
-
-            {cur.id === "review" && (
-              <div className="rounded-lg border border-line overflow-hidden">
-                <div className="px-4 py-3 bg-surface-2 border-b border-line font-semibold">{name}</div>
-                <Row label="이미지" onEdit={() => go(0)}>
-                  <span className="font-mono">
-                    {image}:{tag || "latest"}
-                  </span>
-                </Row>
-                <Row label="배포 대상" onEdit={() => go(1)}>
-                  {inv} · {targets.length ? targets.join(", ") : "전체"} <span className="text-muted">({hosts.length}대)</span>
-                </Row>
-                <Row label="배포 방식" onEdit={() => go(2)}>
-                  {method === "compose" ? `Docker Compose · ${dir}` : `Ansible · ${repo} / ${book}`}
-                </Row>
-                <Row label="환경 변수" onEdit={() => go(3)}>
-                  {envSkipped ? <span className="text-faint">없음</span> : envMode === "existing" ? envPick : `새로 저장 · 변수 ${parseEnv(envText).length}개`}
-                </Row>
-                <Row label="안전장치" onEdit={() => go(4)}>
-                  {[prot && "보호됨", lock && "동시 실행 금지", rb && "실패 시 롤백", hook && "자동 배포"].filter(Boolean).join(" · ") || "없음"}
-                </Row>
-              </div>
-            )}
-
-            <ErrorText>{err}</ErrorText>
           </div>
+
+          {err && (
+            <div ref={errRef}>
+              <ErrorText>{err}</ErrorText>
+            </div>
+          )}
         </ModalBody>
       </form>
-      <ModalFoot between>
-        <span className="flex items-center gap-2">
-          {step > 0 ? (
-            <Button
-              variant="ghost"
-              onClick={() => {
-                setManual(false);
-                go(step - 1);
-              }}
-            >
-              ← 이전
-            </Button>
-          ) : (
-            <Button variant="ghost" onClick={onClose}>
-              취소
-            </Button>
-          )}
-          <span className="text-[12px] text-faint tabular-nums">
-            {step + 1} / {STEPS.length}
-          </span>
-        </span>
-        <span className="flex gap-2">
-          {cur.skip && (
-            <Button icon="skip" onClick={skip}>
-              {cur.skip}
-            </Button>
-          )}
-          <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
-            {cur.id === "review" ? (busy ? "만드는 중…" : "만들기") : "다음 →"}
-          </Button>
-        </span>
+      <ModalFoot>
+        <Button variant="ghost" onClick={onClose}>
+          취소
+        </Button>
+        <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
+          {busy ? "만드는 중…" : "만들기"}
+        </Button>
       </ModalFoot>
     </>
   );
 }
 
-function Stepper({ step, status, reachable, onPick }: { step: number; status: Partial<Record<StepId, "done" | "skipped">>; reachable: (i: number) => boolean; onPick: (i: number) => void }) {
+function Toggle({ checked, onChange, title, desc }: { checked: boolean; onChange: (v: boolean) => void; title: string; desc: string }) {
   return (
-    <div className="px-5 pb-3">
-      <ol className="m-0 p-0 list-none flex items-center gap-1 overflow-x-auto scroll-soft">
-        {STEPS.map((s, i) => {
-          const st = status[s.id];
-          const current = i === step;
-          const can = reachable(i);
-          return (
-            <li key={s.id} className="flex items-center gap-1 flex-none">
-              {i > 0 && <span className={cx("w-4 h-px", st || current ? "bg-primary/40" : "bg-line-strong")} />}
-              <button
-                type="button"
-                disabled={!can}
-                onClick={() => onPick(i)}
-                aria-current={current ? "step" : undefined}
-                className={cx(
-                  "flex items-center gap-1.5 h-7 pl-1 pr-2 rounded-md text-[12px] font-medium whitespace-nowrap transition-all duration-200",
-                  current ? "bg-primary-soft text-primary" : can ? "text-muted hover:bg-hover hover:text-fg" : "text-faint cursor-not-allowed",
-                )}
-              >
-                <span
-                  className={cx(
-                    "grid place-items-center size-5 rounded-full text-[10.5px] font-semibold",
-                    st === "done" && "bg-ok text-white",
-                    st === "skipped" && "bg-surface-2 text-faint shadow-[inset_0_0_0_1px_var(--border-strong)]",
-                    !st && current && "bg-primary text-primary-fg",
-                    !st && !current && "bg-surface-2 border border-line",
-                  )}
-                >
-                  {st === "done" ? <Icon name="check" className="size-2.5" strokeWidth={3.5} /> : st === "skipped" ? "–" : i + 1}
-                </span>
-                {s.label}
-              </button>
-            </li>
-          );
-        })}
-      </ol>
-    </div>
-  );
-}
-
-function Row({ label, children, onEdit }: { label: string; children: ReactNode; onEdit: () => void }) {
-  return (
-    <div className="flex items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0 text-[13px]">
-      <span className="w-[72px] text-faint flex-none">{label}</span>
-      <span className="flex-1 min-w-0 truncate">{children}</span>
-      <Button size="sm" variant="ghost" onClick={onEdit}>
-        수정
-      </Button>
+    <div className="flex items-start gap-3 px-3.5 py-2.5">
+      <div className="flex-1 min-w-0 text-[13px]">
+        <div className="font-medium">{title}</div>
+        <div className="text-[12px] text-muted mt-px">{desc}</div>
+      </div>
+      <span className="pt-0.5">
+        <Switch checked={checked} onChange={onChange} label={title} />
+      </span>
     </div>
   );
 }

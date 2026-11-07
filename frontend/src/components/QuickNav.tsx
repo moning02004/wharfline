@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ROUTES, useApi, useApp } from "../lib/app";
 import type { Job } from "../lib/types";
-import { useRun } from "../modals/RunModals";
+import { shortImage, useRun } from "../modals/RunModals";
 import { Icon, type IconName } from "./Icon";
 import { cx } from "./ui";
 
@@ -43,7 +43,7 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
             key: `run:${j.id}`,
             kind: "배포",
             label: j.name,
-            hint: `${j.image.split("/").pop()}:${j.latestTag ?? j.tagNow}`,
+            hint: shortImage(j, j.latestTag ?? j.tagNow) ?? j.playbook.path,
             icon: "play" as IconName,
             run: () => {
               onClose();
