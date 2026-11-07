@@ -402,21 +402,43 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
   const { openModal, closeModal, runAction } = useApp();
   const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
   const [inv, setInv] = useState(inventories.find((i) => i.name === initialInventory)?.id ?? inventories[0]?.id ?? "");
-  const [group, setGroup] = useState("worker");
-  const [name, setName] = useState("worker-02");
-  const [ip, setIp] = useState("10.0.1.18");
+  const [group, setGroup] = useState(() => inventories.flatMap((i) => i.hosts.map((h) => h.group))[0] ?? "");
+  const [name, setName] = useState("");
+  const [ip, setIp] = useState("");
   const [port, setPort] = useState("22");
   const [user, setUser] = useState("deploy");
   const [key, setKey] = useState("");
   const [err, setErr] = useState("");
   const allGroups = [...new Set(inventories.flatMap((i) => i.hosts.map((h) => h.group)))];
 
+  useEffect(() => {
+    if (!key && keys[0]) setKey(keys[0].name);
+  }, [keys, key]);
+
+  /** Same checks as the server, so mistakes show before the fingerprint step. */
+  const check = (): string => {
+    if (!inv) return "인벤토리를 먼저 추가해 주세요.";
+    if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(group.trim())) return "그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.";
+    if (!name.trim()) return "서버 이름을 넣어 주세요.";
+    if (inventories.find((i) => i.id === inv)?.hosts.some((h) => h.name === name.trim())) return "이 인벤토리에 같은 이름의 서버가 있어요.";
+    if (!/^[A-Za-z0-9.:-]{1,253}$/.test(ip.trim())) return "IP 또는 호스트 이름을 확인해 주세요.";
+    if (!/^\d+$/.test(port.trim()) || +port < 1 || +port > 65535) return "포트는 1~65535 사이 숫자여야 해요.";
+    if (user.trim() === "root") return "root로는 접속할 수 없어요. 권한이 제한된 deploy 사용자를 만들어 주세요.";
+    if (!/^[a-z_][a-z0-9_-]{0,31}$/.test(user.trim())) return "SSH 사용자 이름을 확인해 주세요. 예: deploy";
+    return "";
+  };
+
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (user.trim() === "root") return setErr("root로는 접속할 수 없어요. 권한이 제한된 deploy 사용자를 만들어 주세요.");
-    if (!/^\d+$/.test(port.trim())) return setErr("포트는 숫자여야 해요.");
+    const bad = check();
+    if (bad) return setErr(bad);
     setErr("");
-    const fp = await api.post<{ type: string; fingerprint: string }>("/inventory/fingerprint", { ip, port: +port });
+    let fp: { type: string; fingerprint: string };
+    try {
+      fp = await api.post<{ type: string; fingerprint: string }>("/inventory/fingerprint", { ip: ip.trim(), port: +port });
+    } catch (e) {
+      return setErr(errMsg(e));
+    }
     openModal((close) => (
       <>
         <ModalHead title="호스트 키 지문 확인" sub={`${ip}:${port}`} onClose={close} />
@@ -433,7 +455,7 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
           <Button
             variant="primary"
             onClick={async () => {
-              const ok = await runAction(() => api.post(`/inventory/${inv}/hosts`, { name, ip, port, user, group, key }), "서버를 추가했어요");
+              const ok = await runAction(() => api.post(`/inventory/${inv}/hosts`, { name: name.trim(), ip: ip.trim(), port: port.trim(), user: user.trim(), group: group.trim(), key }), "서버를 추가했어요");
               if (ok) {
                 closeModal();
                 closeModal();
@@ -462,7 +484,7 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
             </Select>
           </Field>
           <Field label="그룹" htmlFor="hGroup">
-            <Input id="hGroup" mono value={group} onChange={(e) => setGroup(e.target.value)} list="hGroups" />
+            <Input id="hGroup" mono placeholder="web" value={group} onChange={(e) => setGroup(e.target.value)} list="hGroups" />
             <datalist id="hGroups">
               {allGroups.map((g) => (
                 <option key={g} value={g} />
@@ -470,11 +492,11 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
             </datalist>
           </Field>
           <Field label="이름" htmlFor="hName">
-            <Input id="hName" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
+            <Input id="hName" placeholder="web-03" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
           </Field>
           <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-2.5">
             <Field label="IP 또는 호스트" htmlFor="hIp">
-              <Input id="hIp" mono value={ip} onChange={(e) => setIp(e.target.value)} />
+              <Input id="hIp" mono placeholder="10.0.1.18" value={ip} onChange={(e) => setIp(e.target.value)} />
             </Field>
             <Field label="포트" htmlFor="hPort">
               <Input id="hPort" mono inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value)} />
