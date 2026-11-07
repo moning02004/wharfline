@@ -6,7 +6,7 @@ import type { Build, GitProvider, Image, Inventory as Inv, Key, Registry, Repo }
 import { HostKeyModal, NewHostModal, NewImageModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, Seg, TableWrap } from "../components/ui";
+import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, Seg, TableWrap, Textarea } from "../components/ui";
 import { PROVIDER_NAME } from "../components/BuildBadge";
 
 const Mono = ({ children }: { children: React.ReactNode }) => <span className="font-mono">{children}</span>;
@@ -462,6 +462,7 @@ export function Inventory() {
         </Button>
       </PageHeader>
       {data.map((inv) => {
+        const sharedWith = data.filter((o) => o.id !== inv.id && o.key === inv.key).map((o) => o.name);
         const gm: Record<string, number> = {};
         inv.hosts.forEach((h) => (gm[h.group] = (gm[h.group] ?? 0) + 1));
         return (
@@ -474,6 +475,7 @@ export function Inventory() {
                     <Icon name="key" className="size-[13px]" />
                     {inv.key}
                   </span>
+                  {sharedWith.length > 0 && <SharedKeyChip others={sharedWith} />}
                   {Object.entries(gm).map(([g, n]) => (
                     <Chip key={g}>
                       {g} · {n}
@@ -559,6 +561,12 @@ export function Keys() {
       <Banner icon="info" title="비공개 키와 토큰은 내려받거나 열람할 수 없어요">
         SSH 키는 공개 키와 지문만, 토큰은 계정과 끝 4자리만 볼 수 있어요. 키를 잃어버렸다면 새로 만들고 서버의 authorized_keys를 바꾸는 쪽이 안전해요.
       </Banner>
+      {data.some((k) => k.sharedAcrossInventories) && (
+        <Banner tone="warn" icon="alert" title="여러 인벤토리가 같은 SSH 키를 써요">
+          키 하나가 새면 그 키를 쓰는 모든 환경이 함께 열려요. production과 staging처럼 환경마다 키를 따로 만들어 쓰세요.
+        </Banner>
+      )}
+      <AccessFromCard />
       <Card>
         <TableWrap>
           <table className="tbl">
@@ -581,7 +589,22 @@ export function Keys() {
                     <Chip>{k.type}</Chip>
                   </td>
                   <td className="font-mono text-muted">{k.fingerprint}</td>
-                  <td className="tabular-nums">{k.usedCount ? `${k.kind === "token" ? "레포" : "인벤토리"} ${k.usedCount}곳` : <span className="text-faint">없음</span>}</td>
+                  <td className="tabular-nums">
+                    {k.kind === "ssh" && k.inventories?.length ? (
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        {k.inventories.map((n) => (
+                          <Chip key={n} mono>
+                            {n}
+                          </Chip>
+                        ))}
+                        {k.sharedAcrossInventories && <SharedKeyChip />}
+                      </span>
+                    ) : k.usedCount ? (
+                      `${k.kind === "token" ? "레포" : "인벤토리"} ${k.usedCount}곳`
+                    ) : (
+                      <span className="text-faint">없음</span>
+                    )}
+                  </td>
                   <td className="text-muted">{k.lastUsed}</td>
                   <td className="text-muted">
                     {k.createdBy} · {k.createdAt}
@@ -605,5 +628,78 @@ export function Keys() {
         </TableWrap>
       </Card>
     </>
+  );
+}
+
+function SharedKeyChip({ others }: { others?: string[] }) {
+  return (
+    <Chip tone="warn" icon="alert" className="font-sans">
+      {others ? `키 공유 · ${others.join(", ")}` : "여러 인벤토리가 공유"}
+    </Chip>
+  );
+}
+
+/** Where Wharfline connects from. The public-key view puts these in authorized_keys as from="…". */
+function AccessFromCard() {
+  const { role, runAction } = useApp();
+  const { data } = useApi<{ addresses: string[]; canEdit: boolean }>("/keys/access-from");
+  const [text, setText] = useState<string | null>(null);
+  const canEdit = role === "Owner" || role === "Admin";
+  if (!data) return null;
+
+  const editing = text !== null;
+  const save = async () => {
+    const addresses = (text ?? "").split(/[\s,]+/).filter(Boolean);
+    const ok = await runAction(() => api.put("/keys/access-from", { addresses }), addresses.length ? "접속 허용 주소를 저장했어요" : "접속 허용 주소를 비웠어요");
+    if (ok) setText(null);
+  };
+
+  return (
+    <Card>
+      <CardHeader
+        title={
+          <span className="flex items-center gap-2 flex-wrap">
+            접속 허용 주소
+            {data.addresses.length ? <Chip tone="ok">설정됨</Chip> : <Chip tone="warn">비어 있음</Chip>}
+          </span>
+        }
+        sub="Wharfline이 서버에 접속할 때 나가는 IP예요. 공개 키 줄에 from=으로 붙어서, 키가 새어도 이 주소 밖에서는 못 써요."
+      >
+        {canEdit && !editing && (
+          <Button size="sm" icon="edit" onClick={() => setText(data.addresses.join("\n"))}>
+            편집
+          </Button>
+        )}
+      </CardHeader>
+      <div className="p-5 flex flex-col gap-3">
+        {editing ? (
+          <>
+            <Field label="IP 또는 CIDR, 한 줄에 하나" htmlFor="accessFrom" hint="예: 203.0.113.10, 10.0.0.0/24. 비우면 제한 없이 어디서든 접속을 받아요.">
+              <Textarea id="accessFrom" rows={3} spellCheck={false} value={text} onChange={(e) => setText(e.target.value)} autoFocus />
+            </Field>
+            <div className="flex gap-2 justify-end">
+              <Button size="sm" onClick={() => setText(null)}>
+                취소
+              </Button>
+              <Button size="sm" variant="primary" onClick={save}>
+                저장
+              </Button>
+            </div>
+          </>
+        ) : data.addresses.length ? (
+          <span className="flex flex-wrap gap-1.5">
+            {data.addresses.map((a) => (
+              <Chip key={a} mono>
+                {a}
+              </Chip>
+            ))}
+          </span>
+        ) : (
+          <span className="text-muted text-[13px]">
+            아직 없어요. 지금 서버에 넣는 공개 키는 어디서든 접속을 받아요.{canEdit ? "" : " Owner나 Admin이 넣을 수 있어요."}
+          </span>
+        )}
+      </div>
+    </Card>
   );
 }

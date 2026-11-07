@@ -142,6 +142,42 @@ export default function Notes() {
             </ul>
           </div>
         </Card>
+        <Card>
+          <CardHeader title="키가 털려도 서버는 지키기" sub="자세한 내용은 README의 &quot;보안 운영&quot;에 있어요." />
+          <div className="p-5 flex flex-col gap-3">
+            <ul className="m-0 pl-[18px] flex flex-col gap-2.5 text-muted marker:text-faint">
+              <li>
+                <b className="font-semibold text-fg">접속 허용 주소</b> · <L to="/keys">키 저장소</L>에 Wharfline이 나가는 IP를 넣으면 공개 키 줄에 <Code>from="…"</Code>와 포워딩 금지가 붙어요. 키가 새어도 다른 곳에서는 못 써요.
+              </li>
+              <li>
+                <b className="font-semibold text-fg">deploy 사용자</b> · root 대신 deploy, sudo는 필요한 스크립트 하나만. docker 그룹은 root와 같아요.
+              </li>
+              <li>
+                <b className="font-semibold text-fg">환경별 키</b> · 한 키를 여러 인벤토리가 쓰면 키 저장소와 <L to="/inventory">인벤토리</L>에 경고가 떠요.
+              </li>
+              <li>
+                <b className="font-semibold text-fg">백업은 따로</b> · 마스터 키 백업(<Code>make key-backup</Code>)은 DB 백업과 다른 곳에 둬요.
+              </li>
+              <li>
+                <b className="font-semibold text-fg">자동 배포</b> · 덜 중요한 작업에만 켜고, production은 운영 보호(승인)를 켜 둬요.
+              </li>
+            </ul>
+            <div className="rounded-lg border border-line bg-surface-2 p-4 text-[13px]">
+              <b className="block mb-1.5">털렸을 때 순서</b>
+              <ol className="m-0 pl-[18px] flex flex-col gap-1 text-muted marker:text-faint">
+                <li>서버 authorized_keys에서 공개 키부터 지우기</li>
+                <li>새 키 만들어 넣고 인벤토리 바꾸기</li>
+                <li>
+                  <Code>make key-rotate</Code>
+                </li>
+                <li>웹훅 비밀값·토큰 재발급</li>
+                <li>
+                  <L to="/activity">활동 기록</L> 확인
+                </li>
+              </ol>
+            </div>
+          </div>
+        </Card>
       </div>
       <Card>
         <CardHeader title="참고한 프로젝트" />

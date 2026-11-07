@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models as m
-from .. import sshkeys
+from .. import sshaccess, sshkeys
 from .. import store as s
 from ..db import get_db
 from ..deps import require_login, require_sudo
@@ -198,7 +198,43 @@ def accept_host_key(inv_id: str, ix: int, db: Session = Depends(get_db)):
 
 @router.get("/keys")
 def list_keys(db: Session = Depends(get_db)):
-    return [k.to_dict() for k in db.scalars(select(m.Key).order_by(m.Key.ord))]
+    """Each SSH key lists the inventories that use it; one key on 2+ inventories is flagged (keep a key per environment)."""
+    used: dict[str, list[str]] = {}
+    for inv in db.scalars(select(m.Inventory).order_by(m.Inventory.ord)):
+        used.setdefault(inv.key, []).append(inv.name)
+    out = []
+    for k in db.scalars(select(m.Key).order_by(m.Key.ord)):
+        invs = used.get(k.name, []) if k.kind == "ssh" else []
+        out.append({**k.to_dict(), "inventories": invs, "sharedAcrossInventories": len(invs) > 1})
+    return out
+
+
+# ---------- where Wharfline connects from (authorized_keys from="…") ----------
+# Registered before the /keys/{key_id} routes so "access-from" is never read as a key id.
+
+class AccessFromIn(BaseModel):
+    addresses: list[str]
+
+
+@router.get("/keys/access-from")
+def get_access_from(db: Session = Depends(get_db)):
+    me = s.current_member(db)
+    return {"addresses": sshaccess.get_addresses(db), "canEdit": bool(me and me.role in ("Owner", "Admin"))}
+
+
+@router.put("/keys/access-from")
+def put_access_from(body: AccessFromIn, db: Session = Depends(get_db)):
+    me = s.current_member(db)
+    if not me or me.role not in ("Owner", "Admin"):
+        raise HTTPException(403, "이 작업을 할 권한이 없어요.")
+    try:
+        addresses = sshaccess.normalize(body.addresses)
+    except sshaccess.AddressError as e:
+        raise HTTPException(400, str(e)) from e
+    sshaccess.set_addresses(db, addresses)
+    s.log_act(db, "접속 허용 주소 변경", ", ".join(addresses) or "비움", "ok" if addresses else "warn")
+    db.commit()
+    return {"addresses": addresses, "canEdit": True}
 
 
 class KeyIn(BaseModel):
@@ -244,7 +280,9 @@ def public_key(key_id: str, db: Session = Depends(get_db)):
     k = db.get(m.Key, key_id)
     if not k or k.kind != "ssh" or not k.public_key:
         raise HTTPException(404, "공개 키가 없는 키예요.")
-    return {"publicKey": k.public_key}
+    addresses = sshaccess.get_addresses(db)
+    return {"publicKey": k.public_key, "authorizedKeysLine": sshaccess.authorized_keys_line(k.public_key, addresses),
+            "restricted": bool(addresses), "accessFrom": addresses}
 
 
 @router.delete("/keys/{key_id}", dependencies=[Depends(require_sudo)])

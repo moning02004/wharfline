@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { Host, Image, Inventory, Key, Registry } from "../lib/types";
+import type { Host, Image, Inventory, Key, PublicKeyInfo, Registry } from "../lib/types";
+import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
 
@@ -119,38 +120,87 @@ export function NewKeyModal({ onClose }: { onClose: () => void }) {
 
 export function PubKeyModal({ k, fresh, onClose }: { k: Key; fresh?: boolean; onClose: () => void }) {
   const { toast } = useApp();
-  const [pub, setPub] = useState(k.publicKey ?? "");
+  const [info, setInfo] = useState<PublicKeyInfo | null>(null);
   const ta = useRef<HTMLTextAreaElement>(null);
   useEffect(() => {
-    if (!pub) api.get<{ publicKey: string }>(`/keys/${k.id}/public`).then((r) => setPub(r.publicKey));
-  }, [k.id, pub]);
+    api
+      .get<PublicKeyInfo>(`/keys/${k.id}/public`)
+      .then(setInfo)
+      .catch((e) => toast(errMsg(e)));
+  }, [k.id, toast]);
+  // Right after creating a key the line is known before the request returns; it has no from="…" yet.
+  const line = info?.authorizedKeysLine ?? k.publicKey ?? "";
 
   return (
     <>
       <ModalHead title={fresh ? "키를 만들었어요" : "공개 키"} sub={`${k.name} · ${k.fingerprint}`} onClose={onClose} />
       <ModalBody>
-        <Field label="대상 서버의 ~/.ssh/authorized_keys에 추가하세요">
-          <Textarea ref={ta} rows={3} readOnly value={pub} />
+        <Field
+          label="대상 서버의 deploy 사용자 ~/.ssh/authorized_keys에 넣을 줄"
+          right={
+            <Button
+              size="sm"
+              variant="ghost"
+              icon="copy"
+              disabled={!line}
+              onClick={() => {
+                copyText(line, toast);
+                ta.current?.select();
+              }}
+            >
+              복사
+            </Button>
+          }
+        >
+          <Textarea ref={ta} rows={4} readOnly value={line} className="break-all" />
         </Field>
-        <Banner icon="info">
-          더 안전하게 하려면 앞에 <span className="font-mono">from="배포서버IP",no-pty,no-port-forwarding</span> 옵션을 붙여 이 서버에서만, 터미널 없이 쓰이게 하세요.
-        </Banner>
+        {info &&
+          (info.restricted ? (
+            <Hint>
+              <span className="font-mono">from=</span>이 붙어 있어 {info.accessFrom.join(", ")}에서 온 접속만 받아요. 키가 새어도 다른 곳에서는 못 쓰고, 에이전트·포트·X11
+              포워딩도 막혀요.
+            </Hint>
+          ) : (
+            <Banner tone="warn" icon="alert" title="접속 허용 주소가 없어요">
+              이 줄은 어디서든 접속을 받아요. 키가 새면 누구나 서버에 들어올 수 있어요. 키 저장소의 "접속 허용 주소"에 Wharfline이 나가는 주소를 넣으면 <span className="font-mono">from=</span>이 붙은 줄로 바뀌어요.
+            </Banner>
+          ))}
+        <DeployUserGuide />
       </ModalBody>
       <ModalFoot>
-        <Button
-          icon="copy"
-          onClick={() => {
-            copyText(pub, toast);
-            ta.current?.select();
-          }}
-        >
-          복사
-        </Button>
         <Button variant="primary" onClick={onClose}>
           완료
         </Button>
       </ModalFoot>
     </>
+  );
+}
+
+const SUDOERS_LINE = "deploy ALL=(root) NOPASSWD: /usr/local/sbin/wharfline-deploy";
+
+function DeployUserGuide() {
+  const { toast } = useApp();
+  return (
+    <div className="rounded-lg border border-line bg-surface-2 p-4 flex flex-col gap-2 text-[13px]">
+      <b className="font-semibold flex items-center gap-1.5">
+        <Icon name="shield" className="size-4 text-accent" />
+        서버 쪽 사용자 준비
+      </b>
+      <ul className="m-0 pl-[18px] flex flex-col gap-1.5 text-muted marker:text-faint">
+        <li>root가 아니라 이 키만 쓰는 deploy 사용자를 만들어 넣어요.</li>
+        <li>
+          sudo는 플레이북에 필요한 일(이미지 받기, 컨테이너 교체)만 하는 스크립트 하나로 좁혀요. 스크립트는 root 소유로 두어 deploy가 못 고치게 해요.{" "}
+          <span className="font-mono">visudo -f /etc/sudoers.d/deploy</span> 예시:
+        </li>
+      </ul>
+      <div className="flex items-start gap-2">
+        <code className="flex-1 min-w-0 rounded-md bg-surface border border-line px-2.5 py-1.5 font-mono text-[11.5px] break-all">{SUDOERS_LINE}</code>
+        <Button size="sm" variant="ghost" icon="copy" iconOnly aria-label="sudoers 줄 복사" onClick={() => copyText(SUDOERS_LINE, toast)} />
+      </div>
+      <p className="m-0 text-warn">
+        deploy를 docker 그룹에 넣으면 root와 같아요. 컨테이너로 호스트 전체를 마운트할 수 있어서예요. 꼭 필요한 서버에만 넣어요.
+      </p>
+    </div>
   );
 }
 
