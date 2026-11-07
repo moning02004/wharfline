@@ -24,6 +24,9 @@ from .db import SessionLocal
 
 Line = tuple[str, str]  # (css class, text)
 
+# Playback speed of the simulated run: 1 = real-time feel, 0 = instant (tests set this).
+PACE = 1.0
+
 
 def method_label(job: dict) -> str:
     pb = job["playbook"]
@@ -152,18 +155,18 @@ def _emit(no: int, ev: dict) -> None:
 
 async def _play(no: int, steps: list[dict]) -> None:
     run = live[no]
-    await asyncio.sleep(0.3)
+    await asyncio.sleep(0.3 * PACE)
     for i, step in enumerate(steps):
         if run["cancelled"]:
             return
         step_t0 = time.time()
         _emit(no, {"t": "step", "i": i, "state": "run"})
         for cls, text in step["lines"]:
-            await asyncio.sleep(0.16 + random.random() * 0.3)
+            await asyncio.sleep((0.16 + random.random() * 0.3) * PACE)
             if run["cancelled"]:
                 return
             _emit(no, {"t": "line", "c": cls, "text": text, "ts": s.now_hms()})
-        await asyncio.sleep(0.25)
+        await asyncio.sleep(0.25 * PACE)
         if run["cancelled"]:
             return
         _emit(no, {"t": "step", "i": i, "state": "ok", "d": f"{time.time() - step_t0:.1f}s"})

@@ -210,7 +210,8 @@ def _set_step(db: Session, provider: str, repo: str, run_id: int, step: str | No
     b = _upsert_build(db, provider, repo, run_id)
     if step:
         b.step = step[:255]
-    if not b.active:
+    # A running job means the run is building, even if the run's own "in progress" event hasn't come yet.
+    if b.status == "queued" or not b.active:
         b.status = "in_progress"
     b.url = b.url or url
     b.updated_at = time.time()
