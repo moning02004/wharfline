@@ -1,12 +1,11 @@
-import random
-import string
+import re
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.orm import Session
 
-from .. import githooks
+from .. import authn, githooks
 from .. import models as m
 from .. import store as s
 from ..db import get_db
@@ -166,10 +165,7 @@ def delete_group(group_id: str, db: Session = Depends(get_db)):
 
 @router.get("/security")
 def security(db: Session = Depends(get_db)):
-    return {
-        "sessions": [x.to_dict() for x in db.scalars(select(m.DeviceSession).order_by(m.DeviceSession.id))],
-        "policy": s.get_setting(db, "policy"),
-    }
+    return {"sessions": s.session_list(db), "policy": s.get_setting(db, "policy")}
 
 
 class PolicyIn(BaseModel):
@@ -184,40 +180,43 @@ class PolicyIn(BaseModel):
 def save_policy(body: PolicyIn, db: Session = Depends(get_db)):
     if body.sudoMinutes not in (1, 5, 10, 15):
         raise HTTPException(400, "열람 유지 시간은 1, 5, 10, 15분 중에서 골라 주세요.")
+    if not re.match(r"^\s*\d+\s*(시간|분)", body.session):
+        raise HTTPException(400, "세션 만료 시간을 골라 주세요.")
+    if not re.search(r"\d+\s*회 실패 시\s*\d+\s*(시간|분)", body.lockout):
+        raise HTTPException(400, "로그인 실패 잠금 규칙을 골라 주세요.")
     ips = [x.strip() for x in body.allowIps.splitlines() if x.strip()]
     if ips and not any(ip.startswith("211.234.10.") or ip == s.CLIENT_IP for ip in ips):
         raise HTTPException(400, "내 IP가 허용 목록에 없어서 저장할 수 없어요.")
+    before = s.get_setting(db, "policy")
     policy = s.set_setting(db, "policy", **body.model_dump())
-    s.log_act(db, "보안 정책 저장", f"열람 {body.sudoMinutes}분 · IP {len(ips)}개")
+    tfa = ""
+    if body.enforce2fa != bool(before.get("enforce2fa")):
+        tfa = " · 2단계 인증 강제 " + ("켬" if body.enforce2fa else "끔")
+    s.log_act(db, "보안 정책 저장", f"열람 {body.sudoMinutes}분 · IP {len(ips)}개{tfa}", "warn" if tfa and not body.enforce2fa else "ok")
     db.commit()
     return policy
 
 
-def _code() -> str:
-    a = string.ascii_lowercase + string.digits
-    return "".join(random.choices(a, k=4)) + "-" + "".join(random.choices(a, k=4))
+class ResetPasswordIn(BaseModel):
+    clearTfa: bool = False
 
 
-@router.post("/security/codes", dependencies=[Depends(require_sudo)])
-def new_codes(db: Session = Depends(get_db)):
-    s.log_act(db, "복구 코드 새로 발급", "10개")
+@router.post("/members/{email}/password", dependencies=[Depends(require_owner), Depends(require_sudo)])
+def reset_password(email: str, body: ResetPasswordIn, db: Session = Depends(get_db)):
+    """Owner sets a temporary password (shown once). The member must pick a new one at the next login."""
+    member = db.get(m.Member, email)
+    if not member:
+        raise HTTPException(404, "멤버를 찾을 수 없어요.")
+    if member.email == s.current_member(db).email:
+        raise HTTPException(400, "내 비밀번호는 보안 화면에서 바꿔 주세요.")
+    temp = authn.temporary_password()
+    member.password_hash = authn.hash_password(temp)
+    member.must_change_password = True
+    member.failed_logins, member.locked_until = 0, None
+    if body.clearTfa:
+        member.set_tfa_state(None, None)
+        member.recovery_codes, member.tfa_last_step = [], None
+    db.execute(delete(m.LoginSession).where(m.LoginSession.member_email == member.email))
+    s.log_act(db, "비밀번호 재설정", f"{member.name}" + (" · 2단계 인증 해제" if body.clearTfa else ""), "warn")
     db.commit()
-    return {"codes": [_code() for _ in range(10)]}
-
-
-@router.post("/security/tfa", dependencies=[Depends(require_sudo)])
-def tfa_begin():
-    return {"secret": "JBSW Y3DP EHPK 3PXP", "uri": "otpauth://totp/Wharfline:jeonghoon?secret=JBSWY3DPEHPK3PXP&issuer=Wharfline"}
-
-
-class TfaVerifyIn(BaseModel):
-    code: str
-
-
-@router.post("/security/tfa/verify", dependencies=[Depends(require_sudo)])
-def tfa_verify(body: TfaVerifyIn, db: Session = Depends(get_db)):
-    if len(body.code) != 6 or not body.code.isdigit():
-        raise HTTPException(400, "6자리 숫자를 입력해 주세요.")
-    s.log_act(db, "2단계 인증 재설정", "TOTP")
-    db.commit()
-    return {"codes": [_code() for _ in range(10)]}
+    return {"password": temp, "member": member.to_dict()}

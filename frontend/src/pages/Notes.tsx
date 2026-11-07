@@ -135,8 +135,8 @@ export default function Notes() {
           <div className="p-5">
             <ul className="m-0 pl-[18px] flex flex-col gap-2.5 text-muted marker:text-faint">
               <li>비밀 값은 봉투 암호화(AES-256-GCM)로 저장하고, 마스터 키는 DB가 아닌 Docker secret 파일에 둬요. (구현됨)</li>
-              <li>비밀번호는 Argon2id로 해시, TOTP 비밀값도 암호화 저장.</li>
-              <li>세션 쿠키는 HttpOnly, Secure, SameSite=Strict. 모든 변경 요청에 CSRF 토큰.</li>
+              <li>비밀번호는 bcrypt로 해시하고, 2단계 인증(TOTP) 비밀값은 봉투 암호화, 복구 코드는 해시로 저장해요. (구현됨)</li>
+              <li>세션은 브라우저마다 따로, 쿠키는 HttpOnly·SameSite=Lax(HTTPS면 Secure). 웹훅을 뺀 모든 변경 요청에 X-Requested-With 헤더가 있어야 해요. (구현됨)</li>
               <li>배포 실행기는 웹 서버와 분리된 워커 프로세스에서 돌리고, 키는 실행 중 메모리에만 풀어요.</li>
               <li>대상 서버의 deploy 계정은 sudo 없이, 필요한 명령만 허용(authorized_keys의 command 제한 등).</li>
             </ul>

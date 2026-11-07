@@ -151,7 +151,7 @@ export function Layout({ children }: { children: ReactNode }) {
           <div className="flex items-center gap-1 flex-none">
             <span
               className="grid place-items-center size-[30px] rounded-full bg-primary-soft text-primary font-semibold text-[11px] shadow-[0_0_0_2px_var(--surface),0_0_0_3px_color-mix(in_srgb,var(--primary)_25%,transparent)]"
-              title={`${session?.me.name} · ${session?.me.role}${session?.me.groups.length ? ` · ${session.me.groups.join(", ")}` : ""} · 2FA 사용 중`}
+              title={`${session?.me.name} · ${session?.me.role}${session?.me.groups.length ? ` · ${session.me.groups.join(", ")}` : ""}${session?.tfa ? " · 2단계 인증 사용 중" : ""}`}
             >
               {session?.me.name.slice(0, 2)}
             </span>

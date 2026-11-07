@@ -8,7 +8,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { api, ApiError, errMsg, setViewAsHeader } from "./api";
+import { api, ApiError, errMsg, setViewAsHeader, SIGNED_OUT_EVENT } from "./api";
 import type { Member, Role, Session } from "./types";
 import { ModalShell, type ModalSize } from "../components/Modal";
 import { SudoModal } from "../modals/SudoModal";
@@ -104,7 +104,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const seq = useRef(0);
 
   useEffect(() => {
-    api.get<Session>("/auth/me").then(setSession).catch(() => setSession({ loggedIn: false } as Session));
+    const load = () => api.get<Session>("/auth/me").then(setSession).catch(() => setSession({ loggedIn: false } as Session));
+    load();
+    window.addEventListener(SIGNED_OUT_EVENT, load);
+    return () => window.removeEventListener(SIGNED_OUT_EVENT, load);
   }, []);
 
   useEffect(() => {

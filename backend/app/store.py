@@ -12,9 +12,10 @@ import time
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from . import authn
 from . import models as m
 
 CLIENT_IP = "211.234.10.8"
@@ -57,29 +58,80 @@ def set_setting(db: Session, key: str, **changes: Any) -> dict[str, Any]:
     return dict(row.value)
 
 
-def session_state(db: Session) -> dict[str, Any]:
-    return get_setting(db, "session")
-
-
 def sudo_minutes(db: Session) -> int:
     return int(get_setting(db, "policy").get("sudoMinutes", 5))
 
 
-def sudo_active(db: Session) -> bool:
-    return time.time() < float(session_state(db).get("sudo_until", 0))
-
-
 def log_act(db: Session, action: str, obj: str, result: str = "ok") -> None:
-    db.add(m.Activity(time=now_hms(), user=actor_name(db), action=action, object=obj, ip=CLIENT_IP, result=result))
+    db.add(m.Activity(time=now_hms(), user=actor_name(db), action=action, object=obj, ip=client_ip(), result=result))
+
+
+def client_ip() -> str:
+    return authn.current().ip or CLIENT_IP
+
+
+# ---------- sessions: one per browser, found by the cookie's token ----------
+
+def session_expired(db: Session, row: m.LoginSession, now: float | None = None) -> bool:
+    now = time.time() if now is None else now
+    if now >= row.expires_at:
+        return True
+    if row.stage != "ok":
+        return now - row.created_at > authn.PENDING_SECONDS
+    _, idle = authn.session_limits(get_setting(db, "policy"))
+    return now - row.last_seen > idle
+
+
+def current_session(db: Session) -> m.LoginSession | None:
+    """This request's session row (any stage), or None when there is no valid cookie."""
+    ra = authn.current()
+    if not ra.token:
+        return None
+    row = db.get(m.LoginSession, authn.token_hash(ra.token))
+    if not row or session_expired(db, row):
+        return None
+    if not ra.touched and row.stage == "ok" and time.time() - row.last_seen > authn.TOUCH_SECONDS:
+        ra.touched = True
+        _touch(row.token_hash)
+    return row
+
+
+def _touch(token_hash: str) -> None:
+    """Record activity in its own transaction, so a read-only request does not need to commit.
+
+    SKIP LOCKED: if this request's own transaction already changed the row, skip instead of waiting on ourselves.
+    """
+    from .db import SessionLocal
+
+    mine = select(m.LoginSession.token_hash).where(m.LoginSession.token_hash == token_hash).with_for_update(skip_locked=True)
+    with SessionLocal() as other:
+        other.execute(update(m.LoginSession).where(m.LoginSession.token_hash.in_(mine)).values(last_seen=time.time()))
+        other.commit()
+
+
+def session_list(db: Session) -> list[dict[str, Any]]:
+    """The signed-in member's live sessions, most recent first. `id` is a prefix of the token hash."""
+    row = current_session(db)
+    if not row or row.stage != "ok":
+        return []
+    rows = db.scalars(select(m.LoginSession).where(m.LoginSession.member_email == row.member_email, m.LoginSession.stage == "ok")
+                      .order_by(m.LoginSession.last_seen.desc()))
+    return [{"id": x.token_hash[:16], "agent": authn.describe_agent(x.user_agent), "ip": x.ip or "-",
+             "createdAt": x.created_at * 1000, "lastSeen": x.last_seen * 1000, "current": x.token_hash == row.token_hash}
+            for x in rows if not session_expired(db, x)]
+
+
+def sudo_active(db: Session) -> bool:
+    row = current_session(db)
+    return bool(row and row.stage == "ok" and time.time() < row.sudo_until)
 
 
 # ---------- who is signed in, and what they can see ----------
 
 def current_member(db: Session) -> m.Member | None:
-    """The signed-in member, from the session's email. None when signed out or the member was removed."""
-    st = session_state(db)
-    email = st.get("email")
-    return db.get(m.Member, email) if st.get("logged_in") and email else None
+    """The signed-in member, from this request's session cookie. None when signed out, mid-login, or removed."""
+    row = current_session(db)
+    return row.member if row and row.stage == "ok" else None
 
 
 def actor_name(db: Session) -> str:

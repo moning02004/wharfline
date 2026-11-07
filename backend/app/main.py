@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, union
 
-from . import crypto
+from . import authn, crypto
 from . import models as m
 from .db import SessionLocal, engine
 from .prestart import alembic_config
@@ -33,7 +33,7 @@ def check_keys() -> None:
     """Refuse to start without a master key, or if stored data needs a key that is not loaded."""
     ring = crypto.keyring()
     with SessionLocal() as db:
-        used = set(db.scalars(union(*(select(t.kek_id).where(t.kek_id.is_not(None)) for t in (m.EnvSet, m.EnvVersion, m.Key, m.Registry)))))
+        used = set(db.scalars(union(*(select(t.kek_id).where(t.kek_id.is_not(None)) for t in (m.EnvSet, m.EnvVersion, m.Key, m.Registry, m.Member)))))
         hook_secret = githooks.secret_envelope(db)
         if hook_secret:
             used.add(hook_secret.kek_id)
@@ -53,6 +53,8 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(title="Wharfline API", version="0.4.0", lifespan=lifespan)
+
+app.add_middleware(authn.AuthMiddleware)  # added first, so CORS (added next) wraps it
 
 origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "http://localhost:5173").split(",") if o.strip()]
 app.add_middleware(

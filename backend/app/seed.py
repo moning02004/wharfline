@@ -11,6 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import ed25519, rsa
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import authn
 from . import models as m
 from . import sshkeys
 from .store import BUILTIN_BOOK, BUILTIN_REPO, BUILTIN_URL, CLIENT_IP
@@ -131,14 +132,9 @@ logins: list[dict] = [
 ]
 
 members: list[dict] = [
-    {"name": "정훈", "email": "jeonghoon@acme.kr", "role": "Owner", "tfa": True, "last": "방금"},
-    {"name": "민지", "email": "minji@acme.kr", "role": "Deployer", "tfa": True, "last": "3시간 전"},
+    {"name": "정훈", "email": "jeonghoon@acme.kr", "role": "Owner", "tfa": False, "last": "방금"},
+    {"name": "민지", "email": "minji@acme.kr", "role": "Deployer", "tfa": False, "last": "3시간 전"},
     {"name": "서준", "email": "seojun@acme.kr", "role": "Viewer", "tfa": False, "last": "6일 전"},
-]
-
-sessions: list[dict] = [
-    {"agent": "Chrome 141 · macOS", "ip": CLIENT_IP, "location": "서울", "time": "현재 세션", "current": True},
-    {"agent": "Safari 19 · iOS", "ip": CLIENT_IP, "location": "서울", "time": "어제 18:20", "current": False},
 ]
 
 # Groups decide which menus and builds their members see. Owners always see everything; the dashboard is always visible.
@@ -155,7 +151,7 @@ groups: list[dict] = [
 ]
 
 policy: dict[str, Any] = {
-    "enforce2fa": True,
+    "enforce2fa": False,  # 2FA is optional; members turn it on under 보안
     "sudoMinutes": 5,
     "session": "8시간 (활동 없으면 30분)",
     "lockout": "5회 실패 시 15분 잠금",
@@ -165,13 +161,10 @@ policy: dict[str, Any] = {
 
 
 def seed_if_empty(db: Session) -> bool:
-    if db.scalar(select(m.Setting).where(m.Setting.key == "session")):
+    if db.scalar(select(m.Setting).where(m.Setting.key == "policy")):
         return False
 
-    db.add_all([
-        m.Setting(key="session", value={"logged_in": True, "email": "jeonghoon@acme.kr", "pending_login": False, "sudo_until": 0.0}),
-        m.Setting(key="policy", value=policy),
-    ])
+    db.add(m.Setting(key="policy", value=policy))
     for k in keys:
         key = m.Key(id=k["id"], kind=k["kind"], name=k["name"], type=k["type"], fingerprint=k["fingerprint"],
                     created_by=k["createdBy"], created_at=k["createdAt"], last_used=k["lastUsed"], used_count=k["usedCount"])
@@ -219,9 +212,10 @@ def seed_if_empty(db: Session) -> bool:
     # Lists below are newest first; insert oldest first so a higher id means newer.
     db.add_all(m.Activity(**a) for a in reversed(activity))
     db.add_all(m.Login(**x) for x in reversed(logins))
-    by_email = {x["email"]: m.Member(**x) for x in members}
+    # Every sample member signs in with WHARFLINE_SEED_PASSWORD (default "wharfline"). Nobody has 2FA yet.
+    seed_hash = authn.hash_password(authn.seed_password())
+    by_email = {x["email"]: m.Member(**x, password_hash=seed_hash) for x in members}
     db.add_all(by_email.values())
-    db.add_all(m.DeviceSession(**x) for x in sessions)
     for g in groups:
         db.add(m.Group(id=g["id"], name=g["name"], menus=g["menus"], all_builds=g["all_builds"], repos=g["repos"],
                        members=[by_email[e] for e in g["members"]]))

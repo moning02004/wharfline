@@ -29,8 +29,8 @@ export function SudoModal({ reason, minutes, onClose, onDone }: { reason: string
           <Banner icon="lock" title={reason}>
             확인 후 <span className="tabular-nums">{minutes}</span>분 동안은 다시 묻지 않아요. 이 시간 동안의 열람과 수정은 모두 활동 기록에 남아요.
           </Banner>
-          <Field label="계정 비밀번호" htmlFor="sudoPw" hint="5회 틀리면 15분 동안 잠기고 다른 관리자에게 알림이 가요.">
-            <Input id="sudoPw" type="password" autoComplete="current-password" placeholder="데모: 아무 값이나 입력" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
+          <Field label="계정 비밀번호" htmlFor="sudoPw" hint="여러 번 틀리면 계정이 잠시 잠기고 활동 기록에 남아요.">
+            <Input id="sudoPw" type="password" autoComplete="current-password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
           </Field>
           <ErrorText>{err}</ErrorText>
         </ModalBody>
