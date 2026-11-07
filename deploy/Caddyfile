@@ -1,0 +1,12 @@
+# Used only with `docker compose --profile https up -d`.
+# Caddy gets and renews the certificate for WHARFLINE_DOMAIN by itself.
+{$WHARFLINE_DOMAIN} {
+	encode zstd gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		Referrer-Policy "same-origin"
+		-Server
+	}
+	reverse_proxy frontend:80
+}

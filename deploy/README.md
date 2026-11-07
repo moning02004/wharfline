@@ -2,13 +2,13 @@
 
 GitHub 릴리스로 만들어진 이미지(`ghcr.io/moning02004/wharfline-*`)를 받아서 실행해요. 서버에서 빌드하지 않고, 샘플 데이터도 넣지 않아요. 처음 띄우면 `.env`에 적은 Owner 한 명만 만들어져요.
 
-필요한 것: Docker Engine과 Compose 플러그인(`docker compose version`), 이 폴더의 파일 두 개(`docker-compose.yml`, `.env.example`).
+필요한 것: Docker Engine과 Compose 플러그인(`docker compose version`), 이 폴더의 파일(`docker-compose.yml`, `.env.example`, 그리고 서버 한 대로 HTTPS까지 할 때만 `Caddyfile`).
 
 ## 1. 폴더 만들기
 
 ```bash
 sudo mkdir -p /opt/wharfline && sudo chown "$USER" /opt/wharfline && cd /opt/wharfline
-# 이 폴더의 docker-compose.yml, .env.example을 여기로 복사해요
+# 이 폴더의 docker-compose.yml, .env.example (필요하면 Caddyfile)을 여기로 복사해요
 cp .env.example .env && chmod 600 .env
 ```
 
@@ -48,16 +48,20 @@ openssl enc -aes-256-cbc -pbkdf2 -iter 600000 -in secrets/master_keys -out maste
 | `WHARFLINE_OWNER_EMAIL` / `_NAME` / `_PASSWORD` | 처음 만들 Owner. 비밀번호는 10자 이상, 첫 로그인 때 바꾸게 돼요 |
 | `WHARFLINE_COOKIE_SECURE` | HTTPS면 `1`(기본). HTTP로만 시험할 때만 `0` |
 | `WEB_BIND`, `WEB_PORT` | 웹 포트. 기본은 `127.0.0.1:8080`. 프록시가 다른 VM이면 이 VM의 내부 IP |
+| `WHARFLINE_DOMAIN` | 함께 든 Caddy(자동 HTTPS)를 쓸 때만. 이 서버를 가리키는 도메인 |
 
 Owner가 생긴 뒤에는 `WHARFLINE_OWNER_PASSWORD`를 `.env`에서 지워도 돼요(빈 DB일 때만 쓰여요).
 
 ## 5. 띄우기
 
-HTTPS는 앞단 리버스 프록시가 맡아요. 이 구성은 HTTP 포트 하나만 열어요.
+Wharfline은 HTTP 포트 하나만 열어요. HTTPS를 누가 붙이느냐에 따라 둘 중 하나로 띄워요.
 
-```bash
-docker compose up -d
-```
+| 상황 | 명령 | 필요한 파일 |
+|---|---|---|
+| 앞에 리버스 프록시가 이미 있음 (NPM, 회사 nginx, 로드밸런서) | `docker compose up -d` | `docker-compose.yml`, `.env` |
+| 공인 IP가 붙은 서버 한 대뿐 (예: NCP 서버) | `docker compose --profile https up -d` | 위 둘 + `Caddyfile` |
+
+두 번째는 함께 든 **Caddy**가 앞단을 맡아요. Caddy는 Let's Encrypt 인증서를 알아서 받고 갱신해요. `Caddyfile`은 그 설정 파일이에요.
 
 ### Nginx Proxy Manager(NPM)를 앞에 둘 때
 
@@ -80,6 +84,27 @@ docker compose up -d
      proxy_read_timeout 1h;
      ```
 4. 사용자 IP: NPM이 보내는 `X-Forwarded-For`를 Wharfline의 nginx가 받아요(내부망 주소에서 온 것만 믿어요). 활동 기록과 로그인 잠금에 실제 사용자 IP가 남아요.
+
+### NCP(네이버 클라우드) 서버 한 대로 띄울 때
+
+1. **서버와 공인 IP**: Ubuntu 서버를 만들고 공인 IP를 붙여요. Docker는 `curl -fsSL https://get.docker.com | sh`로 설치해요.
+2. **ACG(방화벽) 인바운드 규칙**
+   - TCP 80, 443: 모두 허용 (80은 인증서 발급과 HTTPS로 넘기기에 필요해요). HTTP/3를 쓰려면 UDP 443도.
+   - TCP 22(SSH): 관리하는 곳의 IP만.
+   - 8080은 열지 마세요. 이 구성에서는 `127.0.0.1`에만 열려서 Caddy만 써요.
+3. **도메인**: 쓸 도메인의 A 레코드를 이 서버의 공인 IP로 맞춰요. DNS가 퍼지기 전에 띄우면 인증서 발급이 실패해요(퍼진 뒤 Caddy가 다시 시도해요).
+4. **`.env`**
+   ```
+   WHARFLINE_DOMAIN=deploy.example.com
+   WHARFLINE_URL=https://deploy.example.com
+   WHARFLINE_COOKIE_SECURE=1
+   WEB_BIND=127.0.0.1
+   ```
+5. **띄우기**: `docker compose --profile https up -d`. `docker compose logs caddy`에서 `certificate obtained successfully`가 보이면 끝이에요.
+6. **접속 허용 주소**: Wharfline이 배포 대상 서버에 SSH로 접속할 때 나가는 주소는 이 서버의 공인 IP예요. 키 저장소의 **접속 허용 주소**에 그 IP를 넣고, 대상 서버들의 `authorized_keys`를 그 줄로 바꿔요. (대상 서버가 같은 VPC 안이면 사설 IP로 접속하니 사설 IP도 함께 넣어요.)
+7. **백업**: DB 덤프는 서버 밖(예: Object Storage)에 두고, 마스터 키 백업은 그와 **다른 곳**에 둬요.
+
+인증서는 `caddy_data` 볼륨에 저장돼요. `docker compose down -v`처럼 볼륨까지 지우면 인증서를 다시 받으니, 평소에는 `-v` 없이 내리세요.
 
 확인:
 
