@@ -477,8 +477,15 @@ export function Hint({ children, className }: { children: ReactNode; className?:
   return <span className={cx("text-[12px] text-muted", className)}>{children}</span>;
 }
 
+export const TOAST_ERROR_EVENT = "wharfline:error-toast";
+
+/** Form errors are easy to miss at the bottom of a form, so they show as an error toast instead. */
 export function ErrorText({ children }: { children?: ReactNode }) {
-  if (!children) return null;
+  const text = typeof children === "string" ? children : "";
+  useEffect(() => {
+    if (text) window.dispatchEvent(new CustomEvent(TOAST_ERROR_EVENT, { detail: text }));
+  }, [text]);
+  if (!children || text) return null;
   return <div className="text-[12.5px] text-bad bg-bad-soft border border-bad/20 rounded-md px-2.5 py-2 animate-fade">{children}</div>;
 }
 

@@ -336,10 +336,72 @@ export function NewImageModal({ registries, onClose }: { registries: Registry[];
 
 /* ---------- hosts ---------- */
 
-export function NewHostModal({ inventories, onClose }: { inventories: Inventory[]; onClose: () => void }) {
+/** A server list (inventory) with the SSH key used to reach its servers. */
+export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void; onCreated?: (inv: Inventory) => void }) {
+  const { openModal, refresh, toast } = useApp();
+  const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
+  const [name, setName] = useState("");
+  const [key, setKey] = useState("");
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (!key && keys[0]) setKey(keys[0].name);
+  }, [keys, key]);
+
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      const inv = await api.post<Inventory>("/inventory", { name: name.trim(), key });
+      refresh();
+      toast("인벤토리를 만들었어요");
+      onCreated?.(inv);
+      onClose();
+    } catch (e) {
+      setErr(errMsg(e));
+    }
+  };
+
+  return (
+    <>
+      <ModalHead title="인벤토리 추가" onClose={onClose} />
+      <form id="invForm" onSubmit={submit} className="contents">
+        <ModalBody>
+          <Field label="이름" htmlFor="iName" hint="영문 소문자, 숫자, -, _">
+            <Input id="iName" mono autoFocus placeholder="staging" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field
+            label="SSH 키"
+            htmlFor="iKey"
+            right={
+              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
+                키 추가
+              </Button>
+            }
+          >
+            <Select id="iKey" value={key} onChange={(e) => setKey(e.target.value)} placeholder="SSH 키를 추가해 주세요">
+              {keys.map((k) => (
+                <option key={k.id} value={k.name}>
+                  {k.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          <ErrorText>{err}</ErrorText>
+        </ModalBody>
+      </form>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" type="submit" form="invForm" disabled={!name.trim() || !key}>
+          만들기
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+export function NewHostModal({ inventories, onClose, initialInventory }: { inventories: Inventory[]; onClose: () => void; initialInventory?: string }) {
   const { openModal, closeModal, runAction } = useApp();
   const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
-  const [inv, setInv] = useState(inventories[0]?.id ?? "");
+  const [inv, setInv] = useState(inventories.find((i) => i.name === initialInventory)?.id ?? inventories[0]?.id ?? "");
   const [group, setGroup] = useState("worker");
   const [name, setName] = useState("worker-02");
   const [ip, setIp] = useState("10.0.1.18");

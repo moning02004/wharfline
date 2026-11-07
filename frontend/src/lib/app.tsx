@@ -12,6 +12,8 @@ import { api, ApiError, errMsg, setViewAsHeader } from "./api";
 import type { Member, Role, Session } from "./types";
 import { ModalShell, type ModalSize } from "../components/Modal";
 import { SudoModal } from "../modals/SudoModal";
+import { Icon } from "../components/Icon";
+import { TOAST_ERROR_EVENT, cx } from "../components/ui";
 
 export const ROUTES = [
   { id: "dashboard", path: "/", label: "대시보드", icon: "home", grp: "" },
@@ -41,7 +43,9 @@ interface ModalEntry {
 interface Toast {
   id: number;
   msg: string;
+  tone: ToastTone;
 }
+export type ToastTone = "info" | "error";
 
 interface AppCtx {
   session: Session | null;
@@ -59,7 +63,7 @@ interface AppCtx {
   menus: string[] | null;
   reloadAccess: () => void;
   canSee: (id: string) => boolean;
-  toast: (msg: string) => void;
+  toast: (msg: string, tone?: ToastTone) => void;
   openModal: (render: ModalRender, size?: ModalSize, onClose?: () => void) => void;
   closeModal: () => void;
   /** Bumped after any mutation so pages refetch. */
@@ -98,11 +102,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const sudoActive = !!session && now < session.sudoUntil;
 
-  const toast = useCallback((msg: string) => {
+  const toast = useCallback((msg: string, tone: ToastTone = "info") => {
     const id = ++seq.current;
-    setToasts((t) => [...t, { id, msg }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 2800);
+    // Only the latest error stays: an older one is usually already fixed.
+    setToasts((t) => [...t.filter((x) => x.msg !== msg && !(tone === "error" && x.tone === "error")), { id, msg, tone }]);
+    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), tone === "error" ? 4500 : 2800);
   }, []);
+  // <ErrorText> anywhere shows its message as an error toast (see components/ui.tsx).
+  useEffect(() => {
+    const on = (e: Event) => toast((e as CustomEvent<string>).detail, "error");
+    window.addEventListener(TOAST_ERROR_EVENT, on);
+    return () => window.removeEventListener(TOAST_ERROR_EVENT, on);
+  }, [toast]);
 
   const openModal = useCallback((render: ModalRender, size: ModalSize = "sm", onClose?: () => void) => {
     setModals((m) => [...m, { id: ++seq.current, size, render, onClose }]);
@@ -207,8 +218,16 @@ export function AppProvider({ children }: { children: ReactNode }) {
       ))}
       <div className="fixed right-4 bottom-4 z-[80] flex flex-col gap-2 pointer-events-none">
         {toasts.map((t) => (
-          <div key={t.id} className="bg-primary text-primary-fg px-3.5 py-2 rounded-lg text-[13px] font-medium shadow-pop animate-rise max-w-[340px]">
-            {t.msg}
+          <div
+            key={t.id}
+            role={t.tone === "error" ? "alert" : "status"}
+            className={cx(
+              "flex items-start gap-2 px-3.5 py-2.5 rounded-lg text-[13px] font-medium shadow-pop animate-rise max-w-[360px]",
+              t.tone === "error" ? "bg-bad text-white" : "bg-primary text-primary-fg",
+            )}
+          >
+            {t.tone === "error" && <Icon name="alert" className="size-4 flex-none mt-px" />}
+            <span>{t.msg}</span>
           </div>
         ))}
       </div>

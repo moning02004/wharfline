@@ -31,28 +31,24 @@ export default function Dashboard() {
           </Button>
         </CardHeader>
         {data.jobs.length ? (
-          <div className="grid grid-cols-[minmax(0,1fr)] md:grid-cols-2 xl:grid-cols-3 gap-3 p-4">
-            {data.jobs.map((j) => (
-              <div key={j.id} className="flex items-center gap-3 rounded-lg border border-line bg-surface px-3.5 py-3 min-w-0">
-                <div className="min-w-0 flex-1">
-                  <div className="font-medium truncate">{j.name}</div>
-                  <div className="font-mono text-[11.5px] text-muted truncate">
-                    {shortImage(j) ?? j.playbook.path} → {j.targetLabel} ({j.targetHosts.length}대)
-                  </div>
-                  {j.build && (
-                    <div className="mt-1.5">
-                      <BuildBadge build={j.build} />
-                    </div>
-                  )}
-                </div>
-                <Button size="sm" icon="play" onClick={() => confirm(j)}>
-                  실행
-                </Button>
-              </div>
-            ))}
-          </div>
+          data.jobs.map((j) => (
+            <ListItem
+              key={j.id}
+              title={j.name}
+              sub={
+                <span className="font-mono text-xs">
+                  {shortImage(j) ?? j.playbook.path} → {j.targetLabel} ({j.targetHosts.length}대)
+                </span>
+              }
+            >
+              <BuildBadge build={j.build} />
+              <Button size="sm" icon="play" onClick={() => confirm(j)}>
+                실행
+              </Button>
+            </ListItem>
+          ))
         ) : (
-          <p className="m-0 px-4 py-6 text-center text-muted">아직 배포 작업이 없어요. 새 배포 작업을 만들어 보세요.</p>
+          <p className="m-0 px-4 py-6 text-center text-muted">아직 배포 작업이 없어요.</p>
         )}
       </Card>
 
@@ -92,7 +88,11 @@ export default function Dashboard() {
         </Card>
 
         <Card>
-          <CardHeader title="알림" />
+          <CardHeader title="알림">
+            <Button size="sm" variant="ghost" onClick={() => nav("/security")}>
+              보안 설정
+            </Button>
+          </CardHeader>
           {alert && (
             <ListItem icon="alert" title={`${alert.name}의 호스트 키가 바뀌었어요`} sub={`${alert.ip} · 확인 전까지 이 서버로의 배포는 막혀 있어요`}>
               <Button size="sm" variant="ghost" onClick={() => nav("/inventory")}>

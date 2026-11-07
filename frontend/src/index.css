@@ -21,7 +21,8 @@
   --primary-fg: #ffffff;
   --primary-soft: #eef0ff;
   --accent: #4f46e5;
-  --section: #8b5cf6; /* violet: modal section line while filling */
+  --section: #7c3aed; /* violet: modal section line while filling, guide bubbles */
+  --section-fg: #ffffff;
   --accent-soft: #eef0ff;
   --on-accent: #ffffff;
   --ok: #16a34a;
@@ -59,8 +60,8 @@
     --primary-fg: #13122b;
     --primary-soft: #1d1b3a;
     --accent: #818cf8;
-  --section: #a78bfa;
     --section: #a78bfa;
+    --section-fg: #1e1036;
     --accent-soft: #1d1b3a;
     --on-accent: #13122b;
     --ok: #22c55e;
@@ -96,6 +97,8 @@
   --primary-fg: #13122b;
   --primary-soft: #1d1b3a;
   --accent: #818cf8;
+  --section: #a78bfa;
+  --section-fg: #1e1036;
   --accent-soft: #1d1b3a;
   --on-accent: #13122b;
   --ok: #22c55e;
@@ -230,17 +233,18 @@
 .modal-body .field .field::before { content: none; }
 .modal-body .field .field .field-label { font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
 
-/* Guide bubble: points up at the input it explains. */
+/* Guide bubble: a solid violet callout pointing up at the input it explains. */
 .guide-bubble {
-  background: color-mix(in srgb, var(--section) 8%, var(--surface));
-  border: 1px solid color-mix(in srgb, var(--section) 32%, transparent);
-  box-shadow: 0 8px 20px -14px color-mix(in srgb, var(--section) 70%, transparent);
+  background: var(--section);
+  color: var(--section-fg);
+  box-shadow: 0 10px 24px -10px color-mix(in srgb, var(--section) 75%, transparent), 0 0 0 4px color-mix(in srgb, var(--section) 16%, transparent);
+  animation: guide-pop .22s cubic-bezier(.2, .9, .3, 1.2);
 }
-.guide-bubble-arrow {
-  background: color-mix(in srgb, var(--section) 8%, var(--surface));
-  border-top: 1px solid color-mix(in srgb, var(--section) 32%, transparent);
-  border-left: 1px solid color-mix(in srgb, var(--section) 32%, transparent);
-}
-.guide-bubble-icon { color: var(--section); }
-.guide-bubble-next { color: var(--section); }
-.guide-bubble-next:hover { background: color-mix(in srgb, var(--section) 14%, transparent); }
+.guide-bubble-arrow { background: var(--section); }
+.guide-bubble p, .guide-bubble code, .guide-bubble .text-fg, .guide-bubble .text-muted { color: inherit; }
+.guide-bubble p + p { opacity: .85; }
+.guide-bubble code { background: color-mix(in srgb, var(--section-fg) 16%, transparent); padding: 1px 6px; border-radius: 5px; }
+.guide-bubble-icon { color: inherit; }
+.guide-bubble-next { color: inherit; text-decoration: underline; text-underline-offset: 3px; }
+.guide-bubble-next:hover { background: color-mix(in srgb, var(--section-fg) 14%, transparent); }
+@keyframes guide-pop { from { opacity: 0; transform: translateY(-4px) scale(.97); } to { opacity: 1; transform: none; } }
