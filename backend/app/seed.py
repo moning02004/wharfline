@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import secrets
 from typing import Any
 
@@ -219,5 +220,26 @@ def seed_if_empty(db: Session) -> bool:
     for g in groups:
         db.add(m.Group(id=g["id"], name=g["name"], menus=g["menus"], all_builds=g["all_builds"], repos=g["repos"],
                        members=[by_email[e] for e in g["members"]]))
+    db.commit()
+    return True
+
+
+def bootstrap_owner(db: Session) -> bool:
+    """Production start: no sample data, just the policy and one Owner from the environment.
+
+    WHARFLINE_OWNER_EMAIL, WHARFLINE_OWNER_PASSWORD (10+ characters) and optionally
+    WHARFLINE_OWNER_NAME. The Owner must change the password at the first login.
+    """
+    if db.scalar(select(m.Setting).where(m.Setting.key == "policy")):
+        return False
+    email = os.getenv("WHARFLINE_OWNER_EMAIL", "").strip().lower()
+    password = os.getenv("WHARFLINE_OWNER_PASSWORD", "")
+    if "@" not in email:
+        raise RuntimeError("WHARFLINE_OWNER_EMAIL is required when WHARFLINE_SAMPLE_DATA=0")
+    if len(password) < 10:
+        raise RuntimeError("WHARFLINE_OWNER_PASSWORD must be at least 10 characters")
+    db.add(m.Setting(key="policy", value={**policy, "allowIps": ""}))
+    db.add(m.Member(email=email, name=os.getenv("WHARFLINE_OWNER_NAME", "관리자").strip() or "관리자", role="Owner", tfa=False,
+                    last="-", password_hash=authn.hash_password(password), must_change_password=True))
     db.commit()
     return True

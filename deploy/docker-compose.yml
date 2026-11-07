@@ -1,0 +1,109 @@
+# Wharfline on a production server: released images from GHCR, no builds, no sample data.
+#
+#   cp .env.example .env        # fill in every value
+#   (create secrets/master_keys, see README.md)
+#   docker compose up -d                    # behind your own reverse proxy / HTTPS
+#   docker compose --profile https up -d    # or let the bundled Caddy get a certificate
+#
+# Upgrade: change WHARFLINE_VERSION in .env, then `docker compose pull && docker compose up -d`.
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-backend-env: &backend-env
+  DATABASE_URL: postgresql+psycopg://wharfline:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/wharfline
+  WHARFLINE_MASTER_KEYS_FILE: /run/secrets/master_keys
+  WHARFLINE_COOKIE_SECURE: ${WHARFLINE_COOKIE_SECURE:-1}
+  # Empty database: create only the policy and this Owner (no sample data).
+  WHARFLINE_SAMPLE_DATA: "0"
+  WHARFLINE_OWNER_EMAIL: ${WHARFLINE_OWNER_EMAIL:-}
+  WHARFLINE_OWNER_NAME: ${WHARFLINE_OWNER_NAME:-관리자}
+  WHARFLINE_OWNER_PASSWORD: ${WHARFLINE_OWNER_PASSWORD:-}
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: wharfline
+      POSTGRES_USER: wharfline
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wharfline -d wharfline"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    logging: *logging
+    # No published port: only the backend reaches the database.
+
+  # One-off: waits for the DB, applies migrations, creates the first Owner on an empty DB, then exits.
+  migrate:
+    image: ghcr.io/moning02004/wharfline-backend:${WHARFLINE_VERSION:?set WHARFLINE_VERSION in .env, e.g. 2026.11.08-1}
+    command: ["python", "-m", "app.prestart"]
+    restart: "no"
+    environment: *backend-env
+    secrets: [master_keys]
+    depends_on:
+      db:
+        condition: service_healthy
+    logging: *logging
+
+  backend:
+    image: ghcr.io/moning02004/wharfline-backend:${WHARFLINE_VERSION:?set WHARFLINE_VERSION in .env}
+    restart: unless-stopped
+    environment:
+      <<: *backend-env
+      CORS_ORIGINS: ${WHARFLINE_URL:?set WHARFLINE_URL in .env, e.g. https://deploy.example.com}
+    secrets: [master_keys]
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    expose:
+      - "8000"
+    logging: *logging
+
+  frontend:
+    image: ghcr.io/moning02004/wharfline-frontend:${WHARFLINE_VERSION:?set WHARFLINE_VERSION in .env}
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+    # Only on localhost by default: put HTTPS in front (your proxy, or the `https` profile below).
+    ports:
+      - "${WEB_BIND:-127.0.0.1}:${WEB_PORT:-8080}:80"
+    logging: *logging
+
+  # Optional: automatic HTTPS with Let's Encrypt. `docker compose --profile https up -d`
+  # Needs WHARFLINE_DOMAIN pointing at this server and ports 80/443 open.
+  caddy:
+    image: caddy:2.8-alpine
+    profiles: [https]
+    restart: unless-stopped
+    environment:
+      WHARFLINE_DOMAIN: ${WHARFLINE_DOMAIN:-}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - frontend
+    logging: *logging
+
+# Master key for envelope encryption. Never commit it; keep an encrypted backup elsewhere.
+secrets:
+  master_keys:
+    file: ./secrets/master_keys
+
+volumes:
+  pgdata:
+  caddy_data:
+  caddy_config:

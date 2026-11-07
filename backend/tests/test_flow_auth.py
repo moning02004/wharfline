@@ -262,3 +262,36 @@ def test_changing_password_signs_out_other_sessions(fresh, other_client):
     r = fresh.post("/api/auth/password", json={"current": PASSWORD, "new": "another long password"})
     assert r.status_code == 200 and r.json()["loggedIn"] is True
     assert other_client.get("/api/auth/me").json()["loggedIn"] is False
+
+
+def test_bootstrap_owner_without_sample_data(client, monkeypatch):
+    """Production start: an empty DB gets one Owner who must change the password."""
+    import pytest
+    from sqlalchemy import delete, select
+
+    from app import models as m
+    from app.db import SessionLocal
+    from app.seed import bootstrap_owner
+
+    with SessionLocal() as db:
+        assert bootstrap_owner(db) is False  # the seeded test DB already has a policy
+        policy = db.scalar(select(m.Setting).where(m.Setting.key == "policy"))
+        saved = dict(policy.value)
+        db.execute(delete(m.Setting).where(m.Setting.key == "policy"))
+        db.commit()
+        try:
+            monkeypatch.setenv("WHARFLINE_OWNER_EMAIL", "short@corp.example")
+            monkeypatch.setenv("WHARFLINE_OWNER_PASSWORD", "too-short")
+            with pytest.raises(RuntimeError):
+                bootstrap_owner(db)
+            db.rollback()
+            monkeypatch.setenv("WHARFLINE_OWNER_EMAIL", "Boss@Corp.example")
+            monkeypatch.setenv("WHARFLINE_OWNER_PASSWORD", "a-long-first-password")
+            assert bootstrap_owner(db) is True
+            owner = db.get(m.Member, "boss@corp.example")
+            assert owner.role == "Owner" and owner.must_change_password and owner.password_hash
+        finally:
+            db.execute(delete(m.Member).where(m.Member.email == "boss@corp.example"))
+            db.execute(delete(m.Setting).where(m.Setting.key == "policy"))
+            db.add(m.Setting(key="policy", value=saved))
+            db.commit()

@@ -14,7 +14,7 @@ import { Button, Card, CardHeader, Check, Chip, cx, Dot, Field, Input, ListItem,
 export function Activity() {
   const [tab, setTab] = useState<"act" | "login">("act");
   const [q, setQ] = useState("");
-  const act = useApi<{ chainVerified: boolean; total: number; items: Act[] }>("/activity").data;
+  const act = useApi<{ total: number; items: Act[] }>("/activity").data;
   const logins = useApi<Login[]>(tab === "login" ? "/logins" : null).data;
   if (!act) return <Loading />;
   const match = (o: object) => !q.trim() || Object.values(o).join(" ").toLowerCase().includes(q.trim().toLowerCase());
@@ -22,7 +22,7 @@ export function Activity() {
   return (
     <>
       <PageHeader title="활동 기록" desc="누가 언제 무엇을 했는지 모두 남아요. 기록은 앞 항목의 해시를 이어 붙여 저장하므로 중간에 지우거나 고치면 드러나요.">
-        <Dot tone="ok">해시 체인 검증됨 · {act.total.toLocaleString()}건</Dot>
+        <Dot>기록 {act.total.toLocaleString()}건</Dot>
       </PageHeader>
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <Seg

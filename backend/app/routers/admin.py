@@ -14,14 +14,13 @@ from ..deps import require, require_login, require_owner, require_sudo, viewer
 router = APIRouter(prefix="/api", tags=["admin"], dependencies=[Depends(require_login)])
 
 # The prototype shows the activity count as if older history existed.
-HISTORY_OFFSET = 1276
 
 
 @router.get("/activity")
 def activity(db: Session = Depends(get_db)):
     total = db.scalar(select(func.count()).select_from(m.Activity)) or 0
     items = db.scalars(select(m.Activity).order_by(m.Activity.id.desc()).limit(500))
-    return {"chainVerified": True, "total": HISTORY_OFFSET + total, "items": [a.to_dict() for a in items]}
+    return {"total": total, "items": [a.to_dict() for a in items]}
 
 
 @router.get("/logins")

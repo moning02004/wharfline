@@ -7,9 +7,13 @@ runs of this script safe (the second one waits, then finds nothing to do).
 
     python -m app.prestart            # migrate + seed an empty DB
     python -m app.prestart --no-seed  # migrate only
+
+With WHARFLINE_SAMPLE_DATA=0 (production) an empty DB gets only the policy and one Owner
+from WHARFLINE_OWNER_EMAIL / WHARFLINE_OWNER_PASSWORD instead of the sample data.
 """
 
 import logging
+import os
 import sys
 import time
 from pathlib import Path
@@ -21,7 +25,7 @@ from sqlalchemy.exc import OperationalError
 
 from . import crypto
 from .db import SessionLocal, engine
-from .seed import seed_if_empty
+from .seed import bootstrap_owner, seed_if_empty
 
 log = logging.getLogger("wharfline.prestart")
 ALEMBIC_INI = Path(__file__).resolve().parent.parent / "alembic.ini"
@@ -73,7 +77,10 @@ def main() -> int:
             migrate()
             if "--no-seed" not in sys.argv:
                 with SessionLocal() as db:
-                    if seed_if_empty(db):
+                    if os.getenv("WHARFLINE_SAMPLE_DATA", "1") == "0":
+                        if bootstrap_owner(db):
+                            log.info("created the first Owner (no sample data)")
+                    elif seed_if_empty(db):
                         log.info("loaded sample data")
         finally:
             lock_conn.execute(text("select pg_advisory_unlock(:id)"), {"id": LOCK_ID})
