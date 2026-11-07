@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
+import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, GitProvider, Image, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
-import { HostKeyModal, NewHostModal, NewImageModal, NewKeyModal, NewRegistryModal, NewRepoModal, PubKeyModal, copyText } from "../modals/ResourceModals";
+import { HostKeyModal, NewHostModal, NewImageModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, Seg, TableWrap } from "../components/ui";
@@ -21,7 +22,7 @@ export function Registries() {
   if (!data) return <Loading />;
   return (
     <>
-      <PageHeader title="이미지 레지스트리" desc="배포할 도커 이미지를 가져오는 곳이에요. GitHub Container Registry, GitLab Container Registry, Gitea 패키지 레지스트리를 지원해요.">
+      <PageHeader title="이미지 레지스트리" desc="배포할 도커 이미지와, 이미지를 받아 올 곳이에요. 공개 이미지(postgres, nginx 등)는 레지스트리 없이 바로 받아요. 레지스트리는 비공개 이미지를 받을 토큰이 필요할 때만 추가하세요. GitHub, GitLab, Gitea 레지스트리를 지원하고, 이미지 주소의 호스트로 알아서 골라요.">
         <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
           레지스트리 추가
         </Button>
@@ -39,6 +40,13 @@ export function Registries() {
               </tr>
             </thead>
             <tbody>
+              {!data.registries.length && (
+                <tr>
+                  <td colSpan={5} className="text-center text-muted py-6 !whitespace-normal">
+                    등록한 레지스트리가 없어요. 공개 이미지만 쓴다면 그대로 두어도 돼요.
+                  </td>
+                </tr>
+              )}
               {data.registries.map((g) => (
                 <tr key={g.id}>
                   <td className="font-medium">{g.name}</td>
@@ -74,7 +82,10 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
 
   return (
     <Card>
-      <CardHeader title="이미지" sub="빌드 레포를 연결하면 Git 호스트(Gitea, GitHub, GitLab)에서 빌드하는 동안 배포 작업에 '빌드 중'이 표시돼요.">
+      <CardHeader
+        title="이미지"
+        sub="배포 작업에 이미지를 적으면 여기에 저절로 들어와요. 빌드 레포 연결은 선택이에요. 연결하면 Git 호스트(Gitea, GitHub, GitLab)에서 빌드하는 동안 배포 작업에 '빌드 중'이 보이고 새 태그가 들어와요."
+      >
         <Button icon="plus" onClick={() => openModal((c) => <NewImageModal registries={registries} onClose={c} />)}>
           이미지 추가
         </Button>
@@ -94,7 +105,7 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
             {!images.length && (
               <tr>
                 <td colSpan={5} className="text-center text-muted py-6">
-                  아직 등록한 이미지가 없어요. 이미지 추가로 배포할 이미지를 등록하세요.
+                  아직 이미지가 없어요. 배포 작업에 이미지를 적거나 이미지 추가로 넣어 보세요.
                 </td>
               </tr>
             )}
@@ -330,49 +341,71 @@ function SecretModal({ secret, onClose }: { secret: string; onClose: () => void 
 
 export function Repos() {
   const { data } = useApi<Repo[]>("/repos");
-  const { openModal } = useApp();
   if (!data) return <Loading />;
+  const builtin = data.find((r) => r.kind === "builtin");
+  const repos = data.filter((r) => r.kind !== "builtin");
   return (
     <>
       <PageHeader
         title="플레이북 레포"
-        desc="Ansible 플레이북 방식으로 배포할 때 쓰는 레포예요. Semaphore처럼 Git 저장소나 배포 서버의 폴더를 연결할 수 있어요. 앱 소스는 연결하지 않고, 앱은 이미지 레지스트리의 도커 이미지로 배포해요. Docker Compose 방식은 레포 없이도 쓸 수 있어요."
-      >
-        <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewRepoModal onClose={c} />)}>
-          레포 연결
-        </Button>
-      </PageHeader>
+        desc={
+          <>
+            배포 작업이 실행하는 Ansible 플레이북이 있는 곳이에요. 따로 연결하지 않아도 돼요. 배포 작업을 만들 때 Git 주소를 넣으면 여기에 저절로 들어오고, 같은 주소와 브랜치는 다시 써요. 비공개 저장소에 쓰는 SSH 키나 토큰은 <Link to="/keys" className="link text-fg">키 저장소</Link>에서 가져와요.
+          </>
+        }
+      />
+      {builtin && (
+        <Card>
+          <div className="flex items-start gap-3 p-4">
+            <span className="flex-none grid place-items-center size-9 rounded-lg bg-accent-soft text-accent">
+              <Icon name="box" className="size-[18px]" />
+            </span>
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2 flex-wrap">
+                <b className="font-semibold">Wharfline 기본 플레이북</b>
+                <Chip tone="accent">늘 있어요</Chip>
+              </div>
+              <div className="text-muted text-[13px] mt-0.5">
+                <Mono>container.yml</Mono>: 이미지 하나를 <Mono>.env</Mono>와 함께 컨테이너로 띄워요. 플레이북이 없으면 배포 작업에서 이걸 고르세요.
+              </div>
+              <UsedBy items={builtin.usedBy} className="mt-2" />
+            </div>
+          </div>
+        </Card>
+      )}
       <Card>
         <TableWrap>
           <table className="tbl">
             <thead>
               <tr>
                 <th>레포</th>
-                <th>주소</th>
                 <th>브랜치</th>
-                <th>플레이북</th>
                 <th>인증</th>
-                <th>최근 커밋</th>
+                <th>쓰는 작업</th>
               </tr>
             </thead>
             <tbody>
-              {data.map((r) => (
+              {!repos.length && (
+                <tr>
+                  <td colSpan={4} className="text-center text-muted py-6 !whitespace-normal">
+                    아직 레포가 없어요. 배포 작업을 만들 때 플레이북의 Git 주소를 넣으면 여기에 생겨요.
+                  </td>
+                </tr>
+              )}
+              {repos.map((r) => (
                 <tr key={r.name}>
-                  <td className="font-mono">{r.name}</td>
-                  <td className="font-mono text-muted">
-                    {r.kind === "local" && <Chip className="mr-1.5">서버 경로</Chip>}
-                    {r.url}
+                  <td>
+                    <div className="font-mono font-medium">{r.name}</div>
+                    <div className="font-mono text-[12px] text-muted">
+                      {r.kind === "local" && <Chip className="mr-1.5">서버 경로</Chip>}
+                      {r.url}
+                    </div>
                   </td>
                   <td className="font-mono">{r.branch}</td>
-                  <td>
-                    <span className="flex gap-1">
-                      {r.books.map((b) => (
-                        <Chip key={b}>{b}</Chip>
-                      ))}
-                    </span>
-                  </td>
                   <td className="text-muted">{r.auth}</td>
-                  <td className="font-mono">{r.commit}</td>
+                  <td>
+                    <UsedBy items={r.usedBy} />
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -380,9 +413,22 @@ export function Repos() {
         </TableWrap>
       </Card>
       <Banner icon="shield" title="플레이북에 넘기는 변수는 정해져 있어요">
-        <Mono>image</Mono>, <Mono>image_tag</Mono>, <Mono>image_digest</Mono>, <Mono>env_file</Mono>, <Mono>target_group</Mono>만 넘겨요. 화면에서 extra-vars나 임의 명령은 넣을 수 없어요.
+        <Mono>image</Mono>, <Mono>image_tag</Mono>, <Mono>image_ref</Mono>, <Mono>env_file</Mono>, <Mono>app_name</Mono>만 넘겨요. 이미지나 환경 변수가 없는 작업이면 그 변수는 빠져요. 화면에서 extra-vars나 임의 명령은 넣을 수 없어요.
       </Banner>
     </>
+  );
+}
+
+function UsedBy({ items, className }: { items: { job: string; path: string }[]; className?: string }) {
+  if (!items.length) return <span className={`text-faint ${className ?? ""}`}>아직 없음</span>;
+  return (
+    <span className={`flex flex-wrap gap-1.5 ${className ?? ""}`}>
+      {items.map((u) => (
+        <Chip key={`${u.job}|${u.path}`}>
+          {u.job} · <span className="font-mono text-[11px]">{u.path}</span>
+        </Chip>
+      ))}
+    </span>
   );
 }
 

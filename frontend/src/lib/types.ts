@@ -140,12 +140,12 @@ export interface Image {
 
 export interface Repo {
   name: string;
-  kind: "git" | "local";
+  kind: "git" | "local" | "builtin";
   url: string;
   branch: string;
   auth: string;
   commit: string;
-  books: string[];
+  usedBy: { job: string; path: string }[];
 }
 
 export interface Key {

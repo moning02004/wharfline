@@ -154,120 +154,6 @@ export function PubKeyModal({ k, fresh, onClose }: { k: Key; fresh?: boolean; on
   );
 }
 
-/* ---------- playbook repo ---------- */
-
-const LOCAL_ROOT = "/var/lib/wharfline/playbooks/";
-
-export function NewRepoModal({ onClose }: { onClose: () => void }) {
-  const { runAction } = useApp();
-  const keys = useApi<Key[]>("/keys").data ?? [];
-  const [name, setName] = useState("ansible-monitoring");
-  const [kind, setKind] = useState<"git" | "local">("git");
-  const [url, setUrl] = useState("git@git.acme.kr:ops/ansible-monitoring.git");
-  const [branch, setBranch] = useState("main");
-  const [key, setKey] = useState("");
-  const [path, setPath] = useState(LOCAL_ROOT + "monitoring");
-  const [err, setErr] = useState("");
-
-  const scheme = /^(git@|ssh:\/\/)/.test(url.trim()) ? "ssh" : "https";
-  const options = keys.filter((k) => k.kind === (scheme === "ssh" ? "ssh" : "token"));
-  useEffect(() => {
-    setKey(options[0]?.name ?? "");
-  }, [scheme, keys.length]); // reset the picked key when the URL scheme changes
-
-  const hint =
-    scheme === "ssh"
-      ? key
-        ? `SSH 주소예요. ${key}의 공개 키를 저장소의 Deploy key(읽기 전용)로 등록하세요.`
-        : "SSH 주소는 SSH 키가 있어야 해요. 키 저장소에서 추가하거나 HTTPS 주소를 넣어 주세요."
-      : key
-        ? "HTTPS 주소예요. 이 토큰으로 저장소를 읽어요. 읽기 전용 권한이면 충분해요."
-        : "HTTPS 주소예요. 공개 저장소면 그대로 두고, 비공개 저장소면 토큰을 고르세요.";
-
-  const submit = async (e: React.FormEvent) => {
-    e.preventDefault();
-    setErr("");
-    try {
-      await api.post("/repos", { name, kind, url, branch, key, path });
-      onClose();
-      runAction(async () => {}, "연결했어요. 플레이북 2개를 찾았어요.");
-    } catch (e) {
-      setErr(errMsg(e));
-    }
-  };
-
-  return (
-    <>
-      <ModalHead title="플레이북 레포 연결" sub="Git 저장소나 배포 서버의 폴더를 연결해요." onClose={onClose} />
-      <form id="repoForm" onSubmit={submit} className="contents">
-        <ModalBody>
-          <Field label="이름" htmlFor="rName">
-            <Input id="rName" value={name} onChange={(e) => setName(e.target.value)} autoFocus />
-          </Field>
-          <Field label="종류">
-            <div>
-              <Seg
-                options={[
-                  { value: "git", label: "Git 저장소" },
-                  { value: "local", label: "서버 경로" },
-                ]}
-                value={kind}
-                onChange={(k) => {
-                  setKind(k);
-                  setErr("");
-                }}
-              />
-            </div>
-          </Field>
-          {kind === "git" ? (
-            <div className="flex flex-col gap-4 animate-fade">
-              <Field label="저장소 URL" htmlFor="rUrl" hint="SSH(git@…) 또는 HTTPS 주소. GitHub와 Gitea 모두 돼요.">
-                <Input id="rUrl" mono spellCheck={false} value={url} onChange={(e) => setUrl(e.target.value)} />
-              </Field>
-              <Field label="브랜치" htmlFor="rBranch">
-                <Input id="rBranch" mono spellCheck={false} value={branch} onChange={(e) => setBranch(e.target.value)} />
-              </Field>
-              <Field label={scheme === "ssh" ? "SSH 키" : "액세스 토큰"} htmlFor="rKey" hint={hint} error={scheme === "ssh" && !key}>
-                <Select id="rKey" value={key} onChange={(e) => setKey(e.target.value)}>
-                  {scheme === "https" && <option value="">없음 · 공개 저장소</option>}
-                  {scheme === "ssh" && !options.length && <option value="">저장된 SSH 키가 없어요</option>}
-                  {options.map((k) => (
-                    <option key={k.id} value={k.name}>
-                      {k.name} · {scheme === "ssh" ? `SSH ${k.type}` : k.fingerprint}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            </div>
-          ) : (
-            <Field
-              label="서버 경로"
-              htmlFor="rPath"
-              hint={
-                <>
-                  Wharfline이 돌아가는 서버의 폴더예요. <span className="font-mono">{LOCAL_ROOT}</span> 아래만 쓸 수 있어요. 실행할 때마다 읽기 전용으로 복사해서 써요.
-                </>
-              }
-            >
-              <Input id="rPath" mono spellCheck={false} value={path} onChange={(e) => setPath(e.target.value)} />
-            </Field>
-          )}
-          <ErrorText>{err}</ErrorText>
-          <Banner icon="info" title="연결하면 플레이북 파일을 찾아요">
-            최상위와 playbooks/ 아래의 .yml 중 hosts가 있는 파일만 배포 작업에서 고를 수 있어요.
-          </Banner>
-        </ModalBody>
-      </form>
-      <ModalFoot>
-        <Button onClick={onClose}>취소</Button>
-        <Button variant="primary" type="submit" form="repoForm">
-          연결
-        </Button>
-      </ModalFoot>
-    </>
-  );
-}
-
 /* ---------- registry ---------- */
 
 export function NewRegistryModal({ onClose }: { onClose: () => void }) {
@@ -340,39 +226,50 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
 
 /* ---------- images ---------- */
 
-const OTHER = "__other__";
+// Same checks as the server's IMAGE_RE / TAG_RE, so the preview never promises something it will reject.
+const IMAGE_RE = /^[a-z0-9.-]+(:\d+)?(\/[a-z0-9._-]+)+$/;
+const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
 
-/** Register an image to deploy: pick a registry, then the image name under it. */
+/** Mirror of the server's parse_image: Docker Hub names get docker.io/(library/), no tag means latest. */
+export function parseImage(text: string): { ref: string; tag: string } | { error: string } | null {
+  const t = text.trim().replace(/^https:\/\//, "");
+  if (!t) return null;
+  if (t.includes("@")) return { error: "digest(@sha256:…)는 넣을 수 없어요. 태그로 적어 주세요." };
+  const slash = t.lastIndexOf("/");
+  const colon = t.indexOf(":", slash + 1);
+  let ref = (colon >= 0 ? t.slice(0, colon) : t).toLowerCase();
+  const tag = colon >= 0 ? t.slice(colon + 1) : "latest";
+  const parts = ref.split("/");
+  if (!/[.:]/.test(parts[0]) && parts[0] !== "localhost") ref = parts.length === 1 ? `docker.io/library/${ref}` : `docker.io/${ref}`;
+  if (!IMAGE_RE.test(ref)) return { error: "이미지 이름을 알아볼 수 없어요. 예: postgres:15, ghcr.io/acme/api:v1.2" };
+  if (!TAG_RE.test(tag)) return { error: "버전(태그)에는 영문, 숫자, . _ - 만 쓸 수 있어요." };
+  return { ref, tag };
+}
+
+/** The registered registry whose token pulls this ref, matched by host like the server does. */
+export function registryFor(ref: string, registries: Registry[]): Registry | undefined {
+  const host = ref.split("/")[0];
+  return registries.find((r) => r.host.trim().toLowerCase() === host);
+}
+
+/** Register an image by typing it the way you would for docker pull. */
 export function NewImageModal({ registries, onClose }: { registries: Registry[]; onClose: () => void }) {
   const { refresh, toast } = useApp();
-  const [registry, setRegistry] = useState(registries[0]?.id ?? OTHER);
-  const [name, setName] = useState("");
-  const [full, setFull] = useState("");
-  const [tags, setTags] = useState("");
-  const [repo, setRepo] = useState("");
-  const [repoTouched, setRepoTouched] = useState(false);
+  const [text, setText] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
-  const reg = registries.find((r) => r.id === registry);
-  const prefix = reg ? `${reg.host}/${reg.namespace ? `${reg.namespace}/` : ""}` : "";
-  const cleanName = name.trim().toLowerCase().replace(/^\/+/, "");
-  const ref = reg ? (cleanName ? prefix + cleanName : "") : full.trim().toLowerCase();
-  // Most CI pushes the image from the repo of the same path: suggest it until the user edits it.
-  const suggested = ref.split(":")[0].split("/").slice(1).join("/");
-  const repoValue = repoTouched ? repo : suggested;
+  const parsed = parseImage(text);
+  const bad = parsed && "error" in parsed ? parsed.error : "";
+  const ok = parsed && !("error" in parsed) ? parsed : null;
+  const reg = ok ? registryFor(ok.ref, registries) : undefined;
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!ref) return setErr(reg ? "이미지 이름을 넣어 주세요." : "이미지 주소를 넣어 주세요.");
+    if (!ok) return setErr(bad || "이미지를 넣어 주세요.");
     setBusy(true);
     setErr("");
     try {
-      const r = await api.post<Image & { created: boolean; addedTags: string[] }>("/images", {
-        ref,
-        registry: reg?.id ?? null,
-        tags: tags.split(/[\s,]+/).filter(Boolean),
-        sourceRepo: repoValue,
-      });
+      const r = await api.post<Image & { created: boolean; addedTags: string[] }>("/images", { image: text.trim() });
       onClose();
       refresh();
       toast(r.created ? "이미지를 등록했어요" : r.addedTags.length ? `이미 있는 이미지라 태그 ${r.addedTags.length}개만 더했어요` : "이미 등록된 이미지예요");
@@ -384,55 +281,52 @@ export function NewImageModal({ registries, onClose }: { registries: Registry[];
 
   return (
     <>
-      <ModalHead title="이미지 추가" sub="배포할 도커 이미지를 등록해요. 등록한 뒤 새 태그는 Git 연동으로 들어와요." onClose={onClose} />
+      <ModalHead title="이미지 추가" sub="docker pull 할 때처럼 적어 주세요. 배포 작업에 이미지를 적으면 여기에도 저절로 들어와요." onClose={onClose} />
       <form id="imgForm" onSubmit={submit} className="contents">
         <ModalBody>
-          <Field label="레지스트리" htmlFor="iReg" hint={reg ? `받을 때 ${reg.auth === "없음 · 공개 이미지" ? "로그인 없이 받아요" : `${reg.user} 계정 토큰을 써요`}` : "등록하지 않은 레지스트리의 공개 이미지예요."}>
-            <Select id="iReg" value={registry} onChange={(e) => setRegistry(e.target.value)}>
-              {registries.map((r) => (
-                <option key={r.id} value={r.id}>
-                  {r.name} · {r.host}/{r.namespace}
-                </option>
-              ))}
-              <option value={OTHER}>다른 주소 직접 입력</option>
-            </Select>
-          </Field>
-          {reg ? (
-            <Field label="이미지 이름" htmlFor="iName" hint={ref ? <>등록될 주소: <span className="font-mono">{ref}</span></> : "예: api-server"}>
-              <div className="flex min-w-0">
-                <span className="flex-none flex items-center px-2.5 rounded-l-lg border border-r-0 border-line-strong bg-surface-2 font-mono text-[12.5px] text-muted whitespace-nowrap">
-                  {prefix}
-                </span>
-                <Input id="iName" mono autoFocus spellCheck={false} className="!rounded-l-none" placeholder="api-server" value={name} onChange={(e) => setName(e.target.value)} />
-              </div>
-            </Field>
-          ) : (
-            <Field label="이미지 주소" htmlFor="iFull" hint="호스트부터 전부 넣어요. 예: docker.io/library/nginx">
-              <Input id="iFull" mono autoFocus spellCheck={false} placeholder="registry.example.com/team/app" value={full} onChange={(e) => setFull(e.target.value)} />
-            </Field>
-          )}
-          <Field label="태그" htmlFor="iTags" hint="지금 레지스트리에 있는 버전 태그예요. 쉼표나 띄어쓰기로 여러 개, 앞에 쓴 것이 가장 최신이에요. latest는 가장 최신 태그로 정해져서 따로 넣지 않아요.">
-            <Input id="iTags" mono spellCheck={false} placeholder="v1.0.0, v0.9.0" value={tags} onChange={(e) => setTags(e.target.value)} />
-          </Field>
-          <Field label="빌드 레포 (선택)" htmlFor="iRepo" hint="이 이미지를 빌드하는 Git 레포예요. 연결하면 빌드 진행이 보이고 새 태그가 자동으로 들어와요.">
+          <Field label="이미지" htmlFor="iImage" hint="버전을 빼면 latest예요. latest는 늘 바뀌는 이름이라 버전 목록에는 남기지 않아요." error={!!bad}>
             <Input
-              id="iRepo"
+              id="iImage"
               mono
+              autoFocus
               spellCheck={false}
-              placeholder="owner/name"
-              value={repoValue}
+              autoComplete="off"
+              placeholder="postgres:15 또는 ghcr.io/acme/api:v1.2"
+              value={text}
               onChange={(e) => {
-                setRepoTouched(true);
-                setRepo(e.target.value);
+                setText(e.target.value);
+                setErr("");
               }}
             />
           </Field>
-          <ErrorText>{err}</ErrorText>
+          {ok && (
+            <div className="rounded-lg border border-line bg-surface-2 px-3 py-2.5 animate-fade">
+              <KV
+                labelWidth={72}
+                items={[
+                  ["이미지", <span className="break-all">{ok.ref}</span>, "font-mono !whitespace-normal"],
+                  ["버전", ok.tag === "latest" ? <span className="text-muted"><span className="font-mono">latest</span> · 버전으로 저장하지 않아요</span> : ok.tag, ok.tag === "latest" ? "!whitespace-normal" : "font-mono"],
+                  [
+                    "받는 방법",
+                    reg ? (
+                      <>
+                        <span className="font-mono">{reg.name}</span> 레지스트리의 토큰으로 받아요
+                      </>
+                    ) : (
+                      "공개 이미지로 받아요"
+                    ),
+                    "!whitespace-normal",
+                  ],
+                ]}
+              />
+            </div>
+          )}
+          <ErrorText>{err || bad}</ErrorText>
         </ModalBody>
       </form>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
-        <Button variant="primary" type="submit" form="imgForm" disabled={busy || !ref || !tags.trim()}>
+        <Button variant="primary" type="submit" form="imgForm" disabled={busy || !ok}>
           등록
         </Button>
       </ModalFoot>
