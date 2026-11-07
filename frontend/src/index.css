@@ -212,13 +212,13 @@
 }
 
 /* Unlayered on purpose: it must beat the label's Tailwind utility classes. */
-/* Inside modals each field reads as its own section: a soft line runs from the title down
-   through the input and hint, and turns accent while you are filling that field. */
-.modal-body .field {
-  gap: 8px;
-  padding-left: 12px;
-  border-left: 3px solid color-mix(in srgb, var(--accent) 22%, transparent);
-  transition: border-color .15s ease;
+/* Inside modals each field reads as its own section: a soft rounded line runs from the title
+   down through the input and hint, and turns accent while you are filling that field. */
+.modal-body .field { position: relative; gap: 8px; padding-left: 15px; }
+.modal-body .field::before {
+  content: ""; position: absolute; left: 0; top: 1px; bottom: 1px; width: 3px; border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 22%, transparent);
+  transition: background-color .15s ease;
 }
-.modal-body .field:focus-within { border-left-color: var(--accent); }
+.modal-body .field:focus-within::before { background: var(--accent); }
 .modal-body .field-label { font-size: 14px; font-weight: 600; letter-spacing: -0.01em; color: var(--fg); }
