@@ -605,7 +605,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </div>
             ) : source === "script" ? (
               <div key="script" className="flex flex-col gap-3 animate-fade">
-                <Field label="서비스 경로" htmlFor="jServicePath" hint={<>서버에서 작업할 폴더예요. 스크립트에 <span className="font-mono">$SERVICE_PATH</span>로 넘어가고, 환경 변수를 넣으면 <span className="font-mono">.env</span>도 여기에 올려요.</>}>
+                <Field label="서비스 경로" htmlFor="jServicePath" hint={<>스크립트에서 <span className="font-mono">$SERVICE_PATH</span>로 써요.</>}>
                   <Input id="jServicePath" mono spellCheck={false} placeholder={`/srv/${slug(name) || "app"}`} value={servicePath} onChange={(e) => setServicePath(e.target.value)} />
                 </Field>
                 <FileBundleField
@@ -619,7 +619,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   }}
                   onEnv={mergeEnv}
                 />
-                <Hint>실행할 명령은 다음 단계 "스크립트"에서 적어요.</Hint>
               </div>
             ) : (
               <TipSpot id="playbook.builtin">
@@ -639,10 +638,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
       case "script":
         return (
-          <Field
-            label="스크립트"
-            hint={<>서버마다 위에서부터 차례로 실행해요. 한 서버에서 단계가 실패하면 그 서버의 남은 단계는 건너뛰고, 다른 서버는 계속해요.</>}
-          >
+          <Field label="스크립트">
             <TipSpot id="playbook.script">
               <ScriptEditor steps={steps} onChange={setSteps} />
             </TipSpot>
@@ -714,7 +710,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             }
             htmlFor="jImage"
             error={!!parsed && "error" in parsed}
-            hint={parsed && "error" in parsed ? parsed.error : "서버에서 컨테이너로 실행할 이미지예요."}
+            hint={parsed && "error" in parsed ? parsed.error : undefined}
             right={
               <Button size="sm" variant="ghost" icon="plus" title="비공개 이미지를 받을 토큰을 등록해요" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
                 레지스트리 추가
@@ -759,14 +755,14 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         const hint =
           envChoice === "keep"
             ? job?.env
-              ? <>지금 쓰는 <span className="font-mono">{job.env}</span>을(를) 그대로 둬요.</>
-              : "지금은 환경 변수가 없어요. 그대로 둬요."
+              ? null
+              : "지금은 환경 변수가 없어요."
             : envChoice === "none"
               ? editing && job?.env
-                ? "저장하면 이 작업은 .env 없이 배포해요. 저장된 세트는 지워지지 않아요."
-                : "앱이 읽을 .env 없이 배포해요. 필요하면 넣기를 눌러 붙여넣거나 저장된 것을 고르세요."
+                ? "저장하면 .env 없이 배포해요."
+                : null
               : editing && job?.env && envMode !== "existing"
-                ? <>붙여넣은 내용은 <span className="font-mono">{job.env}</span>의 새 버전으로 저장돼요. 비밀 값을 바꾸는 일이라 저장할 때 비밀번호를 다시 확인해요.</>
+                ? <><span className="font-mono">{job.env}</span>의 새 버전으로 저장해요. 저장할 때 비밀번호를 다시 물어요.</>
                 : null;
         return (
           <Field
@@ -914,18 +910,18 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   onChange={setHook}
                   disabled={fixedSafety}
                   title="자동 배포"
-                  desc="새 이미지 태그가 올라오면 바로 배포해요. 레지스트리 webhook의 서명을 검증하고, v로 시작하는 릴리스 태그만 받아요. 운영 보호가 켜져 있으면 승인을 받은 뒤 배포해요."
+                  desc="v로 시작하는 새 버전이 올라오면 바로 배포해요."
                 />
                 <Toggle
                   checked={prot}
                   onChange={setProt}
                   disabled={fixedSafety}
                   title="운영 보호"
-                  desc="Deployer가 실행하면 Owner나 Admin의 승인을 받은 뒤 시작돼요."
+                  desc="Deployer는 승인을 받아야 실행돼요."
                 />
                 {fixedSafety && <div className="px-3.5 py-2 text-[12px] text-muted">운영 보호와 자동 배포는 Owner나 Admin만 바꿀 수 있어요.</div>}
                 <Toggle checked={lock} onChange={setLock} title="동시 실행 잠금" desc="같은 서버에 다른 배포가 돌고 있으면 기다려요." />
-                <Toggle checked={rb} onChange={setRb} title="실패 시 되돌리기" desc="상태 확인이 실패하면 직전에 성공한 태그로 되돌려요." />
+                <Toggle checked={rb} onChange={setRb} title="실패 시 되돌리기" desc="실패하면 직전 버전으로 되돌려요." />
               </div>
               </TipSpot>
             </Field>
@@ -1162,8 +1158,7 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
         )}
       </div>
       <Hint>
-        단계마다 따로 셸이 열려요(앞 단계의 <span className="font-mono">cd</span>는 이어지지 않아요). 쓸 수 있는 변수:{" "}
-        <span className="font-mono">$SERVICE_PATH $IMAGE $IMAGE_TAG $IMAGE_REF $ENV_FILE</span>. 비공개 이미지면 Wharfline이 앞뒤로 레지스트리 로그인·로그아웃을 해요.
+        단계마다 새 셸이에요(<span className="font-mono">cd</span>가 이어지지 않아요).
       </Hint>
     </div>
   );
@@ -1295,7 +1290,7 @@ function FileBundleField({
           </Button>
         </span>
       }
-      hint={<>실행할 때 <span className="font-mono">$SERVICE_PATH</span>에 그대로 올라가요. compose 파일 하나나 zip(쿠버네티스 yaml 묶음, Makefile 등)을 올려도 돼요. zip 안의 <span className="font-mono">.env</span>는 환경 변수로 옮겨요.</>}
+      hint={<><span className="font-mono">$SERVICE_PATH</span>에 올라가요. zip도 돼요.</>}
     >
       <input ref={input} type="file" hidden accept=".yaml,.yml,.zip,.json,.conf,.sh,Makefile,*" onChange={(e) => pick(e.target.files)} />
       {files.length === 0 ? (
@@ -1304,7 +1299,7 @@ function FileBundleField({
           onClick={() => edit(null)}
           className="rounded-lg border border-dashed border-line-strong px-3.5 py-4 text-[13px] text-muted text-center hover:bg-hover hover:text-fg transition-colors"
         >
-          아직 파일이 없어요. <span className="text-accent font-medium">새 파일</span>로 docker-compose.yaml을 바로 써 보세요.
+          <span className="text-accent font-medium">새 파일</span> 또는 올리기
         </button>
       ) : (
         <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-2">
@@ -1373,7 +1368,7 @@ function FileEditorModal({
 
   return (
     <>
-      <ModalHead title={file ? "파일" : "새 파일"} sub={file ? "내용을 보고 고칠 수 있어요. 저장하면 작업의 파일이 바뀌어요." : "서버의 $SERVICE_PATH에 이 이름으로 올라가요."} onClose={onClose} />
+      <ModalHead title={file ? "파일" : "새 파일"} sub={file ? undefined : "$SERVICE_PATH에 이 이름으로 올라가요."} onClose={onClose} />
       <div className="flex flex-col gap-3 px-5 pb-4 flex-1 min-h-0">
         <Input mono aria-label="파일 이름" placeholder="docker-compose.yaml" value={path} onChange={(e) => setPath(e.target.value)} autoFocus={!file} />
         <Textarea
@@ -1421,33 +1416,43 @@ function FileEditorModal({
 /** More images to watch. Each gets a variable name: VAR -> $VAR_IMAGE, $VAR_TAG, $VAR_IMAGE_REF. */
 function ExtraImagesEditor({ items, onChange }: { items: ExtraDraft[]; onChange: (x: ExtraDraft[]) => void }) {
   const set = (id: number, patch: Partial<ExtraDraft>) => onChange(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const cols = "grid grid-cols-[minmax(0,1fr)_140px_auto] gap-2";
   return (
-    <div className="flex flex-col gap-2 mt-1">
+    <div className="flex flex-col gap-2 mt-2">
+      {items.length > 0 && (
+        <div className={cx(cols, "text-[12px] font-medium text-muted")}>
+          <span>추가 이미지</span>
+          <span>변수 이름</span>
+          <span className="w-7" />
+        </div>
+      )}
       {items.map((x) => (
-        <div key={x.id} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_150px_auto] gap-2 items-center">
-          <Input
-            mono
-            aria-label="추가 이미지"
-            placeholder="ghcr.io/acme/web:v2.3.0"
-            value={x.image}
-            onChange={(e) => {
-              const auto = !x.var || x.var === varFromImage(x.image);
-              set(x.id, { image: e.target.value, ...(auto ? { var: varFromImage(e.target.value) } : {}) });
-            }}
-          />
-          <Input mono aria-label="변수 이름" placeholder="WEB" value={x.var} onChange={(e) => set(x.id, { var: e.target.value.toUpperCase() })} />
-          <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label="이미지 빼기" onClick={() => onChange(items.filter((y) => y.id !== x.id))} />
+        <div key={x.id} className="flex flex-col gap-1">
+          <div className={cx(cols, "items-center")}>
+            <Input
+              mono
+              aria-label="추가 이미지"
+              placeholder="ghcr.io/acme/web:v2.3.0"
+              value={x.image}
+              onChange={(e) => {
+                const auto = !x.var || x.var === varFromImage(x.image);
+                set(x.id, { image: e.target.value, ...(auto ? { var: varFromImage(e.target.value) } : {}) });
+              }}
+            />
+            <Input mono aria-label="변수 이름" placeholder="WEB" value={x.var} onChange={(e) => set(x.id, { var: e.target.value.toUpperCase() })} />
+            <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label="이미지 빼기" onClick={() => onChange(items.filter((y) => y.id !== x.id))} />
+          </div>
+          {x.var && (
+            <span className="text-[11.5px] text-faint font-mono">
+              ${x.var}_TAG · ${x.var}_IMAGE
+            </span>
+          )}
         </div>
       ))}
-      <div className="flex items-center gap-2 flex-wrap">
+      <div>
         <Button size="sm" icon="plus" onClick={() => onChange([...items, { id: ++stepSeq, image: "", var: "" }])}>
           이미지 더하기
         </Button>
-        {items.length > 0 && (
-          <Hint>
-            compose에는 <span className="font-mono">image: …:${"{"}{items[0].var || "WEB"}_TAG{"}"}</span>처럼 써요. 새 버전이 오면 그 이미지만 바꿔 배포하고, 나머지는 지금 버전을 그대로 써요.
-          </Hint>
-        )}
       </div>
     </div>
   );
