@@ -67,7 +67,8 @@ interface AppCtx {
   sudoActive: boolean;
   endSudo: () => Promise<void>;
   /** Runs fn after a password re-check (skipped while sudo is active). Retries once if the server asks again. */
-  withSudo: (reason: string, fn: () => unknown | Promise<unknown>) => void;
+  /** Runs fn after the password re-check. `always` asks even while a recent check is still valid. */
+  withSudo: (reason: string, fn: () => unknown | Promise<unknown>, opts?: { always?: boolean }) => void;
   /** Member an Owner is previewing as; null shows my own view. */
   viewAs: Member | null;
   setViewAs: (m: Member | null) => void;
@@ -165,7 +166,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   sessionRef.current = session;
 
   const withSudo = useCallback(
-    (reason: string, fn: () => unknown | Promise<unknown>) => {
+    (reason: string, fn: () => unknown | Promise<unknown>, opts?: { always?: boolean }) => {
       const run = async () => {
         try {
           await fn();
@@ -180,6 +181,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
             <SudoModal
               reason={reason}
               minutes={sessionRef.current?.sudoMinutes ?? 5}
+              always={opts?.always}
               onClose={close}
               onDone={(s) => {
                 setSession(s);
@@ -191,7 +193,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           "sm",
         );
       const s = sessionRef.current;
-      if (s && Date.now() < s.sudoUntil) run();
+      if (s && Date.now() < s.sudoUntil && !opts?.always) run();
       else ask();
     },
     [openModal, toast],

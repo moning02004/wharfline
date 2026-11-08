@@ -4,7 +4,7 @@ import type { Session } from "../lib/types";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, ErrorText, Field, Input } from "../components/ui";
 
-export function SudoModal({ reason, minutes, onClose, onDone }: { reason: string; minutes: number; onClose: () => void; onDone: (s: Session) => void }) {
+export function SudoModal({ reason, minutes, always, onClose, onDone }: { reason: string; minutes: number; always?: boolean; onClose: () => void; onDone: (s: Session) => void }) {
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -27,7 +27,13 @@ export function SudoModal({ reason, minutes, onClose, onDone }: { reason: string
       <form id="sudoForm" onSubmit={submit} className="contents">
         <ModalBody>
           <Banner icon="lock" title={reason}>
-            확인 후 <span className="tabular-nums">{minutes}</span>분 동안은 다시 묻지 않아요. 이 시간 동안의 열람과 수정은 모두 활동 기록에 남아요.
+            {always ? (
+              "볼 때마다 비밀번호를 물어요. 열람과 수정은 모두 활동 기록에 남아요."
+            ) : (
+              <>
+                확인 후 <span className="tabular-nums">{minutes}</span>분 동안은 다시 묻지 않아요. 이 시간 동안의 열람과 수정은 모두 활동 기록에 남아요.
+              </>
+            )}
           </Banner>
           <Field label="계정 비밀번호" htmlFor="sudoPw" hint="여러 번 틀리면 계정이 잠시 잠기고 활동 기록에 남아요.">
             <Input id="sudoPw" type="password" autoComplete="current-password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />

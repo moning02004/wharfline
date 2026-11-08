@@ -306,7 +306,7 @@ export function EnvLink({ name }: { name: string }) {
       if (!env) return toast(`${name} 세트를 찾지 못했어요`, "error");
       const r = await api.get<{ vars: [string, string][] }>(`/envs/${env.id}/values?purpose=edit`);
       openModal((c) => <EditEnvModal env={env} values={r.vars} onClose={c} />, "md");
-    });
+    }, { always: true });
   };
   return (
     <button type="button" onClick={open} className="link font-mono text-[12.5px]" title="비밀번호를 확인하고 값을 보거나 고쳐요">

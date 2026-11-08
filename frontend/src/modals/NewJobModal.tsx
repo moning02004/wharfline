@@ -207,7 +207,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       const r = await api.get<{ vars: [string, string][] }>(`/envs/${shownEnv.id}/values?purpose=edit`);
       const text = r.vars.map(([k, v]) => `${k}=${v}`).join("\n");
       setEnvShown({ text, saved: text });
-    });
+    }, { always: true });
   };
   const saveShownEnv = () => {
     if (!envShown || !shownEnv || envSaving) return;
