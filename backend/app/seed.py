@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from . import authn
 from . import models as m
 from . import sshkeys
+from .sample_script_job import add_sample_script_job
 from .store import BUILTIN_BOOK, BUILTIN_REPO, BUILTIN_URL, CLIENT_IP
 
 keys: list[dict] = [
@@ -220,6 +221,8 @@ def seed_if_empty(db: Session) -> bool:
     for g in groups:
         db.add(m.Group(id=g["id"], name=g["name"], menus=g["menus"], all_builds=g["all_builds"], repos=g["repos"],
                        members=[by_email[e] for e in g["members"]]))
+    db.flush()
+    add_sample_script_job(db, "jeonghoon@acme.kr")  # an SSH script job with a compose file
     db.commit()
     return True
 

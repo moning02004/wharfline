@@ -330,7 +330,7 @@ function ConfirmRun({
         )}
         {extras.length > 0 && (
           <Field
-            label="추가 이미지"
+            label={hasImage ? "추가 이미지" : "이미지"}
             hint="바꾸지 않은 이미지는 지금 떠 있는 버전 그대로 배포해요."
             right={
               activeVars.some((v) => v !== "") && !(hasImage && showBuild && latest?.active) ? (
