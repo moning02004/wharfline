@@ -144,6 +144,7 @@ class JobIn(BaseModel):
     envVars: list[list[str]] = []
     editors: EditorsIn = Field(default_factory=EditorsIn)
     hook: bool = False
+    hookRule: str = "v"  # v | date | any | re:<regex>
     protected: bool = True
     lock: bool = True
     rollback: bool = True
@@ -261,6 +262,19 @@ def check_extra_images(db: Session, items: list[ExtraImageIn], current: list[dic
 MAX_FILE_VERSIONS = 50
 
 
+def check_hook_rule(rule: str) -> str:
+    rule = rule.strip() or "v"
+    if rule in githooks.HOOK_RULES:
+        return rule
+    if rule.startswith("re:") and 3 < len(rule) <= 200:
+        try:
+            re.compile(rule[3:])
+            return rule
+        except re.error as e:
+            raise HTTPException(400, f"자동 배포 규칙의 정규식이 틀렸어요: {e}") from e
+    raise HTTPException(400, "자동 배포 규칙은 v, 날짜, 전부, 또는 정규식(re:…) 중에서 골라 주세요.")
+
+
 def file_changes(old: list[dict] | None, new: list[dict] | None) -> dict[str, list[str]]:
     a = {f["path"]: f["content"] for f in old or []}
     b = {f["path"]: f["content"] for f in new or []}
@@ -337,7 +351,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     if body.envMode == "paste" and not s.can(me, "env"):
         raise HTTPException(403, s.NO_PERM)  # pasting writes new .env values
     if not s.can(me, "run_protected"):
-        body.protected, body.hook = True, False  # Deployers: protected on, auto-deploy off
+        body.protected, body.hook, body.hookRule = True, False, "v"  # Deployers: protected on, auto-deploy off
     name = check_name(db, body.name)
     check_target(db, body.inventory, body.targets)
     editors = check_editors(db, body.editors)
@@ -354,7 +368,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script, service_path=service_path,
         files=bundles.check_files([f.model_dump() for f in body.files or []]) if script is not None else None,
         extra_images=check_extra_images(db, body.extraImages, None),
-        inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, protected=body.protected,
+        inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, hook_rule=check_hook_rule(body.hookRule), protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
     )
     db.add(job)
@@ -377,7 +391,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     if body.envMode == "paste" and not s.can(me, "env"):
         raise HTTPException(403, s.NO_PERM)  # pasting writes .env values
     if not s.can(me, "run_protected"):
-        body.protected, body.hook = job.protected, job.hook  # Deployers can't change 운영 보호 or 자동 배포
+        body.protected, body.hook, body.hookRule = job.protected, job.hook, job.hook_rule  # Deployers can't change 운영 보호 or 자동 배포
     name = check_name(db, body.name, self_id=job.id)
     check_target(db, body.inventory, body.targets)
     editors = check_editors(db, body.editors)
@@ -409,13 +423,13 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     new = {
         "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x[k] for k in ("ref", "var", "defaultTag")} for x in extra_images], "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
-        "hook": body.hook, "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
+        "hook": (body.hook, check_hook_rule(body.hookRule)), "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
     }
     old = {
         "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "files": job.files,
         "images": [{k: x[k] for k in ("ref", "var", "defaultTag")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
-        "hook": job.hook, "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
+        "hook": (job.hook, job.hook_rule), "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
     }
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
@@ -426,6 +440,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     job.image, job.default_tag = ref, tag
     job.env, job.editors = env_name, editors
     job.hook, job.protected, job.lock, job.rollback = body.hook, body.protected, body.lock, body.rollback
+    job.hook_rule = check_hook_rule(body.hookRule)
 
     if changed:
         labels = ", ".join(FIELD_LABELS[k] for k in FIELD_LABELS if k in changed)

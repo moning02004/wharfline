@@ -108,3 +108,29 @@ def test_bad_signatures_are_rejected(client, login, secret):
     assert send_hook(client, "wrong-secret", "workflow_run", payload).status_code == 401
     assert send_hook(client, "wrong-secret", "Pipeline Hook", {}, provider="gitlab").status_code == 401
     assert client.post("/api/hooks/git", json=payload).status_code == 400  # no Git host headers
+
+
+def test_hook_rule_decides_which_tags_deploy(client, login, secret):
+    from app.githooks import tag_matches
+
+    assert tag_matches("v", "v2026.11.08-1") and tag_matches("v", "v1.2.0") and not tag_matches("v", "2026.11.08-1")
+    assert tag_matches("date", "2026.11.08-1") and tag_matches("date", "v2026.11.08-2") and not tag_matches("date", "v1.2.0")
+    assert tag_matches("any", "sha-77d1e0b")
+    assert tag_matches("re:release-\\d+", "release-12") and not tag_matches("re:release-\\d+", "release-12a")
+
+    inv = client.get("/api/inventory").json()[0]["name"]
+    img = "ghcr.io/acme/rule-demo"
+    v_job = client.post("/api/jobs", json=builtin_job("rule · v", inv, f"{img}:v1", hook=True)).json()
+    d_job = client.post("/api/jobs", json=builtin_job("rule · date", inv, f"{img}:v1", hook=True, hookRule="date")).json()
+    assert v_job["hookRule"] == "v" and d_job["hookRule"] == "date"
+    assert client.post("/api/jobs", json=builtin_job("rule · bad", inv, f"{img}:v1", hook=True, hookRule="re:(")).status_code == 400
+
+    def push(tag: str) -> set[str]:
+        pkg = {"action": "created", "package": {"type": "container", "name": "rule-demo", "version": tag, "owner": {"login": "acme"}}}
+        runs = send_hook(client, secret, "package", pkg).json().get("runs", [])
+        return {client.get(f"/api/runs/{no}").json()["job"] for no in runs}
+
+    assert push("v2026.11.08-1") == {"rule · v", "rule · date"}
+    assert push("2026.11.09-1") == {"rule · date"}
+    assert push("v2.0.0") == {"rule · v"}
+    assert push("sha-abc1234") == set()

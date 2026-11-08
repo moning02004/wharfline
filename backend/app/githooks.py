@@ -46,6 +46,22 @@ log = logging.getLogger("wharfline.githooks")
 SETTING = "gitea_webhook"
 CONTEXT = "setting:gitea_webhook"
 RELEASE_TAG = re.compile(r"^v\d")
+DATE_TAG = re.compile(r"^v?\d{4}\.\d{2}\.\d{2}-\d+$")
+HOOK_RULES = {"v": "v로 시작", "date": "날짜 (v2026.11.08-1)", "any": "latest 빼고 전부"}
+
+
+def tag_matches(rule: str, tag: str) -> bool:
+    """Does a new tag trigger auto-deploy under a job's rule? (latest is never recorded, so never matches.)"""
+    if rule == "any":
+        return True
+    if rule == "date":
+        return bool(DATE_TAG.match(tag))
+    if rule.startswith("re:"):
+        try:
+            return re.fullmatch(rule[3:], tag) is not None
+        except re.error:
+            return False
+    return bool(RELEASE_TAG.match(tag))  # "v", the default
 PROVIDERS = ("gitea", "github", "gitlab")
 PROVIDER_NAMES = {"gitea": "Gitea", "github": "GitHub", "gitlab": "GitLab"}
 
@@ -303,8 +319,7 @@ def record_tag(db: Session, images: list[m.Image], tag: str) -> list[tuple[m.Ima
                                                      m.Build.updated_at > time.time() - 3600).order_by(m.Build.updated_at.desc()).limit(1))
             if recent:
                 recent.tag = tag
-        if RELEASE_TAG.match(tag):
-            released.append((img, tag))
+        released.append((img, tag))  # each job's auto-deploy rule decides which of these deploy
     return released
 
 

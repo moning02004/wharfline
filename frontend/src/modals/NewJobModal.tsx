@@ -152,6 +152,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [envText, setEnvText] = useState("");
   const [envPick, setEnvPick] = useState(job?.env ?? "");
   const [hook, setHook] = useState(job ? job.hook : false);
+  const [hookRule, setHookRule] = useState(job?.hookRule ?? "v");
   const [prot, setProt] = useState(job ? job.protected : true);
   const [lock, setLock] = useState(job?.lock ?? true);
   const [rb, setRb] = useState(job?.rollback ?? true);
@@ -306,6 +307,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     envName: envOn && envMode === "existing" ? envPick : null,
     envVars: envOn && envMode !== "existing" ? envVars : [],
     hook,
+    hookRule,
     protected: prot,
     lock,
     rollback: rb,
@@ -905,13 +907,16 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             <Field label="안전장치">
               <TipSpot id="access.safety">
               <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
-                <Toggle
-                  checked={hook}
-                  onChange={setHook}
-                  disabled={fixedSafety}
-                  title="자동 배포"
-                  desc="v로 시작하는 새 버전이 올라오면 바로 배포해요."
-                />
+                <div>
+                  <Toggle
+                    checked={hook}
+                    onChange={setHook}
+                    disabled={fixedSafety}
+                    title="자동 배포"
+                    desc="고른 규칙에 맞는 새 버전이 올라오면 바로 배포해요."
+                  />
+                  {hook && <HookRulePicker value={hookRule} onChange={setHookRule} disabled={fixedSafety} />}
+                </div>
                 <Toggle
                   checked={prot}
                   onChange={setProt}
@@ -1454,6 +1459,32 @@ function ExtraImagesEditor({ items, onChange }: { items: ExtraDraft[]; onChange:
           이미지 더하기
         </Button>
       </div>
+    </div>
+  );
+}
+
+const HOOK_PRESETS: { value: string; label: string }[] = [
+  { value: "v", label: "v로 시작 · v1.2.0, v2026.11.08-1" },
+  { value: "date", label: "날짜 · 2026.11.08-1, v2026.11.08-1" },
+  { value: "any", label: "latest 빼고 전부" },
+  { value: "re:", label: "직접 입력 (정규식)" },
+];
+
+/** Which new tags start an auto-deploy. "re:<regex>" must match the whole tag. */
+function HookRulePicker({ value, onChange, disabled }: { value: string; onChange: (v: string) => void; disabled?: boolean }) {
+  const custom = value.startsWith("re:");
+  return (
+    <div className="flex flex-col gap-2 px-3.5 pb-3 -mt-1">
+      <Select aria-label="자동 배포 규칙" value={custom ? "re:" : value} disabled={disabled} onChange={(e) => onChange(e.target.value === "re:" ? "re:release-\\d+" : e.target.value)}>
+        {HOOK_PRESETS.map((p) => (
+          <option key={p.value} value={p.value}>
+            {p.label}
+          </option>
+        ))}
+      </Select>
+      {custom && (
+        <Input mono aria-label="태그 정규식" disabled={disabled} placeholder="release-\\d+" value={value.slice(3)} onChange={(e) => onChange(`re:${e.target.value}`)} />
+      )}
     </div>
   );
 }

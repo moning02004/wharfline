@@ -261,6 +261,7 @@ class Job(Base):
     files: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # uploaded to SERVICE_PATH before the script: [{path, content}]
     extra_images: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # more watched images: [{ref, var, defaultTag, tagNow}]
     files_ver: Mapped[int | None] = mapped_column(Integer)  # current JobFileVersion.ver
+    hook_rule: Mapped[str] = mapped_column(String(200), default="v", server_default="v")  # which new tags auto-deploy (githooks.tag_matches)
     inventory: Mapped[str] = mapped_column(String(128))
     targets: Mapped[list[str]] = mapped_column(JSONB, default=list)
     env: Mapped[str] = mapped_column(String(255))
@@ -287,7 +288,7 @@ class Job(Base):
         return {"id": self.id, "name": self.name, "image": self.image, "tagNow": self.tag_now, "defaultTag": self.default_tag,
                 "playbook": playbook, "script": self.script, "servicePath": self.service_path,
                 "files": [{"path": f["path"], "size": len(f["content"].encode())} for f in self.files or []],
-                "filesVer": self.files_ver,
+                "filesVer": self.files_ver, "hookRule": self.hook_rule,
                 "extraImages": [dict(x) for x in self.extra_images or []],
                 "inventory": self.inventory, "targets": self.targets, "env": self.env,
                 "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,

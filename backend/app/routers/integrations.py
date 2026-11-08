@@ -38,6 +38,8 @@ def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[int]:
             extra = next((x for x in job.extra_images or [] if x["ref"] == img.ref), None)
             if job.image != img.ref and not extra:
                 continue
+            if not githooks.tag_matches(job.hook_rule or "v", tag):
+                continue  # not a tag this job deploys automatically
             j = job.to_dict()
             if not [h for h in s.target_hosts(s.inv_of(db, j), j["targets"]) if not s.host_skip(h)]:
                 continue

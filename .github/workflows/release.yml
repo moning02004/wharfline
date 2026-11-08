@@ -1,6 +1,7 @@
 # Every push to main: build and push the Docker images, then create a tag and a GitHub release.
 #
-# Tag format: <date>-<build number of the day>, e.g. 2026.11.08-1, 2026.11.08-2 (date in Asia/Seoul).
+# Tag format: v<date>-<build number of the day>, e.g. v2026.11.08-1, v2026.11.08-2 (date in Asia/Seoul).
+# The v prefix matches Wharfline's default auto-deploy rule.
 # Images go to GitHub Container Registry with that tag and `latest`:
 #   ghcr.io/<owner>/wharfline-backend
 #   ghcr.io/<owner>/wharfline-frontend
@@ -33,8 +34,8 @@ jobs:
         run: |
           git fetch --tags --force
           today=$(TZ=Asia/Seoul date +%Y.%m.%d)
-          last=$(git tag -l "${today}-*" | sed "s/^${today}-//" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
-          tag="${today}-$(( ${last:-0} + 1 ))"
+          last=$(git tag -l "v${today}-*" | sed "s/^v${today}-//" | grep -E '^[0-9]+$' | sort -n | tail -1 || true)
+          tag="v${today}-$(( ${last:-0} + 1 ))"
           owner=$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "backend=ghcr.io/${owner}/wharfline-backend" >> "$GITHUB_OUTPUT"

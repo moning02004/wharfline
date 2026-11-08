@@ -162,7 +162,7 @@ Wharfline 계정, DB, 서버 중 하나라도 의심되면 이 순서로 해요.
 
 `main`에 푸시하면 `.github/workflows/release.yml`이 돌아요.
 
-1. 오늘 날짜(한국 시간)와 그날의 빌드 번호로 태그를 정해요. 예: `2026.11.08-1`, 같은 날 두 번째는 `2026.11.08-2`.
+1. 오늘 날짜(한국 시간)와 그날의 빌드 번호로 태그를 정해요. 예: `v2026.11.08-1`, 같은 날 두 번째는 `v2026.11.08-2`. `v`로 시작해서 Wharfline의 기본 자동 배포 규칙에 맞아요.
 2. 백엔드와 프론트엔드 이미지를 amd64·arm64로 빌드해 GitHub Container Registry에 올려요.
    - `ghcr.io/moning02004/wharfline-backend:<태그>` (와 `latest`)
    - `ghcr.io/moning02004/wharfline-frontend:<태그>` (와 `latest`)

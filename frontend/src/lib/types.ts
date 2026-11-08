@@ -93,6 +93,8 @@ export interface Job {
   targets: string[];
   env: string;
   hook: boolean;
+  /** Which new tags auto-deploy: "v" | "date" | "any" | "re:<regex>". */
+  hookRule: string;
   protected: boolean;
   lock: boolean;
   rollback: boolean;
