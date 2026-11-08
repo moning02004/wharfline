@@ -19,6 +19,7 @@ import pytest
 _base = urlsplit(os.environ.get("DATABASE_URL", "postgresql+psycopg://wharfline:wharfline@localhost:55432/wharfline"))
 TEST_DB = os.environ.get("WHARFLINE_TEST_DB", "wharfline_test")
 os.environ["DATABASE_URL"] = urlunsplit(_base._replace(path=f"/{TEST_DB}"))
+os.environ["WHARFLINE_SSH_SIMULATE"] = "1"  # no reachable SSH servers in tests (see app/sshcheck.py)
 ADMIN_URL = urlunsplit(_base._replace(path="/postgres"))
 
 

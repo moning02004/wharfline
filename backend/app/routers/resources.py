@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models as m
-from .. import sshaccess, sshkeys
+from .. import sshaccess, sshcheck, sshkeys
 from .. import store as s
 from ..db import get_db
 from ..deps import require, require_login, require_sudo
@@ -132,10 +132,48 @@ class FingerprintIn(BaseModel):
     port: int
 
 
+def _check_addr(ip: str, port: int) -> str:
+    ip = ip.strip()
+    if not re.match(r"^[A-Za-z0-9.:-]{1,253}$", ip):
+        raise HTTPException(400, "IP 또는 호스트 이름을 확인해 주세요.")
+    if not 1 <= port <= 65535:
+        raise HTTPException(400, "포트는 1~65535 사이 숫자여야 해요.")
+    return ip
+
+
 @router.post("/inventory/fingerprint", dependencies=[Depends(require("resources"))])
-def fingerprint(body: FingerprintIn):
-    # A real implementation connects and reads the server's ED25519 host key.
-    return {"type": "ED25519", "fingerprint": "SHA256:pX0c7Lq2vRz9Hn4Wb1Ke8YsT3mJ6fDaUgQ5iEoN"}
+async def fingerprint(body: FingerprintIn):
+    """The server's host key, read over SSH without logging in."""
+    r = await sshcheck.host_key(_check_addr(body.ip, body.port), body.port)
+    if not r["reachable"]:
+        raise HTTPException(400, r["error"])
+    return {"type": r["type"], "fingerprint": r["fingerprint"]}
+
+
+class CheckIn(BaseModel):
+    ip: str
+    port: int
+    user: str
+    key: str
+
+
+@router.post("/inventory/check", dependencies=[Depends(require("resources"))])
+async def check_connection(body: CheckIn, db: Session = Depends(get_db)):
+    """Before saving a server: its host key, and whether the user can log in with the key."""
+    ip = _check_addr(body.ip, body.port)
+    user = body.user.strip()
+    if user == "root":
+        raise HTTPException(400, "root로는 접속할 수 없어요. 권한이 제한된 deploy 사용자를 만들어 주세요.")
+    if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", user):
+        raise HTTPException(400, "SSH 사용자 이름을 확인해 주세요. 예: deploy")
+    key = db.scalar(select(m.Key).where(m.Key.name == body.key, m.Key.kind == "ssh"))
+    if not key:
+        raise HTTPException(400, "서버 접속에 쓸 SSH 키를 골라 주세요.")
+    private = key.get_secret() or ""
+    r = await sshcheck.check(ip, body.port, user, private)
+    s.log_act(db, "서버 연결 확인", f"{user}@{ip}:{body.port} · 키 {key.name} · {'성공' if r['login'] else '실패'}")
+    db.commit()
+    return r
 
 
 class HostIn(BaseModel):
