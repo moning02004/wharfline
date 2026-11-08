@@ -147,6 +147,8 @@ export interface ExtraImage {
   latestTag?: string | null;
   sourceRepo?: string | null;
   build?: Build | null;
+  /** Watched only (no variable): the tag written in the file. */
+  literal?: string | null;
 }
 
 export interface BundleFile {

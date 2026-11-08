@@ -152,7 +152,7 @@ function ConfirmRun({
   // Extra watched images: each keeps the version running now unless picked here.
   const extras = job.extraImages ?? [];
   const [extraTags, setExtraTags] = useState<Record<string, string>>(() =>
-    Object.fromEntries(extras.map((x) => [x.var, x.tagNow && x.tagNow !== "-" ? x.tagNow : x.defaultTag])),
+    Object.fromEntries(extras.filter((x) => x.var).map((x) => [x.var, x.tagNow && x.tagNow !== "-" ? x.tagNow : x.defaultTag])),
   );
   const [busy, setBusy] = useState(false);
 
@@ -342,16 +342,22 @@ function ConfirmRun({
           >
             <div className="flex flex-col gap-2">
               {extras.map((x) => (
-                <div key={x.var} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_200px] gap-2 items-center">
+                <div key={x.var || x.ref} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_200px] gap-2 items-center">
                   <span className="min-w-0 text-[12.5px]">
-                    <span className="font-mono font-medium">{x.var}</span> <span className="font-mono text-muted break-all">{x.ref}</span>
+                    {x.var && <span className="font-mono font-medium">{x.var} </span>}
+                    <span className="font-mono text-muted break-all">{x.ref}</span>
                     {x.tagNow && x.tagNow !== "-" && <span className="text-faint"> · 지금 {x.tagNow}</span>}
-                    {jobBuilds?.[x.var] && (
+                    {jobBuilds?.[x.var || x.ref] && (
                       <span className="block mt-0.5">
-                        <BuildBadge build={jobBuilds[x.var]!} />
+                        <BuildBadge build={jobBuilds[x.var || x.ref]!} />
                       </span>
                     )}
                   </span>
+                  {!x.var ? (
+                    <span className="text-[12.5px] text-muted">
+                      파일에 적힌 <span className="font-mono">:{x.literal ?? "latest"}</span>
+                    </span>
+                  ) : (
                   <Select mono aria-label={`${x.var} 태그`} value={extraTags[x.var]} onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value })}>
                     {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
                       <option key={t} value={t}>
@@ -360,6 +366,7 @@ function ConfirmRun({
                       </option>
                     ))}
                   </Select>
+                  )}
                 </div>
               ))}
             </div>

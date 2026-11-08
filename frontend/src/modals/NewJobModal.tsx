@@ -210,7 +210,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const bodyRef = useRef<HTMLDivElement>(null);
 
   // The 스크립트 step exists only for SSH script jobs.
-  const flow = JOB_STEPS.filter((st) => st.id !== "script" || source === "script");
+  // SSH script jobs track the images their files name, so they skip 버전 추적.
+  const flow = JOB_STEPS.filter((st) => (st.id !== "script" || source === "script") && (st.id !== "image" || source !== "script"));
   const step = flow[Math.min(cur, flow.length - 1)].id;
   const last = cur >= flow.length - 1;
 
@@ -246,7 +247,12 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const envVars = parseEnv(envText);
   const envOn = envChoice === "on";
   // Variables the script and files use: Wharfline's own (자동) and the ones the env step should have.
-  const autoVars = [...BUILTIN_VARS, ...extras.flatMap((x) => (x.var ? [`${x.var}_IMAGE`, `${x.var}_TAG`, `${x.var}_IMAGE_REF`] : []))];
+  const autoVars = [
+    ...BUILTIN_VARS,
+    ...(source === "script" ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.var) : extras.map((x) => x.var))
+      .filter(Boolean)
+      .flatMap((v) => [`${v}_IMAGE`, `${v}_TAG`, `${v}_IMAGE_REF`]),
+  ];
   const scriptVars =
     source === "script" ? usedVars([...steps.map((st) => st.run), ...files.map((f) => f.content ?? "")]).filter((v) => !SHELL_VARS.has(v)) : [];
   const neededVars = scriptVars.filter((v) => !autoVars.includes(v));
@@ -263,8 +269,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       ),
     );
     setFilesTouched(true);
-    setTracks((t) => [...t, { id: ++stepSeq, image: fi.tag && fi.tag !== "latest" ? `${fi.ref}:${fi.tag}` : fi.ref, var: fi.var }]);
-    toast(`${fi.path}의 이미지를 \${${tagVar}}로 바꿨어요`);
+    toast(`${fi.path}의 이미지를 \${${tagVar}}로 바꿨어요. 이제 버전이 기록돼요`);
   };
 
   /** Client-side check of one step; the server validates everything again. */
@@ -359,11 +364,12 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
     servicePath: source === "script" ? servicePath.trim() : "",
     files: source !== "script" ? [] : mode === "new" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
-    extraImages: extras.map((x) => ({ image: x.image.trim(), var: x.var, sourceRepo: canResources ? (x.repo ?? "").trim() : null })),
-    imageSourceRepo: canResources ? (tracks.find((t) => t.var === "")?.repo ?? "").trim() : null,
+    // SSH script jobs: the server reads the tracked images from the files.
+    extraImages: source === "script" ? [] : extras.map((x) => ({ image: x.image.trim(), var: x.var, sourceRepo: canResources ? (x.repo ?? "").trim() : null })),
+    imageSourceRepo: source === "script" || !canResources ? null : (tracks.find((t) => t.var === "")?.repo ?? "").trim(),
     inventory: inv,
     targets,
-    image: image.trim(),
+    image: source === "script" ? "" : image.trim(),
     envMode: envChoice === "keep" ? "keep" : !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
     envName: envOn && envMode === "existing" ? envPick : null,
     envVars: envOn && envMode !== "existing" ? envVars : [],
@@ -682,6 +688,31 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   }}
                   onEnv={mergeEnv}
                 />
+                {fileImages.length > 0 && (
+                  <Field label="추적하는 이미지">
+                    <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
+                      {fileImages.map((fi) => (
+                        <div key={`${fi.path}:${fi.value}`} className="flex items-center gap-2 px-3 py-2 text-[12.5px] min-w-0 flex-wrap">
+                          <span className="font-mono truncate min-w-0 flex-1" title={`${fi.path}: image: ${fi.value}`}>
+                            {fi.ref}
+                          </span>
+                          {fi.fixed ? (
+                            <>
+                              <span className="text-muted">
+                                <span className="font-mono">:{fi.tag ?? "latest"}</span> 고정 · 새 버전이 오면 다시 배포만 해요
+                              </span>
+                              <Button size="sm" variant="ghost" onClick={() => trackFixed(fi)}>
+                                변수로 바꾸기
+                              </Button>
+                            </>
+                          ) : (
+                            <Chip mono tone="ok">{"$" + (fi.var || "IMAGE") + "_TAG"}</Chip>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </Field>
+                )}
               </div>
             ) : (
               <TipSpot id="playbook.builtin">
@@ -1032,7 +1063,15 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           [
             "image",
             "버전 추적",
-            tracks.length ? (
+            source === "script" ? (
+              fileImages.length ? (
+                <span className="font-mono text-[12.5px] break-all">
+                  {fileImages.map((fi) => (fi.fixed ? `${fi.ref}:${fi.tag ?? "latest"}` : `${fi.ref} → ` + "$" + (fi.var || "IMAGE") + "_TAG")).join(", ")}
+                </span>
+              ) : (
+                <span className="text-faint">파일에 이미지가 없어요</span>
+              )
+            ) : tracks.length ? (
               <span className="font-mono text-[12.5px] break-all">{tracks.map((t) => `${t.var || "IMAGE"}=${t.image}`).join(", ")}</span>
             ) : (
               <span className="text-faint">없음</span>

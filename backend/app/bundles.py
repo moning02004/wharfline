@@ -165,3 +165,34 @@ def check_files(files: list[dict]) -> list[dict[str, str]]:
     if total > MAX_TOTAL_BYTES:
         raise HTTPException(400, "파일은 모두 합쳐 2MB까지 올릴 수 있어요.")
     return [{"path": p, "content": out[p]} for p in sorted(out)]
+
+
+IMAGE_LINE = re.compile(r"^\s*-?\s*image:\s*[\"']?([^\s\"'#]+)", re.M)
+TAG_VAR = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(:-[^}]*)?\}$")
+
+
+def file_images(files: list[dict]) -> list[dict]:
+    """Images named on `image:` lines of compose / Kubernetes files.
+
+    Returns [{ref, var, literal}]: `ghcr.io/x/api:${API_TAG}` -> var "API" (IMAGE_TAG -> var "" = the main image);
+    a written tag (or none) -> var None and literal = that tag ("latest" when none). Names built from variables are skipped.
+    """
+    out: list[dict] = []
+    seen: set[tuple] = set()
+    for f in files:
+        for value in IMAGE_LINE.findall(f.get("content", "")):
+            if "@" in value:
+                continue
+            slash = value.rfind("/")
+            colon = value.find(":", slash + 1)
+            ref, tag = (value[:colon], value[colon + 1:]) if colon >= 0 else (value, None)
+            if "${" in ref:
+                continue
+            m = TAG_VAR.match(tag or "")
+            item = {"ref": ref, "var": ("" if m.group(1) == "IMAGE_TAG" else re.sub(r"_TAG$", "", m.group(1))) if m else None,
+                    "literal": None if m else (tag or "latest")}
+            key = (item["ref"], item["var"], item["literal"])
+            if key not in seen:
+                seen.add(key)
+                out.append(item)
+    return out

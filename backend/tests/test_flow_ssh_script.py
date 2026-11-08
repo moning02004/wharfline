@@ -9,8 +9,13 @@ STEPS = [
 ]
 
 
+MAIN_COMPOSE = "services:\n  api:\n    image: ghcr.io/acme/api-server:${IMAGE_TAG}\n"
+
+
 def script_job(name: str, steps: list[dict], **extra) -> dict:
-    return builtin_job(name, "staging", "ghcr.io/acme/api-server:v1.8.1", **extra) | {"playbook": {"source": "script"}, "script": steps}
+    """An SSH script job whose compose file makes ghcr.io/acme/api-server the main image (${IMAGE_TAG})."""
+    return builtin_job(name, "staging", "", **extra) | {"playbook": {"source": "script"}, "script": steps,
+                                                       "files": [{"path": "docker-compose.yaml", "content": MAIN_COMPOSE}]}
 
 
 def test_create_script_job(client, login):
@@ -48,7 +53,7 @@ def test_script_run_succeeds_on_every_server(client, login):
         if not h["skip"]:
             assert f"{h['name']:<14}: ok=" in log and "failed=0" in log
     assert "배포 성공" in log
-    assert run["steps"] == ["준비", "서버 연결", "레지스트리 로그인", "이미지 받기", "교체", "정리", "마무리"]
+    assert run["steps"] == ["준비", "서버 연결", "파일 올리기", "레지스트리 로그인", "이미지 받기", "교체", "정리", "마무리"]
 
 
 def test_failed_step_skips_the_rest_and_fails_the_run(client, login):
@@ -63,7 +68,7 @@ def test_failed_step_skips_the_rest_and_fails_the_run(client, login):
     for name in reachable:
         assert f"failed: [{name}] exit 1" in log
         assert f"skipping: [{name}] 앞 단계가 실패했어요" in log  # 정리 didn't run
-        assert f"{name:<14}: ok=2  failed=1  skipped=1" in log  # SSH 연결 + 받기 / 확인 / 정리
+        assert f"{name:<14}: ok=3  failed=1  skipped=1" in log  # SSH 연결, 파일 올리기, 받기 / 확인 / 정리
     assert "'확인' 단계에서 서버" in log
     after = next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])
     assert after["last"]["status"] == "bad" and after["tagNow"] == before  # a failed run doesn't move the deployed tag

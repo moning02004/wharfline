@@ -69,7 +69,6 @@ def script_job(name: str, **extra) -> dict:
         "playbook": {"source": "script"},
         "script": [{"name": "올리기", "run": 'cd "$SERVICE_PATH"\ndocker compose up -d'}],
         "files": [{"path": "docker-compose.yaml", "content": COMPOSE}],
-        "extraImages": [{"image": "ghcr.io/acme/api-server:v1.8.1", "var": "API"}, {"image": "ghcr.io/acme/web-front:v2.3.0", "var": "web"}],
     }
     return body
 
@@ -79,17 +78,19 @@ def test_job_with_files_and_images(client, login):
     assert r.status_code == 200, r.text
     job = r.json()
     assert job["files"] == [{"path": "docker-compose.yaml", "size": len(COMPOSE.encode())}]
-    assert [(x["var"], x["defaultTag"], x["tagNow"]) for x in job["extraImages"]] == [("API", "v1.8.1", "-"), ("WEB", "v2.3.0", "-")]
+    # read from the compose file: ${API_TAG} and ${WEB_TAG}
+    assert [(x["ref"], x["var"], x["defaultTag"], x["tagNow"]) for x in job["extraImages"]] == [
+        ("ghcr.io/acme/api-server", "API", "latest", "-"), ("ghcr.io/acme/web-front", "WEB", "latest", "-")]
     files = client.get(f"/api/jobs/{job['id']}/files").json()
     assert files[0]["content"] == COMPOSE
 
     run = wait_run(client, client.post(f"/api/jobs/{job['id']}/runs", json={"groups": [], "extraTags": {"WEB": "v2.3.1"}}).json()["no"])
-    assert run["status"] == "ok" and run["extraTags"] == {"API": "v1.8.1", "WEB": "v2.3.1"}
+    assert run["status"] == "ok" and run["extraTags"]["WEB"] == "v2.3.1" and run["extraTags"]["API"]  # API: newest known tag
     log = log_text(run)
     assert "파일 올리기 → /srv/bundle-app (1개)" in log and "docker-compose.yaml" in log
-    assert "API_TAG=v1.8.1" in log and "WEB_TAG=v2.3.1" in log and "WEB_IMAGE=ghcr.io/acme/web-front" in log
+    assert f"API_TAG={run['extraTags']['API']}" in log and "WEB_TAG=v2.3.1" in log and "WEB_IMAGE=ghcr.io/acme/web-front" in log
     after = next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])
-    assert {x["var"]: x["tagNow"] for x in after["extraImages"]} == {"API": "v1.8.1", "WEB": "v2.3.1"}
+    assert {x["var"]: x["tagNow"] for x in after["extraImages"]} == run["extraTags"]
     assert "v2.3.1" in next(x for x in after["extraImages"] if x["var"] == "WEB")["tags"]  # a typed tag is remembered
 
 
@@ -107,7 +108,7 @@ def test_new_tag_of_an_extra_image_deploys_only_that_image(client, login):
     runs = [no for no in r["runs"] if client.get(f"/api/runs/{no}").json()["jobId"] == job["id"]]
     assert len(runs) == 1
     run = wait_run(client, runs[0])
-    assert run["extraTags"] == {"API": "v1.9.0", "WEB": "v2.3.1"}  # WEB keeps the version running now
+    assert run["extraTags"]["API"] == "v1.9.0" and run["extraTags"]["WEB"] == "v2.3.1"  # WEB keeps the version running now
 
 
 def test_files_and_images_are_checked(client, login):
@@ -117,8 +118,10 @@ def test_files_and_images_are_checked(client, login):
     assert post(files=[{"path": ".env", "content": "A=1"}]) == 400
     assert post(files=[{"path": "../x.yaml", "content": "a"}]) == 400
     assert post(files=[{"path": "a.yaml", "content": "x"}, {"path": "a.yaml", "content": "y"}]) == 400
-    assert post(extraImages=[{"image": "nginx:1", "var": "1BAD"}]) == 400
-    assert post(extraImages=[{"image": "nginx:1", "var": "A"}, {"image": "redis:7", "var": "A"}]) == 400
+    # images of a git/builtin job are still entered by hand and checked
+    hand = builtin_job("bundle · bad images", "staging", "nginx:1")
+    assert client.post("/api/jobs", json=hand | {"extraImages": [{"image": "nginx:1", "var": "1BAD"}]}).status_code == 400
+    assert client.post("/api/jobs", json=hand | {"extraImages": [{"image": "nginx:1", "var": "A"}, {"image": "redis:7", "var": "A"}]}).status_code == 400
 
 
 def test_edit_keeps_files_unless_sent(client, login):
@@ -156,30 +159,50 @@ def test_file_versions_and_the_version_each_run_used(client, login):
     assert client.get(f"/api/jobs/{job['id']}/files", params={"ver": 9}).status_code == 404
 
 
-def test_build_repo_per_tracked_image_and_builds_of_every_image(client, login):
+def test_tracked_images_come_from_the_files(client, login):
+    files = [{"path": "docker-compose.yaml", "content": "services:\n  b:\n    image: ghcr.io/acme/track-back:${BACK_TAG}\n"
+              "  w:\n    image: ghcr.io/acme/track-web:latest\n  db:\n    image: postgres:16-alpine\n"}]
+    job = client.post("/api/jobs", json=script_job("bundle · derived") | {"files": files}).json()
+    got = {(x["ref"], x["var"], x.get("literal")) for x in job["extraImages"]}
+    assert got == {("ghcr.io/acme/track-back", "BACK", None), ("ghcr.io/acme/track-web", "", "latest"),
+                   ("docker.io/library/postgres", "", "16-alpine")}
+    # editing the file changes what is tracked
+    files2 = [{"path": "docker-compose.yaml", "content": "services:\n  b:\n    image: ghcr.io/acme/track-back:${BACK_TAG}\n"
+               "  w:\n    image: ghcr.io/acme/track-web:${WEB_TAG}\n"}]
+    body = script_job("bundle · derived") | {"files": files2, "envMode": "keep"}
+    job2 = client.put(f"/api/jobs/{job['id']}", json=body).json()
+    assert {x["var"] for x in job2["extraImages"]} == {"BACK", "WEB"}
+
+
+def test_watched_only_image_redeploys_and_build_repo_links_itself(client, login):
     from app import githooks
     from app.db import SessionLocal
 
-    body = script_job("bundle · builds") | {
-        "image": "ghcr.io/acme/track-main:v1", "imageSourceRepo": "acme/track",
-        "extraImages": [{"image": "ghcr.io/acme/track-web:v1", "var": "WEB", "sourceRepo": "acme/track-web"}],
-    }
-    job = client.post("/api/jobs", json=body).json()
-    assert job["imageSourceRepo"] == "acme/track"
-    assert job["extraImages"][0]["sourceRepo"] == "acme/track-web" and job["extraImages"][0]["build"] is None
-
+    files = [{"path": "docker-compose.yaml", "content": "services:\n  w:\n    image: ghcr.io/acme/watch-web:latest\n"}]
+    job = client.post("/api/jobs", json=script_job("bundle · watch", hook=True, hookRule="any") | {"files": files}).json()
     with SessionLocal() as db:
         secret = githooks.new_secret(db)
         db.commit()
-    run = {"id": 7001, "run_number": 12, "name": "image", "status": "in_progress", "head_branch": "main"}
-    send_hook(client, secret, "workflow_run", {"repository": {"full_name": "acme/track-web"}, "workflow_run": run})
-    builds = client.get(f"/api/jobs/{job['id']}/builds").json()
-    assert builds[""] is None and builds["WEB"]["status"] == "in_progress" and builds["WEB"]["runNumber"] == 12
+    pkg = {"action": "published", "repository": {"full_name": "acme/watch"},
+           "registry_package": {"name": "watch-web", "package_type": "CONTAINER", "owner": {"login": "acme"},
+                                "package_version": {"version": "sha256:cc", "container_metadata": {"tag": {"name": "v7"}}}}}
+    r = send_hook(client, secret, "registry_package", pkg, provider="github").json()
+    mine = [no for no in r["runs"] if client.get(f"/api/runs/{no}").json()["jobId"] == job["id"]]
+    assert len(mine) == 1  # a watched-only image still redeploys
+    assert wait_run(client, mine[0])["extraTags"] == {}  # the file decides the version
     view = next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])
-    assert view["extraImages"][0]["build"]["active"] is True  # shown next to the job like the main image's build
+    assert view["extraImages"][0]["sourceRepo"] == "acme/watch"  # learned from the event
 
-    # a Deployer can't change build repos: the value is ignored
+
+def test_build_repo_for_hand_entered_images(client, login):
     from tests.conftest import DEPLOYER
-    login(DEPLOYER)
-    body2 = script_job("bundle · builds by deployer") | {"image": "ghcr.io/acme/track-main:v1", "imageSourceRepo": "evil/repo"}
+
+    body = builtin_job("bundle · builds", "staging", "ghcr.io/acme/track-main:v1") | {
+        "imageSourceRepo": "acme/track",
+        "extraImages": [{"image": "ghcr.io/acme/track-side:v1", "var": "SIDE", "sourceRepo": "acme/track-side"}],
+    }
+    job = client.post("/api/jobs", json=body).json()
+    assert job["imageSourceRepo"] == "acme/track" and job["extraImages"][0]["sourceRepo"] == "acme/track-side"
+    login(DEPLOYER)  # a Deployer can't change build repos: the value is ignored
+    body2 = builtin_job("bundle · builds 2", "staging", "ghcr.io/acme/track-main:v1") | {"imageSourceRepo": "evil/repo"}
     assert client.post("/api/jobs", json=body2).json()["imageSourceRepo"] == "acme/track"

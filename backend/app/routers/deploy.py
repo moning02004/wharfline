@@ -259,6 +259,35 @@ def set_source_repo(db: Session, ref: str | None, repo: str | None) -> None:
         s.log_act(db, "빌드 레포 연결", f"{ref} ← {repo or '없음'}")
 
 
+def derived_images(db: Session, files: list[dict] | None, current: list[dict] | None) -> tuple[str | None, list[dict]]:
+    """SSH script jobs track what their files name, so nobody enters it twice.
+
+    Returns (main image ref, other watched images). `${IMAGE_TAG}` is the main image; `${NAME_TAG}` becomes
+    variable NAME; a written tag is watched too (a new push redeploys, the file decides the version).
+    """
+    before = {(x["ref"], x.get("var", "")): x for x in current or []}
+    main: str | None = None
+    out: list[dict] = []
+    for it in bundles.file_images(files or []):
+        try:
+            ref, _ = s.parse_image(it["ref"])  # docker.io/library/... for Docker Hub names
+        except HTTPException:
+            continue
+        if it["var"] == "":
+            main = main or ref
+            s.ensure_image(db, ref, "latest")
+            continue
+        var = it["var"] or ""
+        if var and (not VAR_RE.match(var) or {f"{var}_IMAGE", f"{var}_TAG", f"{var}_IMAGE_REF"} & RESERVED_VARS):
+            continue
+        if any(x["ref"] == ref and x["var"] == var for x in out) or (var and any(x["var"] == var for x in out)):
+            continue
+        s.ensure_image(db, ref, "latest")
+        out.append({"ref": ref, "var": var, "defaultTag": "latest", "literal": it["literal"],
+                    "tagNow": before.get((ref, var), {}).get("tagNow", "-")})
+    return main, out
+
+
 def check_extra_images(db: Session, items: list[ExtraImageIn], current: list[dict] | None) -> list[dict[str, str]]:
     """Validate extra watched images; register them so new tags and webhooks are tracked. Keeps tagNow of unchanged ones."""
     if len(items) > MAX_EXTRA_IMAGES:
@@ -388,10 +417,16 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     else:
         env_name = new_env_set(db, name, body.envVars)
 
+    files = bundles.check_files([f.model_dump() for f in body.files or []]) if script is not None else None
+    if script is not None:  # SSH script: tracked images come from the files
+        ref, extras = derived_images(db, files, None)
+        tag = "latest"
+    else:
+        extras = check_extra_images(db, body.extraImages, None)
     job = m.Job(
         id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script, service_path=service_path,
-        files=bundles.check_files([f.model_dump() for f in body.files or []]) if script is not None else None,
-        extra_images=check_extra_images(db, body.extraImages, None),
+        files=files,
+        extra_images=extras,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, hook_rule=check_hook_rule(body.hookRule), protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
     )
@@ -429,7 +464,11 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     db.flush()
     set_source_repo(db, ref, body.imageSourceRepo)
     files = None if script is None else job.files if body.files is None else bundles.check_files([f.model_dump() for f in body.files])
-    extra_images = check_extra_images(db, body.extraImages, job.extra_images)
+    if script is not None:  # SSH script: tracked images come from the files
+        ref, extra_images = derived_images(db, files, job.extra_images)
+        tag = "latest"
+    else:
+        extra_images = check_extra_images(db, body.extraImages, job.extra_images)
 
     changed: list[str] = []
     env_name = job.env
@@ -447,13 +486,13 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
             env_name = new_env_set(db, name, body.envVars)
 
     new = {
-        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x[k] for k in ("ref", "var", "defaultTag")} for x in extra_images], "target": (body.inventory, list(body.targets)),
+        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal")} for x in extra_images], "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": (body.hook, check_hook_rule(body.hookRule)), "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
     }
     old = {
         "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "files": job.files,
-        "images": [{k: x[k] for k in ("ref", "var", "defaultTag")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
+        "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": (job.hook, job.hook_rule), "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
     }
@@ -500,7 +539,7 @@ async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # a
         db.flush()
     else:
         tag = "-"  # nothing to pull; the tag is ignored
-    extras = {x["var"]: x for x in job.extra_images or []}
+    extras = {x["var"]: x for x in job.extra_images or [] if x["var"]}
     for var, t in body.extraTags.items():
         t = t.strip()
         if var not in extras:
@@ -556,7 +595,7 @@ def job_builds(job_id: str, db: Session = Depends(get_db), scope: set[str] | Non
     job = db.get(m.Job, job_id)
     if not job:
         raise HTTPException(404, "작업을 찾을 수 없어요.")
-    refs = ([("", job.image)] if job.image else []) + [(x["var"], x["ref"]) for x in job.extra_images or []]
+    refs = ([("", job.image)] if job.image else []) + [(x["var"] or x["ref"], x["ref"]) for x in job.extra_images or []]
     out = {}
     for var, ref in refs:
         latest = githooks.builds_for_image(db, ref, limit=1, scope=scope)

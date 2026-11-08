@@ -345,7 +345,16 @@ def handle_package(db: Session, payload: dict) -> list[tuple[m.Image, str]]:
     if not pushed:
         return []
     owner, name, tag = pushed
-    return record_tag(db, images_for_package(db, owner, name), tag)
+    images = images_for_package(db, owner, name)
+    # The event says which Git repo the package belongs to: link it as the build repo when none is set yet.
+    pkg = payload.get("package") or payload.get("registry_package") or {}
+    repo = str((payload.get("repository") or pkg.get("repository") or {}).get("full_name") or "").lower()
+    if repo:
+        for img in images:
+            if not img.source_repo:
+                img.source_repo = repo
+                s.log_act(db, "빌드 레포 자동 연결", f"{img.ref} ← {repo}")
+    return record_tag(db, images, tag)
 
 
 # ---------- reading builds ----------

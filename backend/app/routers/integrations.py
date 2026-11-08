@@ -47,7 +47,8 @@ def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[int]:
                 main_tag, extra_tags = tag, {}
             else:
                 main_tag = job.tag_now if job.tag_now not in ("", "-") else job.default_tag
-                extra_tags = {extra["var"]: tag}
+                # A named image gets the new tag; a watched-only one (written tag in the file) just redeploys.
+                extra_tags = {extra["var"]: tag} if extra["var"] else {}
             if job.protected:
                 started.append(runner.request_approval(db, j, j["targets"], main_tag, "새 이미지 push", None, extra_tags=extra_tags)["no"])
             else:

@@ -55,6 +55,8 @@ def extra_image_vars(job: dict) -> dict[str, str]:
     tags = job.get("extraTags") or {}
     out: dict[str, str] = {}
     for x in job.get("extraImages") or []:
+        if not x["var"]:
+            continue  # watched only: the file decides the version
         tag = tags.get(x["var"]) or x.get("defaultTag") or "latest"
         out.update({f"{x['var']}_IMAGE": x["ref"], f"{x['var']}_TAG": tag, f"{x['var']}_IMAGE_REF": f"{x['ref']}:{tag}"})
     return out
@@ -62,7 +64,8 @@ def extra_image_vars(job: dict) -> dict[str, str]:
 
 def extra_image_lines(job: dict) -> list[Line]:
     tags = job.get("extraTags") or {}
-    return [("", f"이미지 {x['var']}: {x['ref']}:{tags.get(x['var']) or x.get('defaultTag')}") for x in job.get("extraImages") or []]
+    return [("", f"이미지 {x['var']}: {x['ref']}:{tags.get(x['var']) or x.get('defaultTag')}") if x["var"]
+            else ("", f"이미지 {x['ref']}:{x.get('literal') or 'latest'} (파일에 적힌 버전)") for x in job.get("extraImages") or []]
 
 
 # Simulation only: a step whose commands contain a line like `exit 1` or `false` fails on every server,
@@ -370,6 +373,8 @@ def pin_extra_tags(db: Session, job: dict, asked: dict[str, str] | None) -> dict
     """The tag each extra image runs with: what was asked, else the one running now, else the job's default; latest is pinned."""
     out: dict[str, str] = {}
     for x in job.get("extraImages") or []:
+        if not x["var"]:
+            continue
         want = (asked or {}).get(x["var"]) or (x["tagNow"] if x.get("tagNow") not in (None, "", "-") else x["defaultTag"])
         img = db.get(m.Image, x["ref"])
         out[x["var"]] = s.resolve_tag(img.to_dict(), want) if img else want
