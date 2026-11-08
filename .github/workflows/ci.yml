@@ -1,0 +1,77 @@
+# Tests on every pull request and on pushes to branches other than main.
+# The release workflow (pushes to main) calls this first and only releases when it passes.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+  workflow_call: {}
+
+permissions:
+  contents: read
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: wharfline
+          POSTGRES_PASSWORD: wharfline
+          POSTGRES_DB: wharfline
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U wharfline -d wharfline"
+          --health-interval 5s --health-timeout 3s --health-retries 20
+    defaults:
+      run:
+        working-directory: backend
+    env:
+      DATABASE_URL: postgresql+psycopg://wharfline:wharfline@localhost:5432/wharfline
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: |
+            backend/requirements.txt
+            backend/requirements-dev.txt
+
+      - name: Install
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Throwaway master key
+        run: echo "WHARFLINE_MASTER_KEYS=ci:$(python -c 'import base64, os; print(base64.b64encode(os.urandom(32)).decode())')" >> "$GITHUB_ENV"
+
+      # Unit tests, plus flow tests on their own wharfline_test database (created and dropped by the tests).
+      - name: Tests
+        run: python -m pytest -q
+
+      - name: Migrations apply and match the models
+        run: |
+          alembic upgrade head
+          alembic check
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Type check and build
+        run: npm run build

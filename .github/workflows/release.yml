@@ -1,4 +1,4 @@
-# Every push to main: build and push the Docker images, then create a tag and a GitHub release.
+# Every push to main: run the tests (ci.yml), then build and push the Docker images, then create a tag and a GitHub release.
 #
 # Tag format: v<date>-<build number of the day>, e.g. v2026.11.08-1, v2026.11.08-2 (date in Asia/Seoul).
 # The v prefix matches Wharfline's default auto-deploy rule.
@@ -22,7 +22,12 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # Same checks as pull requests: nothing is built or released when they fail.
+  test:
+    uses: ./.github/workflows/ci.yml
+
   release:
+    needs: test
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
