@@ -78,5 +78,6 @@ async def crypto_error(request: Request, exc: crypto.CryptoError):
 
 
 @app.get("/healthz")
+@app.get("/api/healthz")  # same check through the frontend proxy, e.g. from a deploy script
 def healthz():
     return {"ok": True}
