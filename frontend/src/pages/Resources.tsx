@@ -3,7 +3,7 @@ import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, GitProvider, Image, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
-import { HostKeyModal, NewHostModal, NewImageModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
+import { HostKeyModal, NewHostModal, NewImageModal, NewInventoryModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, Seg, TableWrap, Textarea } from "../components/ui";
@@ -443,9 +443,33 @@ function UsedBy({ items, className }: { items: { job: string; path: string }[]; 
 
 /* ---------- inventory ---------- */
 
+/** Asks before deleting; the password re-check follows. */
+function ConfirmDelete({ title, children, action, onConfirm, onClose }: { title: string; children: React.ReactNode; action: string; onConfirm: () => void; onClose: () => void }) {
+  return (
+    <>
+      <ModalHead title={title} onClose={onClose} />
+      <ModalBody>
+        <div className="text-[13.5px] leading-relaxed">{children}</div>
+      </ModalBody>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button
+          variant="danger"
+          onClick={() => {
+            onClose();
+            onConfirm();
+          }}
+        >
+          {action}
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
 export function Inventory() {
   const { data } = useApi<Inv[]>("/inventory");
-  const { openModal, toast, can } = useApp();
+  const { openModal, toast, can, withSudo, refresh } = useApp();
   const manage = can("resources");
   const [pinging, setPinging] = useState<string | null>(null);
   if (!data) return <Loading />;
@@ -461,6 +485,46 @@ export function Inventory() {
     setPinging(null);
   };
 
+  const delInventory = (inv: Inv) =>
+    openModal((c) => (
+      <ConfirmDelete
+        title="인벤토리 삭제"
+        action="삭제"
+        onClose={c}
+        onConfirm={() =>
+          withSudo("인벤토리 삭제", async () => {
+            await api.del(`/inventory/${inv.id}`);
+            refresh();
+            toast(`${inv.name}을(를) 지웠어요`);
+          })
+        }
+      >
+        <span className="font-mono font-medium">{inv.name}</span>
+        {inv.hosts.length ? `과(와) 서버 ${inv.hosts.length}대를 Wharfline에서 지워요.` : "을(를) 지워요."} 서버 자체와 서버에 넣은 키는 그대로예요.
+      </ConfirmDelete>
+    ));
+
+  const delHost = (inv: Inv, ix: number) => {
+    const h = inv.hosts[ix];
+    openModal((c) => (
+      <ConfirmDelete
+        title="서버 삭제"
+        action="삭제"
+        onClose={c}
+        onConfirm={() =>
+          withSudo("서버 삭제", async () => {
+            await api.del(`/inventory/${inv.id}/hosts/${ix}`);
+            refresh();
+            toast(`${h.name}을(를) 지웠어요`);
+          })
+        }
+      >
+        <span className="font-mono font-medium">{h.name}</span> ({h.ip})을(를) {inv.name}에서 지워요. 이 서버의 <span className="font-mono">{h.group}</span> 그룹에 배포하는 작업은 이제 이 서버에 배포하지
+        않아요.
+      </ConfirmDelete>
+    ));
+  };
+
   return (
     <>
       <PageHeader
@@ -468,9 +532,16 @@ export function Inventory() {
         desc="배포 대상 서버 묶음이에요. 서버마다 그룹을 정해 두면 배포 작업에서 그룹만 골라 보낼 수 있어요. 처음 연결할 때 호스트 키 지문을 저장하고, 이후 바뀌면 배포를 막아요."
       >
         {manage && (
-          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewHostModal inventories={data} onClose={c} />)}>
-            서버 추가
-          </Button>
+          <>
+            <Button icon="plus" onClick={() => openModal((c) => <NewInventoryModal onClose={c} />)}>
+              인벤토리 추가
+            </Button>
+            {data.length > 0 && (
+              <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewHostModal inventories={data} onClose={c} />)}>
+                서버 추가
+              </Button>
+            )}
+          </>
         )}
       </PageHeader>
       {data.map((inv) => {
@@ -497,9 +568,12 @@ export function Inventory() {
               }
             >
               {manage && (
-                <Button size="sm" icon="refresh" disabled={pinging === inv.id} onClick={() => ping(inv)}>
-                  {pinging === inv.id ? "확인 중…" : "연결 테스트"}
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Button size="sm" icon="refresh" disabled={pinging === inv.id} onClick={() => ping(inv)}>
+                    {pinging === inv.id ? "확인 중…" : "연결 테스트"}
+                  </Button>
+                  <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label={`${inv.name} 인벤토리 삭제`} title="인벤토리 삭제" onClick={() => delInventory(inv)} />
+                </div>
               )}
             </CardHeader>
             <TableWrap>
@@ -531,11 +605,16 @@ export function Inventory() {
                       <td>{h.hostKey === "ok" ? <Dot tone="ok">지문 일치</Dot> : <Dot tone="bad">지문 변경됨</Dot>}</td>
                       <td>{h.status === "on" ? <Dot tone="ok">응답</Dot> : <Dot>응답 없음</Dot>}</td>
                       <td className="text-right">
-                        {h.hostKey === "changed" && manage && (
-                          <Button size="sm" variant="danger" onClick={() => openModal((c) => <HostKeyModal invId={inv.id} ix={ix} host={h} onClose={c} />)}>
-                            지문 확인
-                          </Button>
-                        )}
+                        <div className="inline-flex items-center gap-1.5">
+                          {h.hostKey === "changed" && manage && (
+                            <Button size="sm" variant="danger" onClick={() => openModal((c) => <HostKeyModal invId={inv.id} ix={ix} host={h} onClose={c} />)}>
+                              지문 확인
+                            </Button>
+                          )}
+                          {manage && (
+                            <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label={`${h.name} 서버 삭제`} title="서버 삭제" onClick={() => delHost(inv, ix)} />
+                          )}
+                        </div>
                       </td>
                     </tr>
                   ))}

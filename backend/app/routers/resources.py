@@ -221,6 +221,36 @@ async def ping(inv_id: str, db: Session = Depends(get_db)):
     return {"total": total, "ok": ok}
 
 
+@router.delete("/inventory/{inv_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def delete_inventory(inv_id: str, db: Session = Depends(get_db)):
+    inv = db.get(m.Inventory, inv_id)
+    if not inv:
+        raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
+    users = list(db.scalars(select(m.Job.name).where(m.Job.inventory == inv.name).order_by(m.Job.name)))
+    if users:
+        names = ", ".join(users[:3]) + (f" 외 {len(users) - 3}개" if len(users) > 3 else "")
+        raise HTTPException(400, f"배포 작업 {len(users)}개에서 쓰고 있어 지울 수 없어요: {names}")
+    key = db.scalar(select(m.Key).where(m.Key.name == inv.key))
+    if key and key.used_count:
+        key.used_count -= 1
+    s.log_act(db, "인벤토리 삭제", f"{inv.name} · 서버 {len(inv.hosts)}대", "warn")
+    db.delete(inv)
+    db.commit()
+    return {"ok": True}
+
+
+@router.delete("/inventory/{inv_id}/hosts/{ix}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def delete_host(inv_id: str, ix: int, db: Session = Depends(get_db)):
+    inv = db.get(m.Inventory, inv_id)
+    if not inv or not (0 <= ix < len(inv.hosts)):
+        raise HTTPException(404, "서버를 찾을 수 없어요.")
+    h = inv.hosts[ix]
+    s.log_act(db, "서버 삭제", f"{inv.name} · {h.name} ({h.ip})", "warn")
+    inv.hosts.remove(h)  # delete-orphan removes the row
+    db.commit()
+    return {"ok": True}
+
+
 @router.post("/inventory/{inv_id}/hosts/{ix}/accept-key", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def accept_host_key(inv_id: str, ix: int, db: Session = Depends(get_db)):
     inv = db.get(m.Inventory, inv_id)
