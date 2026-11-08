@@ -50,6 +50,8 @@ interface ExtraDraft {
   var: string;
   /** The variable name follows the image name until it is typed in. */
   auto?: boolean;
+  /** Git repo whose CI builds the image (owner/name), for build status. */
+  repo?: string;
 }
 const VAR_RE = /^[A-Z][A-Z0-9_]{0,23}$/;
 /** Variables Wharfline sets itself, and common shell variables, never asked for in the env step. */
@@ -153,6 +155,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   // Deployers: new jobs are protected with auto-deploy off, and those two can't be changed; .env values can't be pasted.
   const fixedSafety = !can("run_protected");
   const canEnv = can("env");
+  const canResources = can("resources");
   const nav = useNavigate();
   const editing = mode === "edit" && !!job;
   const inventories = useApi<Inventory[]>("/inventory").data ?? [];
@@ -176,8 +179,13 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [filesTouched, setFilesTouched] = useState(false);
   // Tracked images in one list. The row with an empty variable name is the main image ($IMAGE_TAG).
   const [tracks, setTracks] = useState<ExtraDraft[]>(() => [
-    ...(job?.image ? [{ id: ++stepSeq, image: jobImageText(job), var: "" }] : []),
-    ...(job?.extraImages ?? []).map((x) => ({ id: ++stepSeq, image: x.defaultTag && x.defaultTag !== "latest" ? `${x.ref}:${x.defaultTag}` : x.ref, var: x.var })),
+    ...(job?.image ? [{ id: ++stepSeq, image: jobImageText(job), var: "", repo: job.imageSourceRepo ?? "" }] : []),
+    ...(job?.extraImages ?? []).map((x) => ({
+      id: ++stepSeq,
+      image: x.defaultTag && x.defaultTag !== "latest" ? `${x.ref}:${x.defaultTag}` : x.ref,
+      var: x.var,
+      repo: x.sourceRepo ?? "",
+    })),
   ]);
   const image = tracks.find((t) => t.var === "")?.image ?? "";
   const extras = tracks.filter((t) => t.var !== "");
@@ -291,6 +299,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           if (!x.image.trim() || "error" in p) return `이미지 ${x.image || "(빈 칸)"}를 확인해 주세요.`;
           if (x.var && !VAR_RE.test(x.var)) return `변수 이름 "${x.var}"은(는) 영문 대문자, 숫자, _로 적어 주세요. 예: BACKEND`;
           if (seen.has(x.var)) return x.var ? `변수 이름 ${x.var}이(가) 두 번 쓰였어요.` : "변수 이름을 비운 이미지는 하나만 둘 수 있어요.";
+          if (x.repo?.trim() && !/^[^/\s]+(\/[^/\s]+)+$/.test(x.repo.trim())) return `빌드 레포 ${x.repo}는 owner/name 형식으로 적어 주세요. 예: moning02004/wharfline`;
           seen.add(x.var);
         }
         return "";
@@ -350,7 +359,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
     servicePath: source === "script" ? servicePath.trim() : "",
     files: source !== "script" ? [] : mode === "new" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
-    extraImages: extras.map((x) => ({ image: x.image.trim(), var: x.var })),
+    extraImages: extras.map((x) => ({ image: x.image.trim(), var: x.var, sourceRepo: canResources ? (x.repo ?? "").trim() : null })),
+    imageSourceRepo: canResources ? (tracks.find((t) => t.var === "")?.repo ?? "").trim() : null,
     inventory: inv,
     targets,
     image: image.trim(),
@@ -798,7 +808,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </div>
             )}
             <TipSpot id="image">
-              <ExtraImagesEditor items={tracks} onChange={setTracks} mainLocked={source === "builtin"} />
+              <ExtraImagesEditor items={tracks} onChange={setTracks} mainLocked={source === "builtin"} canRepo={canResources} />
             </TipSpot>
           </Field>
         );
@@ -1481,9 +1491,9 @@ function FileEditorModal({
 }
 
 /** Tracked images. VAR -> $VAR_TAG, $VAR_IMAGE; an empty name is the main image -> $IMAGE_TAG, $IMAGE. */
-function ExtraImagesEditor({ items, onChange, mainLocked }: { items: ExtraDraft[]; onChange: (x: ExtraDraft[]) => void; mainLocked?: boolean }) {
+function ExtraImagesEditor({ items, onChange, mainLocked, canRepo }: { items: ExtraDraft[]; onChange: (x: ExtraDraft[]) => void; mainLocked?: boolean; canRepo?: boolean }) {
   const set = (id: number, patch: Partial<ExtraDraft>) => onChange(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
-  const cols = "grid grid-cols-[minmax(0,1fr)_140px_auto] gap-2";
+  const cols = "grid grid-cols-[minmax(0,1fr)_120px_150px_auto] gap-2";
   const hasMain = items.some((x) => x.var === "");
   // With the built-in playbook the first image is the one it runs: its variable name stays empty.
   const locked = (x: ExtraDraft, i: number) => !!mainLocked && i === 0 && x.var === "";
@@ -1493,6 +1503,7 @@ function ExtraImagesEditor({ items, onChange, mainLocked }: { items: ExtraDraft[
         <div className={cx(cols, "text-[12px] font-medium text-muted")}>
           <span>이미지</span>
           <span>변수 이름</span>
+          <span title="이 이미지를 빌드하는 Git 레포. 넣으면 빌드 중 상태가 보여요.">빌드 레포</span>
           <span className="w-7" />
         </div>
       )}
@@ -1513,6 +1524,15 @@ function ExtraImagesEditor({ items, onChange, mainLocked }: { items: ExtraDraft[
               disabled={locked(x, i)}
               value={x.var}
               onChange={(e) => set(x.id, { var: e.target.value.toUpperCase(), auto: false })}
+            />
+            <Input
+              mono
+              aria-label="빌드 레포"
+              placeholder="owner/name"
+              disabled={!canRepo}
+              title={canRepo ? "이 이미지를 빌드하는 Git 레포" : "빌드 레포는 Owner와 Admin이 정해요"}
+              value={x.repo ?? ""}
+              onChange={(e) => set(x.id, { repo: e.target.value })}
             />
             <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label="이미지 빼기" onClick={() => onChange(items.filter((y) => y.id !== x.id))} />
           </div>

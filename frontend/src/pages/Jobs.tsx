@@ -89,9 +89,10 @@ export function Jobs() {
                             </Chip>
                           </span>
                         )}
-                        {j.build && (
-                          <div className="mt-1">
+                        {(j.build || (j.extraImages ?? []).some((x) => x.build)) && (
+                          <div className="mt-1 flex flex-wrap gap-1">
                             <BuildBadge build={j.build} />
+                            {(j.extraImages ?? []).map((x) => (x.build ? <BuildBadge key={x.var} build={x.build} /> : null))}
                           </div>
                         )}
                       </td>

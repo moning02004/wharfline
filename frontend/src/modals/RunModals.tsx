@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, Job, RunDetail, RunEvent, Status } from "../lib/types";
-import { PROVIDER_NAME, buildNo, buildState, elapsed } from "../components/BuildBadge";
+import { BuildBadge, PROVIDER_NAME, buildNo, buildState, elapsed } from "../components/BuildBadge";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { FileHistoryModal } from "./FileHistoryModal";
@@ -156,15 +156,22 @@ function ConfirmRun({
   );
   const [busy, setBusy] = useState(false);
 
-  // Latest CI build of this image, polled while it runs, so a deploy can wait for a fresh tag.
+  // Latest CI build of every tracked image ("" = the main image), polled while any runs,
+  // so a deploy can wait for the fresh tags.
   const [poll, setPoll] = useState(2500);
-  const builds = useApi<Build[]>(job.image ? `/builds?image=${encodeURIComponent(job.image)}` : null, poll).data;
-  const latest = builds?.[0];
+  const jobBuilds = useApi<Record<string, Build | null>>(hasImage || extras.length ? `/jobs/${job.id}/builds` : null, poll).data;
+  const latest = jobBuilds?.[""] ?? undefined;
   const showBuild = !!latest && (latest.active || Date.now() / 1000 - latest.updatedAt < 3600);
-  const [waitForBuild, setWaitForBuild] = useState(false);
+  const activeVars = Object.entries(jobBuilds ?? {})
+    .filter(([, b]) => b?.active)
+    .map(([v]) => v);
+  // Images whose builds a deploy is waiting for; null when not waiting.
+  const [waiting, setWaiting] = useState<string[] | null>(null);
+  const waitForBuild = waiting !== null;
+  const setWaitForBuild = (on: boolean) => setWaiting(on ? (activeVars.length ? activeVars : [""]) : null);
   useEffect(() => {
-    if (builds) setPoll(latest?.active ? 2500 : 0);
-  }, [builds, latest?.active]);
+    if (jobBuilds) setPoll(activeVars.length ? 2500 : 0);
+  }, [jobBuilds, activeVars.length]);
 
   const freshTag = latest?.status === "success" && latest.tag && !job.imageTags.some((t) => t.name === latest.tag) ? latest.tag : null;
   const tagOptions = freshTag ? [{ name: freshTag, digest: "", pushed: "방금" }, ...job.imageTags] : job.imageTags;
@@ -178,10 +185,10 @@ function ConfirmRun({
   const changed = JSON.stringify([...sel].sort()) !== JSON.stringify([...job.targets].sort());
   const tagOk = !hasImage || !tag || tag === "latest" || TAG_RE.test(tag); // empty only disables the button
 
-  const go = async (useTag = tag) => {
+  const go = async (useTag = tag, useExtra = extraTags) => {
     setBusy(true);
     try {
-      const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel, extraTags });
+      const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel, extraTags: useExtra });
       if (r.status === "approval") onRequested();
       else onStarted(r.no);
     } catch (e) {
@@ -190,18 +197,29 @@ function ConfirmRun({
     }
   };
 
-  // "Deploy when the build finishes": start as soon as the pushed tag arrives; stop on failure.
+  // "Deploy when the builds finish": once every awaited build is done, deploy with the tags they pushed; stop on a failure.
   useEffect(() => {
-    if (!waitForBuild || !latest) return;
-    if (latest.status === "success" && latest.tag) {
-      setWaitForBuild(false);
-      setTag(latest.tag);
-      go(latest.tag);
-    } else if (!latest.active) {
-      setWaitForBuild(false);
-      toast(`빌드 #${latest.runNumber ?? latest.runId}이 ${latest.status === "failure" ? "실패해서" : "끝났지만 새 태그가 없어서"} 배포하지 않았어요`);
+    if (!waiting || !jobBuilds) return;
+    const awaited = waiting.map((v) => [v, jobBuilds[v] ?? null] as const);
+    if (awaited.some(([, b]) => b?.active)) return;
+    setWaiting(null);
+    const bad = awaited.filter(([, b]) => !b || b.status !== "success" || !b.tag);
+    if (bad.length) {
+      const names = bad.map(([v, b]) => `${v || "이미지"}${b ? ` #${b.runNumber ?? b.runId}` : ""}`).join(", ");
+      toast(`빌드(${names})가 실패했거나 새 태그가 없어서 배포하지 않았어요`, "error");
+      return;
     }
-  }, [waitForBuild, latest?.status, latest?.tag]); // react only to build state changes
+    let mainTag = tag;
+    const nextExtra = { ...extraTags };
+    for (const [v, b] of awaited) {
+      if (!b?.tag) continue;
+      if (v === "") mainTag = b.tag;
+      else nextExtra[v] = b.tag;
+    }
+    setTag(mainTag);
+    setExtraTags(nextExtra);
+    go(mainTag, nextExtra);
+  }, [waiting, jobBuilds]); // react to build state changes
 
   return (
     <>
@@ -311,13 +329,28 @@ function ConfirmRun({
           </Hint>
         )}
         {extras.length > 0 && (
-          <Field label="추가 이미지" hint="바꾸지 않은 이미지는 지금 떠 있는 버전 그대로 배포해요.">
+          <Field
+            label="추가 이미지"
+            hint="바꾸지 않은 이미지는 지금 떠 있는 버전 그대로 배포해요."
+            right={
+              activeVars.some((v) => v !== "") && !(hasImage && showBuild && latest?.active) ? (
+                <Button size="sm" variant={waitForBuild ? "primary" : "default"} onClick={() => setWaitForBuild(!waitForBuild)}>
+                  {waitForBuild ? "기다리는 중 · 취소" : "빌드 끝나면 배포"}
+                </Button>
+              ) : undefined
+            }
+          >
             <div className="flex flex-col gap-2">
               {extras.map((x) => (
                 <div key={x.var} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_200px] gap-2 items-center">
                   <span className="min-w-0 text-[12.5px]">
                     <span className="font-mono font-medium">{x.var}</span> <span className="font-mono text-muted break-all">{x.ref}</span>
                     {x.tagNow && x.tagNow !== "-" && <span className="text-faint"> · 지금 {x.tagNow}</span>}
+                    {jobBuilds?.[x.var] && (
+                      <span className="block mt-0.5">
+                        <BuildBadge build={jobBuilds[x.var]!} />
+                      </span>
+                    )}
                   </span>
                   <Select mono aria-label={`${x.var} 태그`} value={extraTags[x.var]} onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value })}>
                     {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (

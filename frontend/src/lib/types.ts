@@ -89,6 +89,8 @@ export interface Job {
   filesVer: number | null;
   /** Watched images besides the main one: $VAR_IMAGE, $VAR_TAG, $VAR_IMAGE_REF. */
   extraImages: ExtraImage[];
+  /** Build repo (owner/name) of the main image. */
+  imageSourceRepo?: string | null;
   inventory: string;
   targets: string[];
   env: string;
@@ -143,6 +145,8 @@ export interface ExtraImage {
   tagNow: string;
   tags?: string[];
   latestTag?: string | null;
+  sourceRepo?: string | null;
+  build?: Build | null;
 }
 
 export interface BundleFile {

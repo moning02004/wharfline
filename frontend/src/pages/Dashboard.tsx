@@ -44,6 +44,7 @@ export default function Dashboard() {
               }
             >
               <BuildBadge build={j.build} />
+                            {(j.extraImages ?? []).map((x) => (x.build ? <BuildBadge key={x.var} build={x.build} /> : null))}
               {can("run") && (
                 <Button size="sm" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>
                   {j.protected && !can("run_protected") ? "승인 요청" : "실행"}

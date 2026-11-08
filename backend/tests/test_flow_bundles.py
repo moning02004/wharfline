@@ -154,3 +154,32 @@ def test_file_versions_and_the_version_each_run_used(client, login):
     old = client.get(f"/api/jobs/{job['id']}/files", params={"ver": 1}).json()
     assert [f["path"] for f in old] == ["docker-compose.yaml"] and old[0]["content"] == COMPOSE
     assert client.get(f"/api/jobs/{job['id']}/files", params={"ver": 9}).status_code == 404
+
+
+def test_build_repo_per_tracked_image_and_builds_of_every_image(client, login):
+    from app import githooks
+    from app.db import SessionLocal
+
+    body = script_job("bundle · builds") | {
+        "image": "ghcr.io/acme/track-main:v1", "imageSourceRepo": "acme/track",
+        "extraImages": [{"image": "ghcr.io/acme/track-web:v1", "var": "WEB", "sourceRepo": "acme/track-web"}],
+    }
+    job = client.post("/api/jobs", json=body).json()
+    assert job["imageSourceRepo"] == "acme/track"
+    assert job["extraImages"][0]["sourceRepo"] == "acme/track-web" and job["extraImages"][0]["build"] is None
+
+    with SessionLocal() as db:
+        secret = githooks.new_secret(db)
+        db.commit()
+    run = {"id": 7001, "run_number": 12, "name": "image", "status": "in_progress", "head_branch": "main"}
+    send_hook(client, secret, "workflow_run", {"repository": {"full_name": "acme/track-web"}, "workflow_run": run})
+    builds = client.get(f"/api/jobs/{job['id']}/builds").json()
+    assert builds[""] is None and builds["WEB"]["status"] == "in_progress" and builds["WEB"]["runNumber"] == 12
+    view = next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])
+    assert view["extraImages"][0]["build"]["active"] is True  # shown next to the job like the main image's build
+
+    # a Deployer can't change build repos: the value is ignored
+    from tests.conftest import DEPLOYER
+    login(DEPLOYER)
+    body2 = script_job("bundle · builds by deployer") | {"image": "ghcr.io/acme/track-main:v1", "imageSourceRepo": "evil/repo"}
+    assert client.post("/api/jobs", json=body2).json()["imageSourceRepo"] == "acme/track"

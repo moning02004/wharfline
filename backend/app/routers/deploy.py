@@ -41,16 +41,18 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None, who: m.Member | No
         "latestTag": img["tags"][0]["name"] if img["tags"] else None,
         "prevTag": s.prev_tag(db, j, img),
         "build": githooks.build_for_image(db, j["image"], scope) if has_image else None,
-        "extraImages": [extra_view(db, x) for x in job.extra_images or []],
+        "imageSourceRepo": db.get(m.Image, j["image"]).source_repo if has_image and db.get(m.Image, j["image"]) else None,
+        "extraImages": [extra_view(db, x, scope) for x in job.extra_images or []],
         "canEdit": s.can_edit(who, job),
     }
 
 
-def extra_view(db: Session, x: dict) -> dict:
-    """An extra watched image with the tags Wharfline knows, newest first."""
+def extra_view(db: Session, x: dict, scope: set[str] | None = None) -> dict:
+    """An extra watched image with the tags Wharfline knows (newest first), its build repo and its CI build worth showing."""
     img = db.get(m.Image, x["ref"])
     tags = [t.name for t in img.tags] if img else []
-    return {**x, "tags": tags, "latestTag": tags[0] if tags else None}
+    return {**x, "tags": tags, "latestTag": tags[0] if tags else None, "sourceRepo": img.source_repo if img else None,
+            "build": githooks.build_for_image(db, x["ref"], scope)}
 
 
 def member_names(db: Session) -> dict[str, str]:
@@ -127,6 +129,7 @@ class ExtraImageIn(BaseModel):
     """A watched image besides the main one. VAR becomes $VAR_IMAGE, $VAR_TAG and $VAR_IMAGE_REF."""
     image: str
     var: str
+    sourceRepo: str | None = None  # Git repo whose CI builds it (owner/name); None leaves it as it is
 
 
 class JobIn(BaseModel):
@@ -136,6 +139,7 @@ class JobIn(BaseModel):
     servicePath: str = ""  # SSH script jobs: folder on the servers; default /srv/<job slug>
     files: list[FileIn] | None = None  # SSH script jobs: uploaded to SERVICE_PATH; None keeps the current files on edit
     extraImages: list[ExtraImageIn] = []
+    imageSourceRepo: str | None = None  # build repo of the main image; None leaves it as it is
     inventory: str
     targets: list[str] = []
     image: str = ""
@@ -239,6 +243,22 @@ RESERVED_VARS = {"SERVICE_PATH", "ENV_FILE", "IMAGE", "IMAGE_TAG", "IMAGE_REF"}
 MAX_EXTRA_IMAGES = 10
 
 
+SOURCE_REPO_RE = re.compile(r"^[^/\s]+(/[^/\s]+)+$")  # owner/name, or group/subgroup/name on GitLab
+
+
+def set_source_repo(db: Session, ref: str | None, repo: str | None) -> None:
+    """Link an image to the Git repo whose CI builds it (shared by every job using the image). None: leave it."""
+    if ref is None or repo is None or not s.can(s.current_member(db), "resources"):
+        return  # build repos are an Owner/Admin setting; a Deployer's value is ignored
+    repo = repo.strip().lower().removesuffix(".git")
+    if repo and not SOURCE_REPO_RE.match(repo):
+        raise HTTPException(400, f"빌드 레포 {repo}는 owner/name 형식으로 넣어 주세요. 예: moning02004/wharfline")
+    img = db.get(m.Image, ref)
+    if img and (img.source_repo or "") != repo:
+        img.source_repo = repo or None
+        s.log_act(db, "빌드 레포 연결", f"{ref} ← {repo or '없음'}")
+
+
 def check_extra_images(db: Session, items: list[ExtraImageIn], current: list[dict] | None) -> list[dict[str, str]]:
     """Validate extra watched images; register them so new tags and webhooks are tracked. Keeps tagNow of unchanged ones."""
     if len(items) > MAX_EXTRA_IMAGES:
@@ -255,6 +275,8 @@ def check_extra_images(db: Session, items: list[ExtraImageIn], current: list[dic
         seen.add(var)
         ref, tag = s.parse_image(it.image.strip())
         s.ensure_image(db, ref, tag)
+        db.flush()
+        set_source_repo(db, ref, it.sourceRepo)
         out.append({"ref": ref, "var": var, "defaultTag": tag, "tagNow": before.get((ref, var), {}).get("tagNow", "-")})
     return out
 
@@ -356,6 +378,8 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     check_target(db, body.inventory, body.targets)
     editors = check_editors(db, body.editors)
     repo, path, ref, tag, script, service_path = resolve_playbook(db, body)
+    db.flush()
+    set_source_repo(db, ref, body.imageSourceRepo)
 
     if body.envMode == "none":
         env_name = ""  # no .env for this job; one can be attached later
@@ -402,6 +426,8 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
         raise HTTPException(403, "sudo_required")
 
     repo, path, ref, tag, script, service_path = resolve_playbook(db, body)
+    db.flush()
+    set_source_repo(db, ref, body.imageSourceRepo)
     files = None if script is None else job.files if body.files is None else bundles.check_files([f.model_dump() for f in body.files])
     extra_images = check_extra_images(db, body.extraImages, job.extra_images)
 
@@ -522,6 +548,20 @@ def job_files(job_id: str, ver: int | None = None, db: Session = Depends(get_db)
         files = v.files
     return [{"path": f["path"], "content": f["content"], "size": len(f["content"].encode()),
              "warnings": [w["message"] for w in bundles.risky_warnings(f["path"], f["content"])]} for f in files]
+
+
+@router.get("/jobs/{job_id}/builds")
+def job_builds(job_id: str, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
+    """The latest CI build of every tracked image: {"": main image's build, VAR: extra image's build} (null when none)."""
+    job = db.get(m.Job, job_id)
+    if not job:
+        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    refs = ([("", job.image)] if job.image else []) + [(x["var"], x["ref"]) for x in job.extra_images or []]
+    out = {}
+    for var, ref in refs:
+        latest = githooks.builds_for_image(db, ref, limit=1, scope=scope)
+        out[var] = latest[0] if latest else None
+    return out
 
 
 @router.get("/jobs/{job_id}/files/history")
