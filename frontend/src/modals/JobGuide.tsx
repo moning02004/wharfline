@@ -10,7 +10,7 @@ export const JOB_STEPS: { id: JobStepId; label: string }[] = [
   { id: "playbook", label: "배포 방법" },
   { id: "script", label: "스크립트" }, // only when the deploy method is an SSH script
   { id: "target", label: "배포 대상" },
-  { id: "image", label: "이미지" },
+  { id: "image", label: "버전 추적" },
   { id: "env", label: "환경 변수" },
   { id: "access", label: "권한과 안전장치" },
   { id: "review", label: "확인" },
@@ -62,8 +62,8 @@ export function tipFor(id: TipId, mode: Mode, opts: { builtin?: boolean } = {}):
       return { text: "일부 서버에만 보내려면 그룹을 골라요. 비워 두면 목록의 모든 서버에 배포해요." };
     case "image":
       return opts.builtin
-        ? { text: "띄울 이미지를 docker pull 할 때처럼 이름:버전으로 적어요.", example: "postgres:15" }
-        : { text: "배포할 이미지를 이름:버전으로 적어요. 플레이북만 돌린다면 비워 둬요.", example: "ghcr.io/acme/api:v1.2" };
+        ? { text: "기본 플레이북이 띄울 이미지를 이름:버전으로 적어요. 변수 이름은 비워 둬요.", example: "postgres:15" }
+        : { text: "새 버전을 지켜볼 이미지예요. 파일의 ${이름_TAG}와 변수 이름을 맞춰요. 추적이 필요 없으면 비워 둬요.", example: "ghcr.io/acme/backend:v1.2" };
     case "env":
       return mode === "edit"
         ? { text: "그대로 두려면 지금 것 유지, 값을 바꾸려면 바꾸기를 골라요." }

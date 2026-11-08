@@ -48,6 +48,8 @@ interface ExtraDraft {
   id: number;
   image: string;
   var: string;
+  /** The variable name follows the image name until it is typed in. */
+  auto?: boolean;
 }
 const VAR_RE = /^[A-Z][A-Z0-9_]{0,23}$/;
 /** Variables Wharfline sets itself, and common shell variables, never asked for in the env step. */
@@ -66,6 +68,38 @@ function usedVars(texts: string[]): string[] {
   const out = new Set<string>();
   for (const t of texts) for (const m of t.matchAll(/\$\{?([A-Z_][A-Z0-9_]*)/g)) out.add(m[1]);
   return [...out];
+}
+
+interface FileImage {
+  path: string;
+  value: string; // as written after image:
+  ref: string;
+  tag: string | null;
+  var: string; // tracking variable name ("" = main image)
+  fixed: boolean; // a literal tag (or none): not following a variable
+}
+const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/** `image: …` values in compose / Kubernetes files. `${NAME_TAG}` -> track NAME; a literal tag -> suggest a variable. */
+function findFileImages(files: BundleFile[]): FileImage[] {
+  const out: FileImage[] = [];
+  const seen = new Set<string>();
+  for (const f of files) {
+    for (const m of (f.content ?? "").matchAll(/^\s*-?\s*image:\s*["']?([^\s"'#]+)/gm)) {
+      const value = m[1];
+      if (seen.has(value) || value.includes("@")) continue;
+      seen.add(value);
+      const slash = value.lastIndexOf("/");
+      const colon = value.indexOf(":", slash + 1);
+      const ref = colon >= 0 ? value.slice(0, colon) : value;
+      const tag = colon >= 0 ? value.slice(colon + 1) : null;
+      if (ref.includes("${")) continue; // the image name itself comes from a variable
+      const v = tag?.match(/^\$\{([A-Z_][A-Z0-9_]*)(:-[^}]*)?\}$/);
+      if (v) out.push({ path: f.path, value, ref, tag: null, var: v[1] === "IMAGE_TAG" ? "" : v[1].replace(/_TAG$/, ""), fixed: false });
+      else out.push({ path: f.path, value, ref, tag, var: varFromImage(ref), fixed: true });
+    }
+  }
+  return out;
 }
 
 function fileToBase64(file: File): Promise<string> {
@@ -140,13 +174,16 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [servicePath, setServicePath] = useState(job?.servicePath ?? "");
   const [files, setFiles] = useState<BundleFile[]>(() => (job?.files ?? []).map((f) => ({ ...f })));
   const [filesTouched, setFilesTouched] = useState(false);
-  const [extras, setExtras] = useState<ExtraDraft[]>(() =>
-    (job?.extraImages ?? []).map((x) => ({ id: ++stepSeq, image: x.defaultTag && x.defaultTag !== "latest" ? `${x.ref}:${x.defaultTag}` : x.ref, var: x.var })),
-  );
+  // Tracked images in one list. The row with an empty variable name is the main image ($IMAGE_TAG).
+  const [tracks, setTracks] = useState<ExtraDraft[]>(() => [
+    ...(job?.image ? [{ id: ++stepSeq, image: jobImageText(job), var: "" }] : []),
+    ...(job?.extraImages ?? []).map((x) => ({ id: ++stepSeq, image: x.defaultTag && x.defaultTag !== "latest" ? `${x.ref}:${x.defaultTag}` : x.ref, var: x.var })),
+  ]);
+  const image = tracks.find((t) => t.var === "")?.image ?? "";
+  const extras = tracks.filter((t) => t.var !== "");
   const [key, setKey] = useState(NO_KEY);
   const [inv, setInv] = useState(job?.inventory ?? "");
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
-  const [image, setImage] = useState(job ? jobImageText(job) : "");
   const [envChoice, setEnvChoice] = useState<EnvChoice>(editing ? "keep" : "none");
   const [envMode, setEnvMode] = useState<EnvMode>(canEnv ? "paste" : "existing");
   const [envText, setEnvText] = useState("");
@@ -198,7 +235,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   }, [invObj]);
   const hosts = invObj?.hosts.filter((h) => !targets.length || targets.includes(h.group)) ?? [];
 
-  const parsed = image.trim() ? parseImage(image) : null;
   const envVars = parseEnv(envText);
   const envOn = envChoice === "on";
   // Variables the script and files use: Wharfline's own (자동) and the ones the env step should have.
@@ -206,6 +242,22 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const scriptVars =
     source === "script" ? usedVars([...steps.map((st) => st.run), ...files.map((f) => f.content ?? "")]).filter((v) => !SHELL_VARS.has(v)) : [];
   const neededVars = scriptVars.filter((v) => !autoVars.includes(v));
+
+  // `image:` lines in the job's files: variables can be tracked; a fixed tag can be turned into a variable.
+  const fileImages = source === "script" ? findFileImages(files) : [];
+  const trackFixed = (fi: FileImage) => {
+    const tagVar = `${fi.var}_TAG`;
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.path !== fi.path || f.content === undefined
+          ? f
+          : { ...f, content: f.content.replace(new RegExp(`(image:\\s*["']?)${escapeRe(fi.value)}`, "g"), `$1${fi.ref}:\${${tagVar}}`) },
+      ),
+    );
+    setFilesTouched(true);
+    setTracks((t) => [...t, { id: ++stepSeq, image: fi.tag && fi.tag !== "latest" ? `${fi.ref}:${fi.tag}` : fi.ref, var: fi.var }]);
+    toast(`${fi.path}의 이미지를 \${${tagVar}}로 바꿨어요`);
+  };
 
   /** Client-side check of one step; the server validates everything again. */
   const validateStep = (id: JobStepId): string => {
@@ -232,14 +284,13 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       case "target":
         return hosts.length ? "" : "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
       case "image": {
-        if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요.";
-        if (parsed && "error" in parsed) return parsed.error;
+        if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요. 변수 이름을 비운 이미지를 넣어 주세요.";
         const seen = new Set<string>();
-        for (const x of extras) {
+        for (const x of tracks) {
           const p = parseImage(x.image);
-          if (!x.image.trim() || "error" in p) return `추가 이미지 ${x.image || "(빈 칸)"}를 확인해 주세요.`;
-          if (!VAR_RE.test(x.var)) return `변수 이름 "${x.var}"은(는) 영문 대문자, 숫자, _로 적어 주세요. 예: API`;
-          if (seen.has(x.var)) return `변수 이름 ${x.var}이(가) 두 번 쓰였어요.`;
+          if (!x.image.trim() || "error" in p) return `이미지 ${x.image || "(빈 칸)"}를 확인해 주세요.`;
+          if (x.var && !VAR_RE.test(x.var)) return `변수 이름 "${x.var}"은(는) 영문 대문자, 숫자, _로 적어 주세요. 예: BACKEND`;
+          if (seen.has(x.var)) return x.var ? `변수 이름 ${x.var}이(가) 두 번 쓰였어요.` : "변수 이름을 비운 이미지는 하나만 둘 수 있어요.";
           seen.add(x.var);
         }
         return "";
@@ -269,9 +320,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   };
 
   // Optional steps (new job only): image unless the built-in playbook needs one, and env.
-  const skipLabel = mode === "new" ? (step === "image" && source !== "builtin" ? "이미지 없이 진행" : step === "env" ? ".env 없이 진행" : null) : null;
+  const skipLabel = mode === "new" ? (step === "image" && source !== "builtin" ? "추적 없이 진행" : step === "env" ? ".env 없이 진행" : null) : null;
   const skip = () => {
-    if (step === "image") setImage("");
+    if (step === "image") setTracks([]);
     if (step === "env") setEnvChoice("none");
     setSkipped((s) => (s.includes(step) ? s : [...s, step]));
     goto(cur + 1);
@@ -707,39 +758,48 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           <Field
             label={
               <>
-                배포할 이미지 {source === "builtin" ? <span className="text-accent font-normal text-[12.5px]">필수</span> : <span className="text-muted font-normal text-[12.5px]">선택</span>}
+                버전 추적 {source === "builtin" ? <span className="text-accent font-normal text-[12.5px]">필수</span> : <span className="text-muted font-normal text-[12.5px]">선택</span>}
               </>
             }
-            htmlFor="jImage"
-            error={!!parsed && "error" in parsed}
-            hint={parsed && "error" in parsed ? parsed.error : undefined}
+            hint="추적하는 이미지에 새 버전이 오면 자동 배포하고, 실행할 때 고른 버전을 변수로 넘겨요."
             right={
               <Button size="sm" variant="ghost" icon="plus" title="비공개 이미지를 받을 토큰을 등록해요" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
                 레지스트리 추가
               </Button>
             }
           >
-            <TipSpot id="image">
-            <Input
-              id="jImage"
-              mono
-              value={image}
-              onChange={(e) => setImage(e.target.value)}
-              placeholder="postgres:15 또는 ghcr.io/acme/api:v1.2"
-              autoComplete="off"
-              spellCheck={false}
-            />
-            </TipSpot>
-            {parsed && "ref" in parsed && (
-              <div className="flex items-center gap-1.5 text-[12px] text-muted min-w-0 animate-fade">
-                <Icon name="check" className="size-3 flex-none text-ok" strokeWidth={2.6} />
-                <span className="font-mono truncate">{parsed.ref}</span>
-                <span className="text-faint">·</span>
-                <span className="font-mono flex-none">{parsed.tag}</span>
-                {parsed.tag === "latest" && <span className="text-faint truncate">실행할 때 가장 최근 태그로 고정해요</span>}
+            {fileImages.length > 0 && (
+              <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
+                <span className="px-3 py-1.5 text-[12px] text-muted bg-surface-2">파일에 있는 이미지</span>
+                {fileImages.map((fi) => {
+                  const tracked = tracks.some((t) => t.var === fi.var && parseImage(t.image) && "ref" in parseImage(t.image) && (parseImage(t.image) as { ref: string }).ref === fi.ref);
+                  return (
+                    <div key={`${fi.path}:${fi.value}`} className="flex items-center gap-2 px-3 py-2 text-[12.5px] min-w-0 flex-wrap">
+                      <span className="font-mono truncate min-w-0 flex-1" title={`${fi.path}: image: ${fi.value}`}>
+                        {fi.value}
+                      </span>
+                      {fi.fixed ? (
+                        <>
+                          <Chip tone="warn">버전이 박혀 있어요</Chip>
+                          <Button size="sm" onClick={() => trackFixed(fi)}>
+                            변수로 바꾸고 추적
+                          </Button>
+                        </>
+                      ) : tracked ? (
+                        <Chip tone="ok">추적 중</Chip>
+                      ) : (
+                        <Button size="sm" onClick={() => setTracks((t) => [...t, { id: ++stepSeq, image: fi.ref, var: fi.var }])}>
+                          추적하기
+                        </Button>
+                      )}
+                    </div>
+                  );
+                })}
               </div>
             )}
-            <ExtraImagesEditor items={extras} onChange={setExtras} />
+            <TipSpot id="image">
+              <ExtraImagesEditor items={tracks} onChange={setTracks} mainLocked={source === "builtin"} />
+            </TipSpot>
           </Field>
         );
 
@@ -958,13 +1018,15 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             ? ([["playbook", "파일", <span className="font-mono text-[12.5px] break-all">{files.map((f) => f.path).join(", ")}</span>]] as [JobStepId, string, React.ReactNode][])
             : []),
           ["target", "배포 대상", `${inv || "-"} · ${targets.length ? targets.join(", ") : "전체"} · 서버 ${hosts.length}대`],
-          ...(extras.length
-            ? ([["image", "추가 이미지", <span className="font-mono text-[12.5px] break-all">{extras.map((x) => `${x.var}=${x.image}`).join(", ")}</span>]] as [JobStepId, string, React.ReactNode][])
-            : []),
+
           [
             "image",
-            "이미지",
-            parsed && "ref" in parsed ? <span className="font-mono text-[12.5px] break-all">{`${parsed.ref}:${parsed.tag}`}</span> : <span className="text-faint">없음</span>,
+            "버전 추적",
+            tracks.length ? (
+              <span className="font-mono text-[12.5px] break-all">{tracks.map((t) => `${t.var || "IMAGE"}=${t.image}`).join(", ")}</span>
+            ) : (
+              <span className="text-faint">없음</span>
+            ),
           ],
           ["env", "환경 변수", envSummary],
           ["access", "권한과 안전장치", `${editorsSummary} · ${safetySummary}`],
@@ -1418,44 +1480,50 @@ function FileEditorModal({
   );
 }
 
-/** More images to watch. Each gets a variable name: VAR -> $VAR_IMAGE, $VAR_TAG, $VAR_IMAGE_REF. */
-function ExtraImagesEditor({ items, onChange }: { items: ExtraDraft[]; onChange: (x: ExtraDraft[]) => void }) {
+/** Tracked images. VAR -> $VAR_TAG, $VAR_IMAGE; an empty name is the main image -> $IMAGE_TAG, $IMAGE. */
+function ExtraImagesEditor({ items, onChange, mainLocked }: { items: ExtraDraft[]; onChange: (x: ExtraDraft[]) => void; mainLocked?: boolean }) {
   const set = (id: number, patch: Partial<ExtraDraft>) => onChange(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
   const cols = "grid grid-cols-[minmax(0,1fr)_140px_auto] gap-2";
+  const hasMain = items.some((x) => x.var === "");
+  // With the built-in playbook the first image is the one it runs: its variable name stays empty.
+  const locked = (x: ExtraDraft, i: number) => !!mainLocked && i === 0 && x.var === "";
   return (
-    <div className="flex flex-col gap-2 mt-2">
+    <div className="flex flex-col gap-2">
       {items.length > 0 && (
         <div className={cx(cols, "text-[12px] font-medium text-muted")}>
-          <span>추가 이미지</span>
+          <span>이미지</span>
           <span>변수 이름</span>
           <span className="w-7" />
         </div>
       )}
-      {items.map((x) => (
+      {items.map((x, i) => (
         <div key={x.id} className="flex flex-col gap-1">
           <div className={cx(cols, "items-center")}>
             <Input
               mono
-              aria-label="추가 이미지"
-              placeholder="ghcr.io/acme/web:v2.3.0"
+              aria-label="이미지"
+              placeholder="ghcr.io/acme/backend:v1.2.0"
               value={x.image}
-              onChange={(e) => {
-                const auto = !x.var || x.var === varFromImage(x.image);
-                set(x.id, { image: e.target.value, ...(auto ? { var: varFromImage(e.target.value) } : {}) });
-              }}
+              onChange={(e) => set(x.id, { image: e.target.value, ...(x.auto && !locked(x, i) ? { var: varFromImage(e.target.value) } : {}) })}
             />
-            <Input mono aria-label="변수 이름" placeholder="WEB" value={x.var} onChange={(e) => set(x.id, { var: e.target.value.toUpperCase() })} />
+            <Input
+              mono
+              aria-label="변수 이름"
+              placeholder="IMAGE"
+              disabled={locked(x, i)}
+              value={x.var}
+              onChange={(e) => set(x.id, { var: e.target.value.toUpperCase(), auto: false })}
+            />
             <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label="이미지 빼기" onClick={() => onChange(items.filter((y) => y.id !== x.id))} />
           </div>
-          {x.var && (
-            <span className="text-[11.5px] text-faint font-mono">
-              ${x.var}_TAG · ${x.var}_IMAGE
-            </span>
-          )}
+          <span className="text-[11.5px] text-faint font-mono">
+            ${x.var || "IMAGE"}_TAG · ${x.var || "IMAGE"}
+            {x.var ? "_IMAGE" : ""}
+          </span>
         </div>
       ))}
       <div>
-        <Button size="sm" icon="plus" onClick={() => onChange([...items, { id: ++stepSeq, image: "", var: "" }])}>
+        <Button size="sm" icon="plus" onClick={() => onChange([...items, { id: ++stepSeq, image: "", var: "", auto: hasMain || items.length > 0 }])}>
           이미지 더하기
         </Button>
       </div>
