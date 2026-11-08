@@ -28,18 +28,28 @@ router = APIRouter(prefix="/api", tags=["integrations"], dependencies=[Depends(r
 def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[int]:
     """Start runs for jobs with auto-deploy on, for each newly pushed release tag.
 
-    A protected job is not started: its run waits for an Owner/Admin to approve it.
+    The tag goes to whichever watched image it belongs to (the main one or an extra one); the other
+    images keep the version running now. A protected job is not started: its run waits for an
+    Owner/Admin to approve it.
     """
     started: list[int] = []
     for img, tag in released:
-        for job in db.scalars(select(m.Job).where(m.Job.image == img.ref, m.Job.hook.is_(True))):
+        for job in db.scalars(select(m.Job).where(m.Job.hook.is_(True)).order_by(m.Job.ord)):
+            extra = next((x for x in job.extra_images or [] if x["ref"] == img.ref), None)
+            if job.image != img.ref and not extra:
+                continue
             j = job.to_dict()
             if not [h for h in s.target_hosts(s.inv_of(db, j), j["targets"]) if not s.host_skip(h)]:
                 continue
-            if job.protected:
-                started.append(runner.request_approval(db, j, j["targets"], tag, "새 이미지 push", None)["no"])
+            if job.image == img.ref:
+                main_tag, extra_tags = tag, {}
             else:
-                started.append(runner.start_run(db, j, j["targets"], tag, "새 이미지 push")["no"])
+                main_tag = job.tag_now if job.tag_now not in ("", "-") else job.default_tag
+                extra_tags = {extra["var"]: tag}
+            if job.protected:
+                started.append(runner.request_approval(db, j, j["targets"], main_tag, "새 이미지 push", None, extra_tags=extra_tags)["no"])
+            else:
+                started.append(runner.start_run(db, j, j["targets"], main_tag, "새 이미지 push", extra_tags=extra_tags)["no"])
     return started
 
 

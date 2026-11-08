@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError, errMsg, parseEnv } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { EnvSet, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
+import type { BundleFile, EnvSet, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
 import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
@@ -43,6 +43,38 @@ interface StepDraft {
   run: string;
 }
 let stepSeq = 0;
+interface ExtraDraft {
+  id: number;
+  image: string;
+  var: string;
+}
+const VAR_RE = /^[A-Z][A-Z0-9_]{0,23}$/;
+/** Variables Wharfline sets itself, and common shell variables, never asked for in the env step. */
+const BUILTIN_VARS = ["SERVICE_PATH", "ENV_FILE", "IMAGE", "IMAGE_TAG", "IMAGE_REF"];
+const SHELL_VARS = new Set(["HOME", "PATH", "USER", "PWD", "OLDPWD", "SHELL", "HOSTNAME", "LANG", "TERM", "UID", "PPID", "RANDOM", "IFS"]);
+
+/** "ghcr.io/acme/api-server:v1" -> "API_SERVER": a starting variable name for an extra image. */
+function varFromImage(text: string): string {
+  const name = text.trim().split("/").pop()?.split(":")[0] ?? "";
+  const v = name.toUpperCase().replace(/[^A-Z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return /^[A-Z]/.test(v) ? v.slice(0, 24) : "";
+}
+
+/** $NAME and ${NAME} in scripts and files (upper case, the env-variable convention). */
+function usedVars(texts: string[]): string[] {
+  const out = new Set<string>();
+  for (const t of texts) for (const m of t.matchAll(/\$\{?([A-Z_][A-Z0-9_]*)/g)) out.add(m[1]);
+  return [...out];
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const r = new FileReader();
+    r.onload = () => resolve(String(r.result).split(",", 2)[1] ?? "");
+    r.onerror = () => reject(r.error);
+    r.readAsDataURL(file);
+  });
+}
 
 /** Same as the server's app_slug: "api-server · production" -> "api-server-production". */
 function slug(name: string): string {
@@ -105,6 +137,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [path, setPath] = useState(isRepo ? pb.path : "");
   const [steps, setSteps] = useState<StepDraft[]>(() => (job?.script ?? []).map((st) => ({ ...st, id: ++stepSeq })));
   const [servicePath, setServicePath] = useState(job?.servicePath ?? "");
+  const [files, setFiles] = useState<BundleFile[]>(() => (job?.files ?? []).map((f) => ({ ...f })));
+  const [filesTouched, setFilesTouched] = useState(false);
+  const [extras, setExtras] = useState<ExtraDraft[]>(() =>
+    (job?.extraImages ?? []).map((x) => ({ id: ++stepSeq, image: x.defaultTag && x.defaultTag !== "latest" ? `${x.ref}:${x.defaultTag}` : x.ref, var: x.var })),
+  );
   const [key, setKey] = useState(NO_KEY);
   const [inv, setInv] = useState(job?.inventory ?? "");
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
@@ -160,6 +197,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const parsed = image.trim() ? parseImage(image) : null;
   const envVars = parseEnv(envText);
   const envOn = envChoice === "on";
+  // Variables the script and files use: Wharfline's own (자동) and the ones the env step should have.
+  const autoVars = [...BUILTIN_VARS, ...extras.flatMap((x) => (x.var ? [`${x.var}_IMAGE`, `${x.var}_TAG`, `${x.var}_IMAGE_REF`] : []))];
+  const scriptVars =
+    source === "script" ? usedVars([...steps.map((st) => st.run), ...files.map((f) => f.content ?? "")]).filter((v) => !SHELL_VARS.has(v)) : [];
+  const neededVars = scriptVars.filter((v) => !autoVars.includes(v));
 
   /** Client-side check of one step; the server validates everything again. */
   const validateStep = (id: JobStepId): string => {
@@ -182,9 +224,19 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         return "";
       case "target":
         return hosts.length ? "" : "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
-      case "image":
+      case "image": {
         if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요.";
-        return parsed && "error" in parsed ? parsed.error : "";
+        if (parsed && "error" in parsed) return parsed.error;
+        const seen = new Set<string>();
+        for (const x of extras) {
+          const p = parseImage(x.image);
+          if (!x.image.trim() || "error" in p) return `추가 이미지 ${x.image || "(빈 칸)"}를 확인해 주세요.`;
+          if (!VAR_RE.test(x.var)) return `변수 이름 "${x.var}"은(는) 영문 대문자, 숫자, _로 적어 주세요. 예: API`;
+          if (seen.has(x.var)) return `변수 이름 ${x.var}이(가) 두 번 쓰였어요.`;
+          seen.add(x.var);
+        }
+        return "";
+      }
       case "env":
         if (envOn && envMode !== "existing" && !envVars.length) return "인식된 .env 변수가 없어요. 필요 없다면 '없음'을 고르세요.";
         if (envOn && envMode === "existing" && !envPick) return "저장된 환경 변수를 골라 주세요.";
@@ -239,6 +291,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         : { source },
     script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
     servicePath: source === "script" ? servicePath.trim() : "",
+    files: source !== "script" ? [] : mode === "new" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
+    extraImages: extras.map((x) => ({ image: x.image.trim(), var: x.var })),
     inventory: inv,
     targets,
     image: image.trim(),
@@ -390,6 +444,30 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     if (t) focusTip(t, true);
     else setTip(null);
   }, [guide, step, source]); // a new step, or the playbook kind changed
+
+  // Arriving at the env step: put the variables the script uses but nobody set yet, ready to fill in.
+  useEffect(() => {
+    if (step !== "env" || !canEnv || !neededVars.length) return;
+    if (envChoice === "keep" || (envOn && envMode === "existing")) return; // a saved set: just show what it lacks
+    const have = new Set(parseEnv(envText).map(([k]) => k));
+    const missing = neededVars.filter((v) => !have.has(v));
+    if (!missing.length) return;
+    setEnvChoice("on");
+    setEnvMode("paste");
+    setEnvText((t) => (t.trim() ? `${t.replace(/\s+$/, "")}\n` : "") + missing.map((k) => `${k}=`).join("\n"));
+    toast(`스크립트에서 쓰는 변수 ${missing.length}개를 넣어 뒀어요. 값을 채워 주세요.`);
+  }, [step]); // only when arriving at the step
+
+  /** Variables from an uploaded .env: added to the env step, names already there are skipped. */
+  const mergeEnv = (vars: string[][]) => {
+    if (!vars.length || !canEnv) return;
+    const have = new Set(parseEnv(envOn && envMode === "paste" ? envText : "").map(([k]) => k));
+    const add = vars.filter(([k]) => !have.has(k));
+    setEnvChoice("on");
+    setEnvMode("paste");
+    setEnvText((t) => ((envOn && envMode === "paste" && t.trim() ? `${t.replace(/\s+$/, "")}\n` : "") + add.map(([k, v]) => `${k}=${v}`).join("\n")));
+    toast(add.length ? `.env의 변수 ${add.length}개를 환경 변수에 더했어요` : ".env의 변수는 이미 다 들어 있어요");
+  };
   const guideState = {
     on: guide,
     tip,
@@ -521,6 +599,15 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 <Field label="서비스 경로" htmlFor="jServicePath" hint={<>서버에서 작업할 폴더예요. 스크립트에 <span className="font-mono">$SERVICE_PATH</span>로 넘어가고, 환경 변수를 넣으면 <span className="font-mono">.env</span>도 여기에 올려요.</>}>
                   <Input id="jServicePath" mono spellCheck={false} placeholder={`/srv/${slug(name) || "app"}`} value={servicePath} onChange={(e) => setServicePath(e.target.value)} />
                 </Field>
+                <FileBundleField
+                  jobId={editing ? job.id : null}
+                  files={files}
+                  onChange={(f) => {
+                    setFiles(f);
+                    setFilesTouched(true);
+                  }}
+                  onEnv={mergeEnv}
+                />
                 <TipSpot id="playbook.script">
                   <ScriptEditor steps={steps} onChange={setSteps} />
                 </TipSpot>
@@ -633,6 +720,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 {parsed.tag === "latest" && <span className="text-faint truncate">실행할 때 가장 최근 태그로 고정해요</span>}
               </div>
             )}
+            <ExtraImagesEditor items={extras} onChange={setExtras} />
           </Field>
         );
 
@@ -695,6 +783,22 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   existingOnly={!canEnv}
                 />
               </TipSpot>
+            )}
+            {scriptVars.length > 0 && (
+              <div className="flex flex-col gap-1.5 rounded-lg border border-line bg-surface-2 px-3 py-2.5">
+                <span className="text-[12px] text-muted">스크립트와 파일에서 쓰는 변수</span>
+                <div className="flex flex-wrap gap-1.5">
+                  {scriptVars.map((v) => {
+                    const auto = autoVars.includes(v);
+                    const set = envOn && envMode === "paste" && envVars.some(([k, val]) => k === v && val !== "");
+                    return (
+                      <Chip key={v} mono tone={auto || set ? "neutral" : "warn"}>
+                        {v} <span className="font-sans text-faint">{auto ? "자동" : set ? "넣음" : "값 필요"}</span>
+                      </Chip>
+                    );
+                  })}
+                </div>
+              </div>
             )}
           </Field>
         );
@@ -828,7 +932,13 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </span>
             ),
           ],
+          ...(source === "script" && files.length
+            ? ([["playbook", "파일", <span className="font-mono text-[12.5px] break-all">{files.map((f) => f.path).join(", ")}</span>]] as [JobStepId, string, React.ReactNode][])
+            : []),
           ["target", "배포 대상", `${inv || "-"} · ${targets.length ? targets.join(", ") : "전체"} · 서버 ${hosts.length}대`],
+          ...(extras.length
+            ? ([["image", "추가 이미지", <span className="font-mono text-[12.5px] break-all">{extras.map((x) => `${x.var}=${x.image}`).join(", ")}</span>]] as [JobStepId, string, React.ReactNode][])
+            : []),
           [
             "image",
             "이미지",
@@ -1034,6 +1144,161 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
         단계마다 따로 셸이 열려요(앞 단계의 <span className="font-mono">cd</span>는 이어지지 않아요). 쓸 수 있는 변수:{" "}
         <span className="font-mono">$SERVICE_PATH $IMAGE $IMAGE_TAG $IMAGE_REF $ENV_FILE</span>. 비공개 이미지면 Wharfline이 앞뒤로 레지스트리 로그인·로그아웃을 해요.
       </Hint>
+    </div>
+  );
+}
+
+/** Files uploaded to SERVICE_PATH before the script: a docker-compose.yaml, or a zip (a Kubernetes yaml set, a Makefile...). */
+function FileBundleField({
+  jobId,
+  files,
+  onChange,
+  onEnv,
+}: {
+  jobId: string | null;
+  files: BundleFile[];
+  onChange: (f: BundleFile[]) => void;
+  onEnv: (vars: string[][]) => void;
+}) {
+  const { toast } = useApp();
+  const input = useRef<HTMLInputElement>(null);
+  const [open, setOpen] = useState<string | null>(null);
+  const [notes, setNotes] = useState<{ dropped: { path: string; reason: string }[]; warnings: { path: string; message: string }[] }>({ dropped: [], warnings: [] });
+  const [busy, setBusy] = useState(false);
+
+  // Editing: the job list only has names and sizes; load the contents once so they can be shown and saved again.
+  useEffect(() => {
+    if (!jobId || !files.length || files.every((f) => f.content !== undefined)) return;
+    api.get<BundleFile[]>(`/jobs/${jobId}/files`).then(
+      (full) => {
+        onChangeQuiet(full);
+        setNotes((n) => ({ ...n, warnings: full.flatMap((f) => (f.warnings ?? []).map((message) => ({ path: f.path, message }))) }));
+      },
+      () => toast("파일 내용을 불러오지 못했어요", "error"),
+    );
+  }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
+  const quiet = useRef(onChange);
+  quiet.current = onChange;
+  const onChangeQuiet = (f: BundleFile[]) => quiet.current(f);
+
+  const pick = async (fileList: FileList | null) => {
+    const file = fileList?.[0];
+    if (!file) return;
+    setBusy(true);
+    try {
+      const r = await api.post<{ files: BundleFile[]; env: string[][]; dropped: { path: string; reason: string }[]; warnings: { path: string; message: string }[] }>(
+        "/bundles/parse",
+        { name: file.name, data: await fileToBase64(file) },
+      );
+      const byPath = new Map(files.map((f) => [f.path, f]));
+      r.files.forEach((f) => byPath.set(f.path, f)); // same path: the new upload wins
+      onChange([...byPath.values()].sort((a, b) => a.path.localeCompare(b.path)));
+      setNotes({ dropped: r.dropped, warnings: r.warnings });
+      onEnv(r.env);
+      toast(`파일 ${r.files.length}개를 올렸어요`);
+    } catch (e) {
+      toast(errMsg(e), "error");
+    } finally {
+      setBusy(false);
+      if (input.current) input.current.value = "";
+    }
+  };
+
+  const size = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+  return (
+    <Field
+      label={
+        <>
+          파일 <span className="text-muted font-normal text-[12.5px]">선택</span>
+        </>
+      }
+      right={
+        <span className="flex gap-1">
+          {files.length > 0 && (
+            <Button size="sm" variant="ghost" onClick={() => onChange([])}>
+              모두 지우기
+            </Button>
+          )}
+          <Button size="sm" icon="upload" disabled={busy} onClick={() => input.current?.click()}>
+            {busy ? "읽는 중…" : "파일 올리기"}
+          </Button>
+        </span>
+      }
+      hint={<>docker-compose.yaml 하나, 또는 zip(쿠버네티스 yaml 묶음, Makefile 등)을 올려요. 실행할 때 <span className="font-mono">$SERVICE_PATH</span>에 그대로 올라가요. zip 안의 <span className="font-mono">.env</span>는 파일로 두지 않고 환경 변수에 더해요.</>}
+    >
+      <input ref={input} type="file" hidden accept=".yaml,.yml,.zip,.json,.conf,.sh,Makefile,*" onChange={(e) => pick(e.target.files)} />
+      {files.length > 0 && (
+        <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
+          {files.map((f) => (
+            <div key={f.path} className="min-w-0">
+              <div className="flex items-center gap-2 px-3 py-1.5 text-[12.5px]">
+                <button type="button" className="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-accent" onClick={() => setOpen(open === f.path ? null : f.path)}>
+                  <Icon name="file" className="size-3.5 flex-none text-faint" />
+                  <span className="font-mono truncate">{f.path}</span>
+                  <span className="text-faint flex-none">{size(f.size)}</span>
+                  {notes.warnings.some((w) => w.path === f.path) && <Chip tone="warn">주의</Chip>}
+                </button>
+                <Button size="sm" variant="ghost" iconOnly icon="x" aria-label={`${f.path} 빼기`} onClick={() => onChange(files.filter((x) => x.path !== f.path))} />
+              </div>
+              {open === f.path && (
+                <pre className="m-0 px-3 py-2 bg-surface-2 border-t border-line text-[11.5px] font-mono max-h-[220px] overflow-auto scroll-soft whitespace-pre">
+                  {f.content ?? "불러오는 중…"}
+                </pre>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
+      {notes.warnings.length > 0 && (
+        <div className="rounded-lg border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] flex flex-col gap-0.5">
+          <b className="font-medium">서버 권한을 넘기는 설정이 있어요. 의도한 게 맞는지 확인하세요.</b>
+          {notes.warnings.map((w, i) => (
+            <span key={i}>
+              <span className="font-mono">{w.path}</span> · {w.message}
+            </span>
+          ))}
+        </div>
+      )}
+      {notes.dropped.length > 0 && (
+        <Hint>
+          빠진 파일: {notes.dropped.map((d) => `${d.path} (${d.reason})`).join(", ")}
+        </Hint>
+      )}
+    </Field>
+  );
+}
+
+/** More images to watch. Each gets a variable name: VAR -> $VAR_IMAGE, $VAR_TAG, $VAR_IMAGE_REF. */
+function ExtraImagesEditor({ items, onChange }: { items: ExtraDraft[]; onChange: (x: ExtraDraft[]) => void }) {
+  const set = (id: number, patch: Partial<ExtraDraft>) => onChange(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  return (
+    <div className="flex flex-col gap-2 mt-1">
+      {items.map((x) => (
+        <div key={x.id} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_150px_auto] gap-2 items-center">
+          <Input
+            mono
+            aria-label="추가 이미지"
+            placeholder="ghcr.io/acme/web:v2.3.0"
+            value={x.image}
+            onChange={(e) => {
+              const auto = !x.var || x.var === varFromImage(x.image);
+              set(x.id, { image: e.target.value, ...(auto ? { var: varFromImage(e.target.value) } : {}) });
+            }}
+          />
+          <Input mono aria-label="변수 이름" placeholder="WEB" value={x.var} onChange={(e) => set(x.id, { var: e.target.value.toUpperCase() })} />
+          <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label="이미지 빼기" onClick={() => onChange(items.filter((y) => y.id !== x.id))} />
+        </div>
+      ))}
+      <div className="flex items-center gap-2 flex-wrap">
+        <Button size="sm" icon="plus" onClick={() => onChange([...items, { id: ++stepSeq, image: "", var: "" }])}>
+          이미지 더하기
+        </Button>
+        {items.length > 0 && (
+          <Hint>
+            compose에는 <span className="font-mono">image: …:${"{"}{items[0].var || "WEB"}_TAG{"}"}</span>처럼 써요. 새 버전이 오면 그 이미지만 바꿔 배포하고, 나머지는 지금 버전을 그대로 써요.
+          </Hint>
+        )}
+      </div>
     </div>
   );
 }

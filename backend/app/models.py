@@ -258,6 +258,8 @@ class Job(Base):
     book: Mapped[str | None] = mapped_column(String(255))  # playbook path inside the repo; None for an SSH script job
     script: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # SSH script steps [{name, run}], in order
     service_path: Mapped[str | None] = mapped_column(String(255))  # SSH script jobs: folder on the servers (SERVICE_PATH)
+    files: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # uploaded to SERVICE_PATH before the script: [{path, content}]
+    extra_images: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # more watched images: [{ref, var, defaultTag, tagNow}]
     inventory: Mapped[str] = mapped_column(String(128))
     targets: Mapped[list[str]] = mapped_column(JSONB, default=list)
     env: Mapped[str] = mapped_column(String(255))
@@ -283,6 +285,8 @@ class Job(Base):
                         "branch": r.branch if r else "-", "path": self.book}
         return {"id": self.id, "name": self.name, "image": self.image, "tagNow": self.tag_now, "defaultTag": self.default_tag,
                 "playbook": playbook, "script": self.script, "servicePath": self.service_path,
+                "files": [{"path": f["path"], "size": len(f["content"].encode())} for f in self.files or []],
+                "extraImages": [dict(x) for x in self.extra_images or []],
                 "inventory": self.inventory, "targets": self.targets, "env": self.env,
                 "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
                 "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration},
@@ -312,13 +316,14 @@ class Run(Base):
     started_at: Mapped[float | None] = mapped_column(Float)
     # Approval of protected jobs: status "approval" until an Owner/Admin approves ("run") or rejects ("rejected").
     requested_by: Mapped[str | None] = mapped_column(String(255))  # member email; None for auto-deploy
+    extra_tags: Mapped[dict[str, str] | None] = mapped_column(JSONB)  # tag of each extra image: {VAR: tag}
     decided_by: Mapped[str | None] = mapped_column(String(255))  # member email of who approved or rejected
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     def to_dict(self) -> dict[str, Any]:
         d = {"no": self.no, "job": self.job, "jobId": self.job_id, "target": self.target, "tag": self.tag,
              "status": self.status, "by": self.by, "trigger": self.trigger, "time": self.time, "duration": self.duration,
-             "requestedBy": self.requested_by, "decidedBy": self.decided_by,
+             "requestedBy": self.requested_by, "decidedBy": self.decided_by, "extraTags": self.extra_tags or {},
              "decidedAt": self.decided_at.isoformat() if self.decided_at else None}
         if self.steps:
             d["steps"] = self.steps

@@ -148,6 +148,11 @@ function ConfirmRun({
   // "직접 입력…": type a tag the image list doesn't know yet (the server records it on the image).
   const [custom, setCustom] = useState(() => tag !== "latest" && !job.imageTags.some((t) => t.name === tag));
   const [sel, setSel] = useState<string[]>([...job.targets]);
+  // Extra watched images: each keeps the version running now unless picked here.
+  const extras = job.extraImages ?? [];
+  const [extraTags, setExtraTags] = useState<Record<string, string>>(() =>
+    Object.fromEntries(extras.map((x) => [x.var, x.tagNow && x.tagNow !== "-" ? x.tagNow : x.defaultTag])),
+  );
   const [busy, setBusy] = useState(false);
 
   // Latest CI build of this image, polled while it runs, so a deploy can wait for a fresh tag.
@@ -175,7 +180,7 @@ function ConfirmRun({
   const go = async (useTag = tag) => {
     setBusy(true);
     try {
-      const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel });
+      const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel, extraTags });
       if (r.status === "approval") onRequested();
       else onStarted(r.no);
     } catch (e) {
@@ -298,16 +303,38 @@ function ConfirmRun({
               </Select>
             )}
           </Field>
-        ) : (
+        ) : (job.extraImages ?? []).length ? null : (
           <Hint className="flex items-center gap-1.5">
             <Icon name="info" className="size-3.5 flex-none text-accent" />
-            이미지 없이 플레이북만 실행해요.
+            {job.playbook.kind === "script" ? "이미지 없이 스크립트만 실행해요." : "이미지 없이 플레이북만 실행해요."}
           </Hint>
+        )}
+        {extras.length > 0 && (
+          <Field label="추가 이미지" hint="바꾸지 않은 이미지는 지금 떠 있는 버전 그대로 배포해요.">
+            <div className="flex flex-col gap-2">
+              {extras.map((x) => (
+                <div key={x.var} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_200px] gap-2 items-center">
+                  <span className="min-w-0 text-[12.5px]">
+                    <span className="font-mono font-medium">{x.var}</span> <span className="font-mono text-muted break-all">{x.ref}</span>
+                    {x.tagNow && x.tagNow !== "-" && <span className="text-faint"> · 지금 {x.tagNow}</span>}
+                  </span>
+                  <Select mono aria-label={`${x.var} 태그`} value={extraTags[x.var]} onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value })}>
+                    {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
+                      <option key={t} value={t}>
+                        {t === "latest" ? `latest · ${x.latestTag ?? "-"}` : t}
+                        {t === x.tagNow ? "  · 지금" : ""}
+                      </option>
+                    ))}
+                  </Select>
+                </div>
+              ))}
+            </div>
+          </Field>
         )}
         <KV
           items={[
             ...(hasImage ? ([["이미지", job.image, "font-mono text-[12.5px]"]] as [string, string, string][]) : []),
-            ["플레이북", <PlaybookLine job={job} />],
+            ["배포 방법", <PlaybookLine job={job} />],
             ["환경 변수", job.env || "없음", "font-mono text-[12.5px]"],
             ...(job.protected
               ? ([["안전장치", [job.lock && "동시 실행 금지", job.rollback && "실패 시 이전 태그로 롤백"].filter(Boolean).join(" · "), "text-muted"]] as [string, string, string][])
@@ -513,9 +540,15 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
                 <span className="font-mono">
                   {short}:{run.tag}
                 </span>
-              ) : (
+              ) : Object.keys(run.extraTags ?? {}).length ? null : (
                 "이미지 없음"
-              )}{" "}
+              )}
+              {Object.entries(run.extraTags ?? {}).map(([v, t], i) => (
+                <span key={v} className="font-mono">
+                  {short || i ? " · " : ""}
+                  {v}:{t}
+                </span>
+              ))}{" "}
               {run.method && <>· {run.method} </>}· {run.inventory} / {run.target}
               {run.build && (
                 <span className="block mt-1 text-[12px]">

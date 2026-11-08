@@ -1,4 +1,6 @@
 import asyncio
+import base64
+import binascii
 import json
 import re
 from datetime import datetime, timezone
@@ -9,6 +11,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import bundles
 from .. import githooks
 from .. import models as m
 from .. import runner
@@ -37,8 +40,16 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None, who: m.Member | No
         "latestTag": img["tags"][0]["name"] if img["tags"] else None,
         "prevTag": s.prev_tag(db, j, img),
         "build": githooks.build_for_image(db, j["image"], scope) if has_image else None,
+        "extraImages": [extra_view(db, x) for x in job.extra_images or []],
         "canEdit": s.can_edit(who, job),
     }
+
+
+def extra_view(db: Session, x: dict) -> dict:
+    """An extra watched image with the tags Wharfline knows, newest first."""
+    img = db.get(m.Image, x["ref"])
+    tags = [t.name for t in img.tags] if img else []
+    return {**x, "tags": tags, "latestTag": tags[0] if tags else None}
 
 
 def member_names(db: Session) -> dict[str, str]:
@@ -106,11 +117,24 @@ class ScriptStep(BaseModel):
     run: str
 
 
+class FileIn(BaseModel):
+    path: str
+    content: str
+
+
+class ExtraImageIn(BaseModel):
+    """A watched image besides the main one. VAR becomes $VAR_IMAGE, $VAR_TAG and $VAR_IMAGE_REF."""
+    image: str
+    var: str
+
+
 class JobIn(BaseModel):
     name: str
     playbook: PlaybookIn
     script: list[ScriptStep] = []  # used when playbook.source == "script"
     servicePath: str = ""  # SSH script jobs: folder on the servers; default /srv/<job slug>
+    files: list[FileIn] | None = None  # SSH script jobs: uploaded to SERVICE_PATH; None keeps the current files on edit
+    extraImages: list[ExtraImageIn] = []
     inventory: str
     targets: list[str] = []
     image: str = ""
@@ -133,7 +157,7 @@ NO_EDIT = "이 작업을 고칠 권한이 없어요."
 
 # Activity log labels for PUT, in form order.
 FIELD_LABELS = {
-    "name": "이름", "playbook": "배포 방법", "target": "배포 대상", "image": "이미지", "env": "환경 변수",
+    "name": "이름", "playbook": "배포 방법", "files": "파일", "images": "추가 이미지", "target": "배포 대상", "image": "이미지", "env": "환경 변수",
     "editors": "편집 권한", "hook": "자동 배포", "protected": "운영 보호", "lock": "동시 실행 잠금", "rollback": "실패 시 되돌리기",
 }
 
@@ -208,6 +232,31 @@ def check_script(steps: list[ScriptStep]) -> list[dict[str, str]]:
     return out
 
 
+VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,23}$")
+RESERVED_VARS = {"SERVICE_PATH", "ENV_FILE", "IMAGE", "IMAGE_TAG", "IMAGE_REF"}
+MAX_EXTRA_IMAGES = 10
+
+
+def check_extra_images(db: Session, items: list[ExtraImageIn], current: list[dict] | None) -> list[dict[str, str]]:
+    """Validate extra watched images; register them so new tags and webhooks are tracked. Keeps tagNow of unchanged ones."""
+    if len(items) > MAX_EXTRA_IMAGES:
+        raise HTTPException(400, f"이미지는 {MAX_EXTRA_IMAGES}개까지 더할 수 있어요.")
+    before = {(x["ref"], x["var"]): x for x in current or []}
+    out, seen = [], set()
+    for it in items:
+        var = it.var.strip().upper()
+        if not VAR_RE.match(var):
+            raise HTTPException(400, f'변수 이름 "{it.var}"은(는) 쓸 수 없어요. 영문 대문자, 숫자, _로 적어 주세요. 예: API')
+        names = {f"{var}_IMAGE", f"{var}_TAG", f"{var}_IMAGE_REF"}
+        if names & RESERVED_VARS or var in seen:
+            raise HTTPException(400, f"변수 이름 {var}이(가) 다른 이미지나 Wharfline 변수와 겹쳐요.")
+        seen.add(var)
+        ref, tag = s.parse_image(it.image.strip())
+        s.ensure_image(db, ref, tag)
+        out.append({"ref": ref, "var": var, "defaultTag": tag, "tagNow": before.get((ref, var), {}).get("tagNow", "-")})
+    return out
+
+
 def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | None, str | None, str, list[dict[str, str]] | None, str | None]:
     """Validate the deploy method + image; reuse or create the repo and register the image.
 
@@ -277,6 +326,8 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
 
     job = m.Job(
         id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script, service_path=service_path,
+        files=bundles.check_files([f.model_dump() for f in body.files or []]) if script is not None else None,
+        extra_images=check_extra_images(db, body.extraImages, None),
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
     )
@@ -309,6 +360,8 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
         raise HTTPException(403, "sudo_required")
 
     repo, path, ref, tag, script, service_path = resolve_playbook(db, body)
+    files = None if script is None else job.files if body.files is None else bundles.check_files([f.model_dump() for f in body.files])
+    extra_images = check_extra_images(db, body.extraImages, job.extra_images)
 
     changed: list[str] = []
     env_name = job.env
@@ -326,18 +379,20 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
             env_name = new_env_set(db, name, body.envVars)
 
     new = {
-        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "target": (body.inventory, list(body.targets)),
+        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x[k] for k in ("ref", "var", "defaultTag")} for x in extra_images], "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": body.hook, "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
     }
     old = {
-        "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "target": (job.inventory, list(job.targets or [])),
+        "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "files": job.files,
+        "images": [{k: x[k] for k in ("ref", "var", "defaultTag")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": job.hook, "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
     }
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
     job.name, job.repo, job.book, job.script, job.service_path = name, repo.name if repo else None, path, script, service_path
+    job.files, job.extra_images = files, extra_images
     job.inventory, job.targets = body.inventory, list(body.targets)
     job.image, job.default_tag = ref, tag
     job.env, job.editors = env_name, editors
@@ -355,6 +410,7 @@ class RunIn(BaseModel):
     tag: str = "latest"
     groups: list[str] = []
     rollback: bool = False
+    extraTags: dict[str, str] = {}  # {VAR: tag} for extra images; missing ones keep their current tag
 
 
 @router.post("/jobs/{job_id}/runs", dependencies=[Depends(require("run"))])
@@ -374,12 +430,48 @@ async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # a
         db.flush()
     else:
         tag = "-"  # nothing to pull; the tag is ignored
+    extras = {x["var"]: x for x in job.extra_images or []}
+    for var, t in body.extraTags.items():
+        t = t.strip()
+        if var not in extras:
+            raise HTTPException(400, f"이 작업에 {var} 이미지가 없어요.")
+        if t != "latest" and not s.TAG_RE.match(t):
+            raise HTTPException(400, f"{var} 태그는 영문, 숫자, . _ - 만 쓸 수 있어요.")
+        s.ensure_image(db, extras[var]["ref"], t, pushed="직접 입력")
+    db.flush()
     trigger = "되돌리기" if body.rollback else "수동 실행"
     me = s.current_member(db)
     email = me.email if me else None
     if job.protected and not s.can(me, "run_protected"):
-        return runner.request_approval(db, j, body.groups, tag, trigger, email)
-    return runner.start_run(db, j, body.groups, tag, trigger, requested_by=email)
+        return runner.request_approval(db, j, body.groups, tag, trigger, email, extra_tags=body.extraTags)
+    return runner.start_run(db, j, body.groups, tag, trigger, requested_by=email, extra_tags=body.extraTags)
+
+
+class UploadIn(BaseModel):
+    name: str
+    data: str  # base64
+
+
+@router.post("/bundles/parse", dependencies=[Depends(require("job_create"))])
+def parse_bundle(body: UploadIn):
+    """Read an uploaded docker-compose.yaml or zip: the files to keep, .env variables, what was left out, warnings."""
+    if len(body.data) > bundles.MAX_UPLOAD_BYTES * 4 // 3 + 16:
+        raise HTTPException(400, "파일이 너무 커요. 5MB까지 올릴 수 있어요.")
+    try:
+        data = base64.b64decode(body.data, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise HTTPException(400, "파일을 읽을 수 없어요.") from e
+    return bundles.parse_upload(body.name, data)
+
+
+@router.get("/jobs/{job_id}/files")
+def job_files(job_id: str, db: Session = Depends(get_db)):
+    """The job's file bundle with contents (the job list only carries names and sizes)."""
+    job = db.get(m.Job, job_id)
+    if not job:
+        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    return [{"path": f["path"], "content": f["content"], "size": len(f["content"].encode()),
+             "warnings": [w["message"] for w in bundles.risky_warnings(f["path"], f["content"])]} for f in job.files or []]
 
 
 @router.get("/runs")

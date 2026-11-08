@@ -45,7 +45,24 @@ def extra_vars(job: dict, tag: str, has_env: bool) -> dict[str, str]:
     if has_env:
         out["env_file"] = f"/srv/wharfline/{app}/.env"
     out["app_name"] = app
+    for k, v in extra_image_vars(job).items():
+        out[k.lower()] = v
     return out
+
+
+def extra_image_vars(job: dict) -> dict[str, str]:
+    """VAR_IMAGE, VAR_TAG, VAR_IMAGE_REF for each extra watched image, with the tag this run uses."""
+    tags = job.get("extraTags") or {}
+    out: dict[str, str] = {}
+    for x in job.get("extraImages") or []:
+        tag = tags.get(x["var"]) or x.get("defaultTag") or "latest"
+        out.update({f"{x['var']}_IMAGE": x["ref"], f"{x['var']}_TAG": tag, f"{x['var']}_IMAGE_REF": f"{x['ref']}:{tag}"})
+    return out
+
+
+def extra_image_lines(job: dict) -> list[Line]:
+    tags = job.get("extraTags") or {}
+    return [("", f"이미지 {x['var']}: {x['ref']}:{tags.get(x['var']) or x.get('defaultTag')}") for x in job.get("extraImages") or []]
 
 
 # Simulation only: a step whose commands contain a line like `exit 1` or `false` fails on every server,
@@ -61,6 +78,7 @@ def script_env(job: dict, tag: str, has_env: bool) -> dict[str, str]:
         out.update(IMAGE=job["image"], IMAGE_TAG=tag, IMAGE_REF=f"{job['image']}:{tag}")
     if has_env:
         out["ENV_FILE"] = f"{path}/.env"
+    out.update(extra_image_vars(job))
     return out
 
 
@@ -91,6 +109,7 @@ def build_ssh_script(db: Session, job: dict, groups: list[str], no: int, tag: st
     if has_image:
         ti = s.tag_info(img, tag)
         head_lines.append(("", f"이미지: {job['image']}:{tag} (sha256:{ti['digest']}…)"))
+    head_lines += extra_image_lines(job)
     head_lines += [
         ("", f"대상: {job['inventory']} / {s.target_label(groups, inv)} → {', '.join(h['ip'] for h in all_hosts)}"),
         ("", f"잠금 획득: {names} (동시 실행 금지)"),
@@ -112,8 +131,18 @@ def build_ssh_script(db: Session, job: dict, groups: list[str], no: int, tag: st
     connect.append(("", "환경 변수: " + " ".join(f"{k}={v}" for k, v in variables.items())))
     steps.append({"name": "서버 연결", "lines": connect})
 
+    files = job.get("files") or []
+    if files:
+        lines: list[Line] = [header(f"파일 올리기 → {variables['SERVICE_PATH']} ({len(files)}개)")]
+        lines += [("", f"  {f['path']}") for f in files[:8]]
+        if len(files) > 8:
+            lines.append(("", f"  … 외 {len(files) - 8}개"))
+        for h in alive:
+            lines.append(("y", f"changed: [{h['name']}] mkdir -p {variables['SERVICE_PATH']} · {len(files)}개 파일"))
+            tally[h["name"]]["ok"] += 1
+        steps.append({"name": "파일 올리기", "lines": lines})
     if env:
-        lines: list[Line] = [header(f"Upload .env → {variables['ENV_FILE']} ({env['name']} v{env['ver']})")]
+        lines = [header(f"Upload .env → {variables['ENV_FILE']} ({env['name']} v{env['ver']})")]
         for h in alive:
             # The service folder may not exist yet on a new server: create it before the upload.
             lines.append(("y", f"changed: [{h['name']}] mkdir -p {variables['SERVICE_PATH']} · .env mode=0600"))
@@ -196,6 +225,7 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
         head_lines.append(("", f"이미지: {job['image']}:{tag} (sha256:{ti['digest']}…)"))
     else:
         head_lines.append(("", "이미지: 없음 · 플레이북만 실행"))
+    head_lines += extra_image_lines(job)
     head_lines += [
         ("", f"대상: {job['inventory']} / {s.target_label(groups, inv)} → {', '.join(h['ip'] for h in all_hosts)}"),
         ("", f"잠금 획득: {names} (동시 실행 금지)"),
@@ -313,6 +343,8 @@ def _finish(no: int, status: str) -> None:
             job.last_status, job.last_time, job.last_duration = status, "방금", d
             if status == "ok":
                 job.tag_now = run["tag"]
+                if run.get("extra") and job.extra_images:
+                    job.extra_images = [{**x, "tagNow": run["extra"].get(x["var"], x.get("tagNow", "-"))} for x in job.extra_images]
         action = "배포 취소" if status == "cancel" else "배포 실행"
         result = "ok" if status == "ok" else "warn" if status == "cancel" else "bad"
         s.log_act(db, action, f"{run['job_name']} #{no} · {run['tag']}", result)
@@ -334,15 +366,27 @@ def _script(db: Session, job: dict, groups: list[str], no: int, tag: str, trigge
     return steps
 
 
+def pin_extra_tags(db: Session, job: dict, asked: dict[str, str] | None) -> dict[str, str]:
+    """The tag each extra image runs with: what was asked, else the one running now, else the job's default; latest is pinned."""
+    out: dict[str, str] = {}
+    for x in job.get("extraImages") or []:
+        want = (asked or {}).get(x["var"]) or (x["tagNow"] if x.get("tagNow") not in (None, "", "-") else x["defaultTag"])
+        img = db.get(m.Image, x["ref"])
+        out[x["var"]] = s.resolve_tag(img.to_dict(), want) if img else want
+    return out
+
+
 def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str,
-               status: str = "run", requested_by: str | None = None) -> m.Run:
-    """Add the run row (not committed). The tag is pinned now, so an approval later deploys what was asked for."""
+               status: str = "run", requested_by: str | None = None, extra_tags: dict[str, str] | None = None) -> m.Run:
+    """Add the run row (not committed). Tags are pinned now, so an approval later deploys what was asked for."""
     no = db.scalar(select(m.run_no_seq.next_value()))
     tag = s.resolve_tag(s.image_of(db, job), requested_tag) if job.get("image") else "-"
+    extras = pin_extra_tags(db, job, extra_tags)
+    job = {**job, "extraTags": extras}
     step_names = [st["name"] for st in build_script(db, job, groups, no, tag, trigger)]
     rec = m.Run(no=no, job=job["name"], job_id=job["id"], target=s.target_label(groups, s.inv_of(db, job)), tag=tag,
                 status=status, by=s.actor_name(db), trigger=trigger, time="방금", duration="-", steps=step_names,
-                requested_by=requested_by)
+                requested_by=requested_by, extra_tags=extras or None)
     db.add(rec)
     db.flush()
     return rec
@@ -350,6 +394,7 @@ def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, tr
 
 def launch(db: Session, rec: m.Run, job: dict, groups: list[str], requested_tag: str | None = None, note: str | None = None) -> dict:
     """Start playing a run row back in a background task; commits. `note` adds a line under the trigger (e.g. who approved)."""
+    job = {**job, "extraTags": rec.extra_tags or {}}
     steps = _script(db, job, groups, rec.no, rec.tag, rec.trigger, requested_tag)
     if note:
         steps[0]["lines"].insert(2, ("y", note))
@@ -359,19 +404,21 @@ def launch(db: Session, rec: m.Run, job: dict, groups: list[str], requested_tag:
 
     no = rec.no
     live[no] = {"events": [], "done": False, "cancelled": False, "t0": time.time(),
-                "job_id": job["id"], "job_name": job["name"], "tag": rec.tag}
+                "job_id": job["id"], "job_name": job["name"], "tag": rec.tag, "extra": dict(rec.extra_tags or {})}
     asyncio.get_running_loop().create_task(_play(no, steps))
     return {"no": no, "tag": rec.tag, "steps": step_names, "status": "run"}
 
 
-def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None = None) -> dict:
-    rec = create_run(db, job, groups, requested_tag, trigger, requested_by=requested_by)
+def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None = None,
+              extra_tags: dict[str, str] | None = None) -> dict:
+    rec = create_run(db, job, groups, requested_tag, trigger, requested_by=requested_by, extra_tags=extra_tags)
     return launch(db, rec, job, groups, requested_tag)
 
 
-def request_approval(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None) -> dict:
+def request_approval(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None,
+                     extra_tags: dict[str, str] | None = None) -> dict:
     """A protected job asked to run without the right to: a run waiting for an Owner/Admin. Commits."""
-    rec = create_run(db, job, groups, requested_tag, trigger, status="approval", requested_by=requested_by)
+    rec = create_run(db, job, groups, requested_tag, trigger, status="approval", requested_by=requested_by, extra_tags=extra_tags)
     s.log_act(db, "배포 승인 요청", f"{job['name']} #{rec.no} · {rec.tag}", "warn")
     db.commit()
     return {"no": rec.no, "tag": rec.tag, "steps": rec.steps or [], "status": "approval"}

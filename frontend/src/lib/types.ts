@@ -83,6 +83,10 @@ export interface Job {
   script: { name: string; run: string }[] | null;
   /** SSH script jobs: the folder on the servers (SERVICE_PATH). */
   servicePath: string | null;
+  /** SSH script jobs: files uploaded to SERVICE_PATH (contents via GET /jobs/{id}/files). */
+  files: { path: string; size: number }[];
+  /** Watched images besides the main one: $VAR_IMAGE, $VAR_TAG, $VAR_IMAGE_REF. */
+  extraImages: ExtraImage[];
   inventory: string;
   targets: string[];
   env: string;
@@ -128,6 +132,22 @@ export interface Build {
   updatedAt: number;
 }
 
+export interface ExtraImage {
+  ref: string;
+  var: string;
+  defaultTag: string;
+  tagNow: string;
+  tags?: string[];
+  latestTag?: string | null;
+}
+
+export interface BundleFile {
+  path: string;
+  size: number;
+  content?: string;
+  warnings?: string[];
+}
+
 export interface Run {
   no: number;
   job: string;
@@ -135,6 +155,7 @@ export interface Run {
   target: string;
   tag: string;
   status: Status;
+  extraTags?: Record<string, string>;
   by: string;
   trigger: string;
   time: string;
