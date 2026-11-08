@@ -85,6 +85,8 @@ export interface Job {
   servicePath: string | null;
   /** SSH script jobs: files uploaded to SERVICE_PATH (contents via GET /jobs/{id}/files). */
   files: { path: string; size: number }[];
+  /** Current version of the files (each save that changes them makes a new one). */
+  filesVer: number | null;
   /** Watched images besides the main one: $VAR_IMAGE, $VAR_TAG, $VAR_IMAGE_REF. */
   extraImages: ExtraImage[];
   inventory: string;
@@ -156,6 +158,8 @@ export interface Run {
   tag: string;
   status: Status;
   extraTags?: Record<string, string>;
+  /** Version of the job files this run deployed. */
+  filesVer?: number | null;
   by: string;
   trigger: string;
   time: string;

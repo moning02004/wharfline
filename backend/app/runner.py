@@ -386,7 +386,7 @@ def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, tr
     step_names = [st["name"] for st in build_script(db, job, groups, no, tag, trigger)]
     rec = m.Run(no=no, job=job["name"], job_id=job["id"], target=s.target_label(groups, s.inv_of(db, job)), tag=tag,
                 status=status, by=s.actor_name(db), trigger=trigger, time="방금", duration="-", steps=step_names,
-                requested_by=requested_by, extra_tags=extras or None)
+                requested_by=requested_by, extra_tags=extras or None, files_ver=job.get("filesVer"))
     db.add(rec)
     db.flush()
     return rec

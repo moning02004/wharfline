@@ -129,3 +129,28 @@ def test_edit_keeps_files_unless_sent(client, login):
     assert client.get(f"/api/jobs/{job['id']}/files").json()[0]["path"] == "docker-compose.yaml"
     body["files"] = []
     assert client.put(f"/api/jobs/{job['id']}", json=body).json()["files"] == []
+
+
+def test_file_versions_and_the_version_each_run_used(client, login):
+    body = script_job("bundle · versions")
+    job = client.post("/api/jobs", json=body).json()
+    assert job["filesVer"] == 1
+    run1 = wait_run(client, client.post(f"/api/jobs/{job['id']}/runs", json={"groups": []}).json()["no"])
+    assert run1["filesVer"] == 1
+
+    # change the compose file, add a Makefile
+    body2 = body | {"envMode": "keep", "files": [{"path": "docker-compose.yaml", "content": COMPOSE + "# v2\n"},
+                                                 {"path": "Makefile", "content": "deploy:\n\ttrue\n"}]}
+    assert client.put(f"/api/jobs/{job['id']}", json=body2).json()["filesVer"] == 2
+    # saving the same files again makes no new version
+    assert client.put(f"/api/jobs/{job['id']}", json=body2).json()["filesVer"] == 2
+    run2 = wait_run(client, client.post(f"/api/jobs/{job['id']}/runs", json={"groups": []}).json()["no"])
+    assert run2["filesVer"] == 2
+
+    hist = client.get(f"/api/jobs/{job['id']}/files/history").json()
+    assert [h["ver"] for h in hist] == [2, 1]
+    assert hist[0]["changes"] == {"added": ["Makefile"], "changed": ["docker-compose.yaml"], "removed": []}
+    assert hist[0]["createdBy"] == "정훈" and hist[0]["count"] == 2
+    old = client.get(f"/api/jobs/{job['id']}/files", params={"ver": 1}).json()
+    assert [f["path"] for f in old] == ["docker-compose.yaml"] and old[0]["content"] == COMPOSE
+    assert client.get(f"/api/jobs/{job['id']}/files", params={"ver": 9}).status_code == 404

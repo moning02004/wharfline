@@ -5,6 +5,7 @@ import type { Build, Job, RunDetail, RunEvent, Status } from "../lib/types";
 import { PROVIDER_NAME, buildNo, buildState, elapsed } from "../components/BuildBadge";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
+import { FileHistoryModal } from "./FileHistoryModal";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Button, Chip, Field, Hint, Input, KV, Select, StatusPill, cx } from "../components/ui";
 
@@ -450,7 +451,7 @@ const LINE_COLORS: Record<string, string> = {
 };
 
 function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
-  const { toast, refresh, can } = useApp();
+  const { toast, refresh, can, openModal } = useApp();
   const { runById } = useRun();
   const [run, setRun] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -550,6 +551,19 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
                 </span>
               ))}{" "}
               {run.method && <>· {run.method} </>}· {run.inventory} / {run.target}
+              {run.filesVer ? (
+                <>
+                  {" · "}
+                  <button
+                    type="button"
+                    className="link font-mono"
+                    title="이 실행에 쓴 파일 보기"
+                    onClick={() => openModal((c) => <FileHistoryModal jobId={run.jobId} jobName={run.job} initialVer={run.filesVer} onClose={c} />, "wide")}
+                  >
+                    파일 v{run.filesVer}
+                  </button>
+                </>
+              ) : null}
               {run.build && (
                 <span className="block mt-1 text-[12px]">
                   <span className={run.build.status === "success" ? "text-ok" : "text-muted"}>

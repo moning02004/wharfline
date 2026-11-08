@@ -260,6 +260,7 @@ class Job(Base):
     service_path: Mapped[str | None] = mapped_column(String(255))  # SSH script jobs: folder on the servers (SERVICE_PATH)
     files: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # uploaded to SERVICE_PATH before the script: [{path, content}]
     extra_images: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # more watched images: [{ref, var, defaultTag, tagNow}]
+    files_ver: Mapped[int | None] = mapped_column(Integer)  # current JobFileVersion.ver
     inventory: Mapped[str] = mapped_column(String(128))
     targets: Mapped[list[str]] = mapped_column(JSONB, default=list)
     env: Mapped[str] = mapped_column(String(255))
@@ -286,6 +287,7 @@ class Job(Base):
         return {"id": self.id, "name": self.name, "image": self.image, "tagNow": self.tag_now, "defaultTag": self.default_tag,
                 "playbook": playbook, "script": self.script, "servicePath": self.service_path,
                 "files": [{"path": f["path"], "size": len(f["content"].encode())} for f in self.files or []],
+                "filesVer": self.files_ver,
                 "extraImages": [dict(x) for x in self.extra_images or []],
                 "inventory": self.inventory, "targets": self.targets, "env": self.env,
                 "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
@@ -317,13 +319,14 @@ class Run(Base):
     # Approval of protected jobs: status "approval" until an Owner/Admin approves ("run") or rejects ("rejected").
     requested_by: Mapped[str | None] = mapped_column(String(255))  # member email; None for auto-deploy
     extra_tags: Mapped[dict[str, str] | None] = mapped_column(JSONB)  # tag of each extra image: {VAR: tag}
+    files_ver: Mapped[int | None] = mapped_column(Integer)  # file bundle version this run deployed
     decided_by: Mapped[str | None] = mapped_column(String(255))  # member email of who approved or rejected
     decided_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
     def to_dict(self) -> dict[str, Any]:
         d = {"no": self.no, "job": self.job, "jobId": self.job_id, "target": self.target, "tag": self.tag,
              "status": self.status, "by": self.by, "trigger": self.trigger, "time": self.time, "duration": self.duration,
-             "requestedBy": self.requested_by, "decidedBy": self.decided_by, "extraTags": self.extra_tags or {},
+             "requestedBy": self.requested_by, "decidedBy": self.decided_by, "extraTags": self.extra_tags or {}, "filesVer": self.files_ver,
              "decidedAt": self.decided_at.isoformat() if self.decided_at else None}
         if self.steps:
             d["steps"] = self.steps
@@ -484,3 +487,21 @@ class Build(Base):
         return {"id": self.id, "provider": self.provider, "repo": self.repo, "runId": self.run_id, "runNumber": self.run_number, "workflow": self.workflow,
                 "title": self.title, "status": self.status, "active": self.active, "branch": self.branch, "sha": self.sha,
                 "url": self.url, "step": self.step, "tag": self.tag, "startedAt": self.started_at, "updatedAt": self.updated_at}
+
+
+class JobFileVersion(Base):
+    """One saved version of a job's file bundle: the full files, who saved it, and what changed from the previous one."""
+
+    __tablename__ = "job_file_versions"
+    __table_args__ = (UniqueConstraint("job_id", "ver"),)
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    job_id: Mapped[str] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), index=True)
+    ver: Mapped[int] = mapped_column(Integer)
+    files: Mapped[list[dict[str, str]]] = mapped_column(JSONB)  # [{path, content}]
+    changes: Mapped[dict[str, list[str]]] = mapped_column(JSONB)  # {added, changed, removed}: paths
+    created_at: Mapped[float] = mapped_column(Float)
+    created_by: Mapped[str] = mapped_column(String(128))
+
+    def summary(self) -> dict[str, Any]:
+        return {"ver": self.ver, "createdAt": self.created_at, "createdBy": self.created_by, "changes": self.changes,
+                "count": len(self.files)}

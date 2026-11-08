@@ -10,6 +10,7 @@ import { ModalFoot, ModalHead } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
+import { FileHistoryModal } from "./FileHistoryModal";
 import { Button, Check, Chip, Field, Hint, Input, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /* Same rules as the server (docs/deploy-simplify.md). */
@@ -601,6 +602,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 </Field>
                 <FileBundleField
                   jobId={editing ? job.id : null}
+                  jobName={job?.name ?? ""}
+                  filesVer={job?.filesVer ?? null}
                   files={files}
                   onChange={(f) => {
                     setFiles(f);
@@ -1151,16 +1154,20 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
 /** Files uploaded to SERVICE_PATH before the script: a docker-compose.yaml, or a zip (a Kubernetes yaml set, a Makefile...). */
 function FileBundleField({
   jobId,
+  jobName,
+  filesVer,
   files,
   onChange,
   onEnv,
 }: {
   jobId: string | null;
+  jobName: string;
+  filesVer: number | null;
   files: BundleFile[];
   onChange: (f: BundleFile[]) => void;
   onEnv: (vars: string[][]) => void;
 }) {
-  const { toast } = useApp();
+  const { toast, openModal } = useApp();
   const input = useRef<HTMLInputElement>(null);
   const [open, setOpen] = useState<string | null>(null);
   const [notes, setNotes] = useState<{ dropped: { path: string; reason: string }[]; warnings: { path: string; message: string }[] }>({ dropped: [], warnings: [] });
@@ -1214,6 +1221,11 @@ function FileBundleField({
       }
       right={
         <span className="flex gap-1">
+          {jobId && filesVer && (
+            <Button size="sm" variant="ghost" icon="history" onClick={() => openModal((c) => <FileHistoryModal jobId={jobId} jobName={jobName} onClose={c} />, "wide")}>
+              기록 · v{filesVer}
+            </Button>
+          )}
           {files.length > 0 && (
             <Button size="sm" variant="ghost" onClick={() => onChange([])}>
               모두 지우기

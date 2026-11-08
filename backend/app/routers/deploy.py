@@ -3,6 +3,7 @@ import base64
 import binascii
 import json
 import re
+import time
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -257,6 +258,31 @@ def check_extra_images(db: Session, items: list[ExtraImageIn], current: list[dic
     return out
 
 
+MAX_FILE_VERSIONS = 50
+
+
+def file_changes(old: list[dict] | None, new: list[dict] | None) -> dict[str, list[str]]:
+    a = {f["path"]: f["content"] for f in old or []}
+    b = {f["path"]: f["content"] for f in new or []}
+    return {"added": sorted(set(b) - set(a)), "changed": sorted(p for p in set(a) & set(b) if a[p] != b[p]),
+            "removed": sorted(set(a) - set(b))}
+
+
+def save_file_version(db: Session, job: m.Job, old: list[dict] | None, new: list[dict] | None) -> bool:
+    """A new version of the job's files when they changed. Keeps the last MAX_FILE_VERSIONS versions."""
+    changes = file_changes(old, new)
+    if not any(changes.values()):
+        return False
+    ver = (job.files_ver or 0) + 1
+    db.add(m.JobFileVersion(job_id=job.id, ver=ver, files=list(new or []), changes=changes, created_at=time.time(),
+                            created_by=s.actor_name(db)))
+    job.files_ver = ver
+    stale = db.scalars(select(m.JobFileVersion).where(m.JobFileVersion.job_id == job.id, m.JobFileVersion.ver <= ver - MAX_FILE_VERSIONS))
+    for v in stale:
+        db.delete(v)
+    return True
+
+
 def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | None, str | None, str, list[dict[str, str]] | None, str | None]:
     """Validate the deploy method + image; reuse or create the repo and register the image.
 
@@ -332,6 +358,8 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
     )
     db.add(job)
+    db.flush()
+    save_file_version(db, job, None, job.files)
     s.log_act(db, "배포 작업 생성", f"{name} · " + (f"{repo.name}/{path}" if repo else f"SSH 스크립트 {len(script or [])}단계"))
     db.commit()
     return job_view(db, job, scope, who)
@@ -392,6 +420,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
     job.name, job.repo, job.book, job.script, job.service_path = name, repo.name if repo else None, path, script, service_path
+    save_file_version(db, job, job.files, files)
     job.files, job.extra_images = files, extra_images
     job.inventory, job.targets = body.inventory, list(body.targets)
     job.image, job.default_tag = ref, tag
@@ -465,13 +494,28 @@ def parse_bundle(body: UploadIn):
 
 
 @router.get("/jobs/{job_id}/files")
-def job_files(job_id: str, db: Session = Depends(get_db)):
-    """The job's file bundle with contents (the job list only carries names and sizes)."""
+def job_files(job_id: str, ver: int | None = None, db: Session = Depends(get_db)):
+    """The job's file bundle with contents: the current one, or an earlier version (?ver=3)."""
     job = db.get(m.Job, job_id)
     if not job:
         raise HTTPException(404, "작업을 찾을 수 없어요.")
+    files = job.files or []
+    if ver is not None and ver != job.files_ver:
+        v = db.scalar(select(m.JobFileVersion).where(m.JobFileVersion.job_id == job_id, m.JobFileVersion.ver == ver))
+        if not v:
+            raise HTTPException(404, f"파일 v{ver} 기록이 없어요. 오래된 기록은 {MAX_FILE_VERSIONS}개까지만 남아요.")
+        files = v.files
     return [{"path": f["path"], "content": f["content"], "size": len(f["content"].encode()),
-             "warnings": [w["message"] for w in bundles.risky_warnings(f["path"], f["content"])]} for f in job.files or []]
+             "warnings": [w["message"] for w in bundles.risky_warnings(f["path"], f["content"])]} for f in files]
+
+
+@router.get("/jobs/{job_id}/files/history")
+def job_files_history(job_id: str, db: Session = Depends(get_db)):
+    """Every saved version of the job's files, newest first: who, when, what changed."""
+    if not db.get(m.Job, job_id):
+        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    rows = db.scalars(select(m.JobFileVersion).where(m.JobFileVersion.job_id == job_id).order_by(m.JobFileVersion.ver.desc()))
+    return [v.summary() for v in rows]
 
 
 @router.get("/runs")

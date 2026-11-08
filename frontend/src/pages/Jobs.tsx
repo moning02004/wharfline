@@ -5,6 +5,7 @@ import { EditJobModal, NewJobModal } from "../modals/NewJobModal";
 import { ApprovalButtons, PlaybookLine, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
+import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
 
 export function Jobs() {
@@ -130,7 +131,29 @@ export function Jobs() {
                             <KV
                               items={[
                                 ["이미지", j.image ?? <span className="text-faint">없음</span>, "font-mono text-[12.5px]"],
-                                ["플레이북", <PlaybookLine job={j} />],
+                                ["배포 방법", <PlaybookLine job={j} />],
+                                ...(j.filesVer
+                                  ? ([
+                                      [
+                                        "파일",
+                                        <span className="inline-flex items-center gap-2">
+                                          <span className="font-mono text-[12.5px]">v{j.filesVer}</span>
+                                          <span className="text-muted">{j.files.length}개</span>
+                                          <Button
+                                            size="sm"
+                                            variant="ghost"
+                                            icon="history"
+                                            onClick={(e) => {
+                                              e.stopPropagation();
+                                              openModal((c) => <FileHistoryModal jobId={j.id} jobName={j.name} onClose={c} />, "wide");
+                                            }}
+                                          >
+                                            기록
+                                          </Button>
+                                        </span>,
+                                      ],
+                                    ] as [string, React.ReactNode][])
+                                  : []),
                                 ["환경 변수", j.env || <span className="text-faint">없음</span>, "font-mono text-[12.5px]"],
                               ]}
                             />
