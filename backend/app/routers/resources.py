@@ -173,7 +173,8 @@ async def check_connection(body: CheckIn, db: Session = Depends(get_db)):
     r = await sshcheck.check(ip, body.port, user, private)
     s.log_act(db, "서버 연결 확인", f"{user}@{ip}:{body.port} · 키 {key.name} · {'성공' if r['login'] else '실패'}")
     db.commit()
-    return r
+    # Which key was offered, so a failed login can be compared with the server's authorized_keys.
+    return {**r, "keyName": key.name, "keyFingerprint": key.fingerprint}
 
 
 class HostIn(BaseModel):

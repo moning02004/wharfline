@@ -89,6 +89,7 @@ def test_check_endpoint(client, login):
     r = client.post("/api/inventory/check", json={"ip": "10.9.0.21", "port": 22, "user": "deploy", "key": "prod-deploy"})
     assert r.status_code == 200, r.text
     assert r.json()["login"] is True and r.json()["fingerprint"].startswith("SHA256:")
+    assert r.json()["keyName"] == "prod-deploy" and r.json()["keyFingerprint"].startswith("SHA256:")
     assert client.post("/api/inventory/check", json={"ip": "10.9.0.21", "port": 22, "user": "root", "key": "prod-deploy"}).status_code == 400
     assert client.post("/api/inventory/check", json={"ip": "10.9.0.21", "port": 22, "user": "deploy", "key": "nope"}).status_code == 400
     assert client.post("/api/inventory/check", json={"ip": "bad host!", "port": 22, "user": "deploy", "key": "prod-deploy"}).status_code == 400

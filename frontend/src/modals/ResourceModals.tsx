@@ -18,7 +18,7 @@ export function copyText(text: string, toast: (m: string) => void) {
 
 /* ---------- keys ---------- */
 
-export function NewKeyModal({ onClose }: { onClose: () => void }) {
+export function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated?: (k: Key) => void }) {
   const { refresh, toast, openModal, withSudo } = useApp();
   const [mode, setMode] = useState<"gen" | "paste" | "token">("gen");
   const [name, setName] = useState("batch-deploy");
@@ -42,6 +42,7 @@ export function NewKeyModal({ onClose }: { onClose: () => void }) {
         const k = await api.post<Key>("/keys", { mode, name, privateKey: priv, passphrase: pass, user, token: tok });
         onClose();
         refresh();
+        onCreated?.(k);
         if (k.kind === "token") toast("토큰을 저장했어요. 다시 볼 수 없어요.");
         else openModal((close) => <PubKeyModal k={k} fresh onClose={close} />);
       } catch (e) {
@@ -447,7 +448,7 @@ export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void;
             label="SSH 키"
             htmlFor="iKey"
             right={
-              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
+              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
                 키 추가
               </Button>
             }
@@ -482,6 +483,8 @@ interface ConnCheck {
   /** docker: usable by the user · noperm: installed, but not for this user · none: not installed */
   docker: "docker" | "noperm" | "none" | null;
   error: string | null;
+  keyName: string;
+  keyFingerprint: string;
 }
 
 /** Add a server in two steps: its address, then what to run on it and a real connection check before saving. */
@@ -573,7 +576,7 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
               </Button>
             </div>
             {!result && !checking && <span className="text-[12.5px] text-muted pl-[32px]">위 명령을 실행한 뒤 눌러요. 서버에 접속해 지문을 읽고 이 키로 로그인해 봐요.</span>}
-            {result && <CheckResult r={result} />}
+            {result && <CheckResult r={result} user={user.trim()} />}
           </div>
           <ErrorText>{err}</ErrorText>
         </ModalBody>
@@ -631,7 +634,7 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
             label="키"
             htmlFor="hKey"
             right={
-              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
+              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
                 키 추가
               </Button>
             }
@@ -657,7 +660,7 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
   );
 }
 
-function CheckResult({ r }: { r: ConnCheck }) {
+function CheckResult({ r, user }: { r: ConnCheck; user: string }) {
   const row = (ok: boolean | null, text: ReactNode) => (
     <li className="flex items-start gap-2">
       <span className={ok === null ? "text-faint" : ok ? "text-ok" : "text-bad"}>{ok === null ? "–" : ok ? "✓" : "✕"}</span>
@@ -674,6 +677,16 @@ function CheckResult({ r }: { r: ConnCheck }) {
         </li>
       )}
       {r.reachable && row(r.login, r.login ? <><span className="font-mono">{r.loginUser}</span>(으)로 로그인했어요</> : r.error)}
+      {r.reachable && !r.login && (
+        <li className="flex flex-col gap-1">
+          <span className="text-muted">
+            시도한 키 <span className="font-mono">{r.keyName}</span> · 서버에서 아래 명령의 결과에 이 지문이 있어야 해요
+          </span>
+          <span className="font-mono rounded-md bg-surface-2 border border-line px-2.5 py-1.5 break-all">{r.keyFingerprint}</span>
+          <CmdBlock cmd={`sudo ssh-keygen -lf /home/${user}/.ssh/authorized_keys`} label="서버 키 지문 명령" />
+          <span className="text-faint">없으면 위 2번 명령을 다시 실행하거나, 이전으로 가서 서버에 넣은 키를 골라요.</span>
+        </li>
+      )}
       {r.login &&
         row(
           r.docker === "docker" ? true : r.docker ? false : null,
