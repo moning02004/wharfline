@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api, ApiError, errMsg, parseEnv } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
+import { indentOnTab } from "../lib/indent";
 import type { BundleFile, EnvSet, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
 import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
@@ -1326,6 +1327,7 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
             placeholder={"docker compose pull"}
             value={st.run}
             onChange={(e) => set(st.id, { run: e.target.value })}
+            onKeyDown={indentOnTab}
           />
         </div>
       ))}
@@ -1560,6 +1562,7 @@ function FileEditorModal({
           placeholder={"services:\n  app:\n    image: ghcr.io/acme/api:${API_TAG}\n    env_file: .env\n    restart: unless-stopped"}
           value={content}
           onChange={(e) => setContent(e.target.value)}
+          onKeyDown={indentOnTab}
           autoFocus={!!file}
         />
         <div className="flex items-center gap-2 flex-wrap text-[12px] text-muted">
