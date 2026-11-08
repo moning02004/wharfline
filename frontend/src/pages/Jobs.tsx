@@ -5,6 +5,7 @@ import { EditJobModal, NewJobModal } from "../modals/NewJobModal";
 import { ApprovalButtons, PlaybookLine, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
+import { EnvLink } from "../modals/EnvModals";
 import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
 
@@ -155,7 +156,7 @@ export function Jobs() {
                                       ],
                                     ] as [string, React.ReactNode][])
                                   : []),
-                                ["환경 변수", j.env || <span className="text-faint">없음</span>, "font-mono text-[12.5px]"],
+                                ["환경 변수", j.env ? <EnvLink name={j.env} /> : <span className="text-faint">없음</span>],
                               ]}
                             />
                             <KV

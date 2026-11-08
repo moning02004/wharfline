@@ -288,3 +288,29 @@ export function EnvHistoryModal({ env, onClose }: { env: EnvSet; onClose: () => 
     </>
   );
 }
+
+/* ---------- open a set by name (from deploy screens) ---------- */
+
+/**
+ * An env set's name that opens it: after the password re-check, its values show in the editor to read or change.
+ * Members who can't see values (not Owner/Admin) just get a short note.
+ */
+export function EnvLink({ name }: { name: string }) {
+  const { withSudo, openModal, toast, can } = useApp();
+  const open = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!can("env")) return toast("환경 변수 값은 Owner와 Admin만 볼 수 있어요");
+    withSudo("환경 변수 보기·수정", async () => {
+      const sets = await api.get<EnvSet[]>("/envs");
+      const env = sets.find((x) => x.name === name);
+      if (!env) return toast(`${name} 세트를 찾지 못했어요`, "error");
+      const r = await api.get<{ vars: [string, string][] }>(`/envs/${env.id}/values?purpose=edit`);
+      openModal((c) => <EditEnvModal env={env} values={r.vars} onClose={c} />, "md");
+    });
+  };
+  return (
+    <button type="button" onClick={open} className="link font-mono text-[12.5px]" title="비밀번호를 확인하고 값을 보거나 고쳐요">
+      {name}
+    </button>
+  );
+}

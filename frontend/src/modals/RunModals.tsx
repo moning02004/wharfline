@@ -5,6 +5,7 @@ import type { Build, Job, RunDetail, RunEvent, Status } from "../lib/types";
 import { BuildBadge, PROVIDER_NAME, buildNo, buildState, elapsed } from "../components/BuildBadge";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
+import { EnvLink } from "./EnvModals";
 import { FileHistoryModal } from "./FileHistoryModal";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Button, Chip, Field, Hint, Input, KV, Select, StatusPill, cx } from "../components/ui";
@@ -376,7 +377,7 @@ function ConfirmRun({
           items={[
             ...(hasImage ? ([["이미지", job.image, "font-mono text-[12.5px]"]] as [string, string, string][]) : []),
             ["배포 방법", <PlaybookLine job={job} />],
-            ["환경 변수", job.env || "없음", "font-mono text-[12.5px]"],
+            ["환경 변수", job.env ? <EnvLink name={job.env} /> : "없음"],
             ...(job.protected
               ? ([["안전장치", [job.lock && "동시 실행 금지", job.rollback && "실패 시 이전 태그로 롤백"].filter(Boolean).join(" · "), "text-muted"]] as [string, string, string][])
               : []),
