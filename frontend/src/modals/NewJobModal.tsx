@@ -197,20 +197,31 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [envText, setEnvText] = useState("");
   const [envPick, setEnvPick] = useState(job?.env ?? "");
   // The current set's values, shown in place after the password re-check (edit only).
-  const [envShown, setEnvShown] = useState<[string, string][] | null>(null);
+  // Shown as KEY=VALUE text; saving writes a new version of the set right away, apart from the job.
+  const [envShown, setEnvShown] = useState<{ text: string; saved: string } | null>(null);
+  const [envSaving, setEnvSaving] = useState(false);
+  const shownEnv = envs.find((x) => x.name === job?.env);
   const showEnv = () => {
-    const env = envs.find((x) => x.name === job?.env);
-    if (!env) return toast(`${job?.env} 세트를 찾지 못했어요`, "error");
+    if (!shownEnv) return toast(`${job?.env} 세트를 찾지 못했어요`, "error");
     withSudo("환경 변수 보기", async () => {
-      const r = await api.get<{ vars: [string, string][] }>(`/envs/${env.id}/values?purpose=edit`);
-      setEnvShown(r.vars);
+      const r = await api.get<{ vars: [string, string][] }>(`/envs/${shownEnv.id}/values?purpose=edit`);
+      const text = r.vars.map(([k, v]) => `${k}=${v}`).join("\n");
+      setEnvShown({ text, saved: text });
     });
   };
-  const editShownEnv = () => {
-    if (!envShown) return;
-    setEnvText(envShown.map(([k, v]) => `${k}=${v}`).join("\n"));
-    setEnvMode("paste");
-    setEnvChoice("on");
+  const saveShownEnv = () => {
+    if (!envShown || !shownEnv || envSaving) return;
+    withSudo("환경 변수 저장", async () => {
+      setEnvSaving(true);
+      try {
+        const r = await api.put<EnvSet>(`/envs/${shownEnv.id}`, { vars: parseEnv(envShown.text) });
+        setEnvShown({ text: envShown.text, saved: envShown.text });
+        refresh();
+        toast(`${shownEnv.name} v${r.ver}으로 저장했어요`);
+      } finally {
+        setEnvSaving(false);
+      }
+    });
   };
   const [hook, setHook] = useState(job ? job.hook : false);
   const [hookRule, setHookRule] = useState(job?.hookRule ?? "v");
@@ -909,10 +920,10 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                     envShown ? (
                       <>
                         <Button size="sm" variant="ghost" onClick={() => setEnvShown(null)}>
-                          숨기기
+                          {envShown.text !== envShown.saved ? "취소" : "숨기기"}
                         </Button>
-                        <Button size="sm" onClick={editShownEnv}>
-                          고치기
+                        <Button size="sm" variant="primary" disabled={envShown.text === envShown.saved || envSaving} onClick={saveShownEnv}>
+                          값 저장
                         </Button>
                       </>
                     ) : (
@@ -923,18 +934,24 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   )}
                 </div>
                 {envShown && (
-                  <div className="border-t border-line px-3.5 py-2.5 font-mono text-[12.5px] max-h-64 overflow-auto scroll-soft">
-                    {envShown.length ? (
-                      envShown.map(([k, v]) => (
-                        <div key={k} className="flex gap-2 min-w-0">
-                          <span className="font-medium flex-none">{k}</span>
-                          <span className="text-faint">=</span>
-                          <span className="break-all min-w-0">{v}</span>
-                        </div>
-                      ))
-                    ) : (
-                      <span className="text-muted font-sans">비어 있어요</span>
-                    )}
+                  <div className="border-t border-line p-2">
+                    <Textarea
+                      className="font-mono text-[12.5px]"
+                      rows={Math.min(12, Math.max(4, envShown.text.split("\n").length + 1))}
+                      aria-label={`${job?.env} 값`}
+                      placeholder="KEY=value"
+                      value={envShown.text}
+                      onChange={(e) => setEnvShown({ ...envShown, text: e.target.value })}
+                      onKeyDown={(e) => {
+                        if ((e.metaKey || e.ctrlKey) && e.key === "s") {
+                          e.preventDefault();
+                          saveShownEnv();
+                        }
+                      }}
+                    />
+                    <p className="mt-1.5 px-1 text-[12px] text-muted">
+                      저장하면 이 세트를 쓰는 모든 작업에 새 버전이 적용돼요.
+                    </p>
                   </div>
                 )}
               </div>
