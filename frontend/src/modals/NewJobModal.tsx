@@ -196,6 +196,22 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [envMode, setEnvMode] = useState<EnvMode>(canEnv ? "paste" : "existing");
   const [envText, setEnvText] = useState("");
   const [envPick, setEnvPick] = useState(job?.env ?? "");
+  // The current set's values, shown in place after the password re-check (edit only).
+  const [envShown, setEnvShown] = useState<[string, string][] | null>(null);
+  const showEnv = () => {
+    const env = envs.find((x) => x.name === job?.env);
+    if (!env) return toast(`${job?.env} 세트를 찾지 못했어요`, "error");
+    withSudo("환경 변수 보기", async () => {
+      const r = await api.get<{ vars: [string, string][] }>(`/envs/${env.id}/values?purpose=edit`);
+      setEnvShown(r.vars);
+    });
+  };
+  const editShownEnv = () => {
+    if (!envShown) return;
+    setEnvText(envShown.map(([k, v]) => `${k}=${v}`).join("\n"));
+    setEnvMode("paste");
+    setEnvChoice("on");
+  };
   const [hook, setHook] = useState(job ? job.hook : false);
   const [hookRule, setHookRule] = useState(job?.hookRule ?? "v");
   const [prot, setProt] = useState(job ? job.protected : true);
@@ -885,9 +901,42 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               {null}
             </TipSpot>
             {envChoice === "keep" && (
-              <div className="flex items-center gap-2 rounded-lg bg-surface-2 border border-line px-3.5 py-2.5 text-[13px]">
-                <Icon name="file" className="size-4 flex-none text-faint" />
-                {job?.env ? <span className="font-mono truncate">{job.env}</span> : <span className="text-muted">없음</span>}
+              <div className="rounded-lg bg-surface-2 border border-line text-[13px]">
+                <div className="flex items-center gap-2 px-3.5 py-2.5">
+                  <Icon name="file" className="size-4 flex-none text-faint" />
+                  {job?.env ? <span className="font-mono truncate flex-1 min-w-0">{job.env}</span> : <span className="text-muted flex-1">없음</span>}
+                  {job?.env && canEnv && (
+                    envShown ? (
+                      <>
+                        <Button size="sm" variant="ghost" onClick={() => setEnvShown(null)}>
+                          숨기기
+                        </Button>
+                        <Button size="sm" onClick={editShownEnv}>
+                          고치기
+                        </Button>
+                      </>
+                    ) : (
+                      <Button size="sm" variant="ghost" icon="lock" onClick={showEnv}>
+                        값 보기
+                      </Button>
+                    )
+                  )}
+                </div>
+                {envShown && (
+                  <div className="border-t border-line px-3.5 py-2.5 font-mono text-[12.5px] max-h-64 overflow-auto scroll-soft">
+                    {envShown.length ? (
+                      envShown.map(([k, v]) => (
+                        <div key={k} className="flex gap-2 min-w-0">
+                          <span className="font-medium flex-none">{k}</span>
+                          <span className="text-faint">=</span>
+                          <span className="break-all min-w-0">{v}</span>
+                        </div>
+                      ))
+                    ) : (
+                      <span className="text-muted font-sans">비어 있어요</span>
+                    )}
+                  </div>
+                )}
               </div>
             )}
             {envOn && (

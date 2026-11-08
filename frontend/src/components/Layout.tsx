@@ -6,7 +6,6 @@ import type { Session } from "../lib/types";
 import { Icon } from "./Icon";
 import { QuickNav } from "./QuickNav";
 import { Button, cx } from "./ui";
-import { useRun } from "../modals/RunModals";
 
 function useTheme() {
   const isDark = () =>
@@ -62,8 +61,7 @@ const SECTIONS = [
 ];
 
 export function Layout({ children }: { children: ReactNode }) {
-  const { session, setSession, canSee, viewAs, role, version, openModal } = useApp();
-  const { runById } = useRun();
+  const { session, setSession, canSee, viewAs, version, openModal } = useApp();
   const { dark, toggle } = useTheme();
   const loc = useLocation();
   const nav = useNavigate();
@@ -143,11 +141,6 @@ export function Layout({ children }: { children: ReactNode }) {
           </button>
           <SudoTimer />
           <Button variant="ghost" size="sm" iconOnly icon={dark ? "sun" : "moon"} title="테마 전환" aria-label="테마 전환" onClick={toggle} />
-          {canSee("jobs") && role !== "Viewer" && (
-            <Button variant="primary" size="sm" icon="play" className="max-sm:hidden" onClick={() => runById("j1")}>
-              배포 실행
-            </Button>
-          )}
           <div className="flex items-center gap-1 flex-none">
             <span
               className="grid place-items-center size-[30px] rounded-full bg-primary-soft text-primary font-semibold text-[11px] shadow-[0_0_0_2px_var(--surface),0_0_0_3px_color-mix(in_srgb,var(--primary)_25%,transparent)]"
