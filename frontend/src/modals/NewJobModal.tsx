@@ -163,8 +163,10 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [busy, setBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  const step = JOB_STEPS[cur].id;
-  const last = cur === JOB_STEPS.length - 1;
+  // The 스크립트 step exists only for SSH script jobs.
+  const flow = JOB_STEPS.filter((st) => st.id !== "script" || source === "script");
+  const step = flow[Math.min(cur, flow.length - 1)].id;
+  const last = cur >= flow.length - 1;
 
   useEffect(() => {
     if (!inv && inventories[0]) setInv(inventories[0].name);
@@ -213,9 +215,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         if (source === "script") {
           const sp = servicePath.trim().replace(/\/+$/, "");
           if (servicePath.trim() && (!sp || !SERVICE_PATH_RE.test(sp))) return "서비스 경로는 /srv/api-server처럼 /로 시작하는 폴더예요. ..은 쓸 수 없어요.";
-          if (!steps.length) return "스크립트 단계를 하나 이상 넣어 주세요.";
-          const bad = steps.findIndex((st) => !st.name.trim() || !st.run.trim());
-          return bad >= 0 ? `${bad + 1}번째 단계의 이름과 명령을 적어 주세요.` : "";
+          return "";
         }
         if (source !== "git") return "";
         if (!reused && !/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim()))
@@ -223,6 +223,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         if (!PATH_RE.test(path.trim())) return "플레이북 경로는 레포 안의 .yml 파일이에요. 예: deploy/app.yml";
         if (ssh && !reused && !key) return "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요.";
         return "";
+      case "script": {
+        if (!steps.length) return "스크립트 단계를 하나 이상 넣어 주세요.";
+        const bad = steps.findIndex((st) => !st.name.trim() || !st.run.trim());
+        return bad >= 0 ? `${bad + 1}번째 단계의 이름과 명령을 적어 주세요.` : "";
+      }
       case "target":
         return hosts.length ? "" : "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
       case "image": {
@@ -273,8 +278,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   /** Checks every step; jumps to the first one that fails. */
   const validateAll = (): boolean => {
-    for (let i = 0; i < JOB_STEPS.length; i++) {
-      const v = validateStep(JOB_STEPS[i].id);
+    for (let i = 0; i < flow.length; i++) {
+      const v = validateStep(flow[i].id);
       if (v) {
         setCur(i);
         fail(v);
@@ -404,9 +409,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         ? source === "git"
           ? ["playbook.source", "playbook.url", "playbook.branch", "playbook.path", "playbook.key"]
           : source === "script"
-            ? ["playbook.source", "playbook.script"]
+            ? ["playbook.source"]
             : ["playbook.source", "playbook.builtin"]
-        : step === "target"
+        : step === "script"
+          ? ["playbook.script"]
+          : step === "target"
           ? ["target.inv", "target.groups"]
           : step === "image"
             ? ["image"]
@@ -419,7 +426,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 : [];
   // Where the guide starts on a step: the first input that still needs something.
   const firstTip = (): TipId | null => {
-    if (step === "playbook" && source === "script") return "playbook.script";
+    if (step === "script") return "playbook.script";
+    if (step === "playbook" && source === "script") return "playbook.source";
     if (step === "playbook") return source === "builtin" ? "playbook.builtin" : !url.trim() ? "playbook.url" : !path.trim() ? "playbook.path" : "playbook.key";
     if (step === "env" && envOn && envMode !== "existing" && !envText.trim()) return "env.vars";
     return tipOrder[0] ?? null;
@@ -605,15 +613,13 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   jobName={job?.name ?? ""}
                   filesVer={job?.filesVer ?? null}
                   files={files}
-                  onChange={(f) => {
-                    setFiles(f);
+                  update={(fn) => {
+                    setFiles(fn);
                     setFilesTouched(true);
                   }}
                   onEnv={mergeEnv}
                 />
-                <TipSpot id="playbook.script">
-                  <ScriptEditor steps={steps} onChange={setSteps} />
-                </TipSpot>
+                <Hint>실행할 명령은 다음 단계 "스크립트"에서 적어요.</Hint>
               </div>
             ) : (
               <TipSpot id="playbook.builtin">
@@ -628,6 +634,18 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </div>
               </TipSpot>
             )}
+          </Field>
+        );
+
+      case "script":
+        return (
+          <Field
+            label="스크립트"
+            hint={<>서버마다 위에서부터 차례로 실행해요. 한 서버에서 단계가 실패하면 그 서버의 남은 단계는 건너뛰고, 다른 서버는 계속해요.</>}
+          >
+            <TipSpot id="playbook.script">
+              <ScriptEditor steps={steps} onChange={setSteps} />
+            </TipSpot>
           </Field>
         );
 
@@ -958,7 +976,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   <span className="text-muted text-[12.5px]">{label}</span>
                   <span className="min-w-0">{value}</span>
                   {editing && (
-                    <Button size="sm" variant="ghost" className="justify-self-start sm:justify-self-end -ml-2.5 sm:ml-0" onClick={() => goto(JOB_STEPS.findIndex((s) => s.id === id))}>
+                    <Button size="sm" variant="ghost" className="justify-self-start sm:justify-self-end -ml-2.5 sm:ml-0" onClick={() => goto(flow.findIndex((s) => s.id === id))}>
                       고치기
                     </Button>
                   )}
@@ -983,7 +1001,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           </Button>
         }
       />
-      <StepIndex mode={editing ? "edit" : "new"} cur={cur} skipped={skipped} onPick={goto} />
+      <StepIndex steps={flow} mode={editing ? "edit" : "new"} cur={cur} skipped={skipped} onPick={goto} />
       <form id="jobForm" onSubmit={submit} className="contents" noValidate>
         <div
           ref={bodyRef}
@@ -1038,11 +1056,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 }
 
 /** 목차: step numbers and titles in a row. New job: progress only. Edit: every step is done and clickable. */
-function StepIndex({ mode, cur, skipped, onPick }: { mode: Mode; cur: number; skipped: JobStepId[]; onPick: (i: number) => void }) {
+function StepIndex({ steps, mode, cur, skipped, onPick }: { steps: typeof JOB_STEPS; mode: Mode; cur: number; skipped: JobStepId[]; onPick: (i: number) => void }) {
   return (
     <nav aria-label="단계" className="flex-none px-5 pb-3 border-b border-line overflow-x-auto scroll-soft">
       <ol className="flex items-center gap-1.5 min-w-max sm:min-w-0">
-        {JOB_STEPS.map((s, i) => {
+        {steps.map((s, i) => {
           const now = i === cur;
           const wasSkipped = mode === "new" && skipped.includes(s.id) && !now;
           const done = mode === "edit" || (i < cur && !wasSkipped);
@@ -1071,7 +1089,7 @@ function StepIndex({ mode, cur, skipped, onPick }: { mode: Mode; cur: number; sk
                   {inner}
                 </span>
               )}
-              {i < JOB_STEPS.length - 1 && <span aria-hidden="true" className={cx("h-px w-3 sm:w-auto sm:flex-1 sm:min-w-2", done && !now ? "bg-accent/40" : "bg-line")} />}
+              {i < steps.length - 1 && <span aria-hidden="true" className={cx("h-px w-3 sm:w-auto sm:flex-1 sm:min-w-2", done && !now ? "bg-accent/40" : "bg-line")} />}
             </li>
           );
         })}
@@ -1151,56 +1169,82 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
   );
 }
 
-/** Files uploaded to SERVICE_PATH before the script: a docker-compose.yaml, or a zip (a Kubernetes yaml set, a Makefile...). */
+type FileUpdate = (fn: (prev: BundleFile[]) => BundleFile[]) => void;
+
+/** Same rules as the server (app/bundles.py): a relative path inside SERVICE_PATH. */
+const FILE_PART_RE = /^[A-Za-z0-9._@+-]{1,128}$/;
+function cleanFilePath(raw: string): string | null {
+  let p = raw.replace(/\\/g, "/").trim();
+  while (p.startsWith("./")) p = p.slice(2);
+  if (!p || p.startsWith("/")) return null;
+  const parts = p.split("/").filter(Boolean);
+  if (!parts.length || parts.some((x) => x === "." || x === ".." || !FILE_PART_RE.test(x))) return null;
+  return parts.join("/");
+}
+const RISKY_FILE: [RegExp, string][] = [
+  [/privileged:\s*true/, "privileged: true"],
+  [/docker\.sock/, "docker.sock 마운트"],
+  [/network_mode:\s*["']?host/, "network_mode: host"],
+  [/pid:\s*["']?host/, "pid: host"],
+  [/cap_add:/, "cap_add"],
+  [/hostPath:/, "hostPath"],
+  [/hostNetwork:\s*true/, "hostNetwork: true"],
+  [/hostPID:\s*true/, "hostPID: true"],
+];
+const riskyIn = (text: string) => RISKY_FILE.filter(([re]) => re.test(text)).map(([, m]) => m);
+const byteSize = (text: string) => new TextEncoder().encode(text).length;
+const fmtSize = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+
+/**
+ * Files uploaded to SERVICE_PATH before the script: write one here, or upload a docker-compose.yaml or a
+ * zip (a Kubernetes yaml set, a Makefile...). Each file is a card; opening it shows the content to read or edit.
+ */
 function FileBundleField({
   jobId,
   jobName,
   filesVer,
   files,
-  onChange,
+  update,
   onEnv,
 }: {
   jobId: string | null;
   jobName: string;
   filesVer: number | null;
   files: BundleFile[];
-  onChange: (f: BundleFile[]) => void;
+  update: FileUpdate;
   onEnv: (vars: string[][]) => void;
 }) {
   const { toast, openModal } = useApp();
   const input = useRef<HTMLInputElement>(null);
-  const [open, setOpen] = useState<string | null>(null);
-  const [notes, setNotes] = useState<{ dropped: { path: string; reason: string }[]; warnings: { path: string; message: string }[] }>({ dropped: [], warnings: [] });
+  const [dropped, setDropped] = useState<{ path: string; reason: string }[]>([]);
   const [busy, setBusy] = useState(false);
+  const updateRef = useRef(update);
+  updateRef.current = update;
 
-  // Editing: the job list only has names and sizes; load the contents once so they can be shown and saved again.
+  // Editing: the job list only has names and sizes; load the contents once so they can be opened and saved again.
   useEffect(() => {
     if (!jobId || !files.length || files.every((f) => f.content !== undefined)) return;
     api.get<BundleFile[]>(`/jobs/${jobId}/files`).then(
-      (full) => {
-        onChangeQuiet(full);
-        setNotes((n) => ({ ...n, warnings: full.flatMap((f) => (f.warnings ?? []).map((message) => ({ path: f.path, message }))) }));
-      },
+      (full) => updateRef.current(() => full),
       () => toast("파일 내용을 불러오지 못했어요", "error"),
     );
   }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
-  const quiet = useRef(onChange);
-  quiet.current = onChange;
-  const onChangeQuiet = (f: BundleFile[]) => quiet.current(f);
 
   const pick = async (fileList: FileList | null) => {
     const file = fileList?.[0];
     if (!file) return;
     setBusy(true);
     try {
-      const r = await api.post<{ files: BundleFile[]; env: string[][]; dropped: { path: string; reason: string }[]; warnings: { path: string; message: string }[] }>(
-        "/bundles/parse",
-        { name: file.name, data: await fileToBase64(file) },
-      );
-      const byPath = new Map(files.map((f) => [f.path, f]));
-      r.files.forEach((f) => byPath.set(f.path, f)); // same path: the new upload wins
-      onChange([...byPath.values()].sort((a, b) => a.path.localeCompare(b.path)));
-      setNotes({ dropped: r.dropped, warnings: r.warnings });
+      const r = await api.post<{ files: BundleFile[]; env: string[][]; dropped: { path: string; reason: string }[] }>("/bundles/parse", {
+        name: file.name,
+        data: await fileToBase64(file),
+      });
+      update((prev) => {
+        const byPath = new Map(prev.map((f) => [f.path, f]));
+        r.files.forEach((f) => byPath.set(f.path, f)); // same path: the new upload wins
+        return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
+      });
+      setDropped(r.dropped);
       onEnv(r.env);
       toast(`파일 ${r.files.length}개를 올렸어요`);
     } catch (e) {
@@ -1211,7 +1255,24 @@ function FileBundleField({
     }
   };
 
-  const size = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
+  const edit = (file: BundleFile | null) =>
+    openModal(
+      (c) => (
+        <FileEditorModal
+          file={file}
+          taken={files.map((f) => f.path).filter((p) => p !== file?.path)}
+          onClose={c}
+          onSave={(next) =>
+            update((prev) =>
+              [...prev.filter((f) => f.path !== file?.path && f.path !== next.path), next].sort((a, b) => a.path.localeCompare(b.path)),
+            )
+          }
+          onDelete={file ? () => update((prev) => prev.filter((f) => f.path !== file.path)) : undefined}
+        />
+      ),
+      "wide",
+    );
+
   return (
     <Field
       label={
@@ -1220,63 +1281,140 @@ function FileBundleField({
         </>
       }
       right={
-        <span className="flex gap-1">
+        <span className="flex gap-1 flex-wrap">
           {jobId && filesVer && (
             <Button size="sm" variant="ghost" icon="history" onClick={() => openModal((c) => <FileHistoryModal jobId={jobId} jobName={jobName} onClose={c} />, "wide")}>
               기록 · v{filesVer}
             </Button>
           )}
-          {files.length > 0 && (
-            <Button size="sm" variant="ghost" onClick={() => onChange([])}>
-              모두 지우기
-            </Button>
-          )}
-          <Button size="sm" icon="upload" disabled={busy} onClick={() => input.current?.click()}>
-            {busy ? "읽는 중…" : "파일 올리기"}
+          <Button size="sm" variant="ghost" icon="upload" disabled={busy} onClick={() => input.current?.click()}>
+            {busy ? "읽는 중…" : "올리기"}
+          </Button>
+          <Button size="sm" icon="plus" onClick={() => edit(null)}>
+            새 파일
           </Button>
         </span>
       }
-      hint={<>docker-compose.yaml 하나, 또는 zip(쿠버네티스 yaml 묶음, Makefile 등)을 올려요. 실행할 때 <span className="font-mono">$SERVICE_PATH</span>에 그대로 올라가요. zip 안의 <span className="font-mono">.env</span>는 파일로 두지 않고 환경 변수에 더해요.</>}
+      hint={<>실행할 때 <span className="font-mono">$SERVICE_PATH</span>에 그대로 올라가요. compose 파일 하나나 zip(쿠버네티스 yaml 묶음, Makefile 등)을 올려도 돼요. zip 안의 <span className="font-mono">.env</span>는 환경 변수로 옮겨요.</>}
     >
       <input ref={input} type="file" hidden accept=".yaml,.yml,.zip,.json,.conf,.sh,Makefile,*" onChange={(e) => pick(e.target.files)} />
-      {files.length > 0 && (
-        <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
-          {files.map((f) => (
-            <div key={f.path} className="min-w-0">
-              <div className="flex items-center gap-2 px-3 py-1.5 text-[12.5px]">
-                <button type="button" className="flex items-center gap-2 min-w-0 flex-1 text-left hover:text-accent" onClick={() => setOpen(open === f.path ? null : f.path)}>
-                  <Icon name="file" className="size-3.5 flex-none text-faint" />
-                  <span className="font-mono truncate">{f.path}</span>
-                  <span className="text-faint flex-none">{size(f.size)}</span>
-                  {notes.warnings.some((w) => w.path === f.path) && <Chip tone="warn">주의</Chip>}
-                </button>
-                <Button size="sm" variant="ghost" iconOnly icon="x" aria-label={`${f.path} 빼기`} onClick={() => onChange(files.filter((x) => x.path !== f.path))} />
-              </div>
-              {open === f.path && (
-                <pre className="m-0 px-3 py-2 bg-surface-2 border-t border-line text-[11.5px] font-mono max-h-[220px] overflow-auto scroll-soft whitespace-pre">
-                  {f.content ?? "불러오는 중…"}
-                </pre>
-              )}
-            </div>
-          ))}
+      {files.length === 0 ? (
+        <button
+          type="button"
+          onClick={() => edit(null)}
+          className="rounded-lg border border-dashed border-line-strong px-3.5 py-4 text-[13px] text-muted text-center hover:bg-hover hover:text-fg transition-colors"
+        >
+          아직 파일이 없어요. <span className="text-accent font-medium">새 파일</span>로 docker-compose.yaml을 바로 써 보세요.
+        </button>
+      ) : (
+        <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-2">
+          {files.map((f) => {
+            const risky = f.content !== undefined ? riskyIn(f.content) : f.warnings ?? [];
+            return (
+              <button
+                key={f.path}
+                type="button"
+                onClick={() => edit(f)}
+                title="눌러서 내용 보기 · 고치기"
+                className="group flex items-center gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5 text-left hover:border-accent/40 hover:bg-hover transition-colors min-w-0"
+              >
+                <span className="grid place-items-center size-8 rounded-md bg-surface-2 text-faint group-hover:text-accent flex-none">
+                  <Icon name="file" className="size-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block font-mono text-[12.5px] truncate">{f.path}</span>
+                  <span className="block text-[11.5px] text-faint">
+                    {fmtSize(f.size)}
+                    {f.content !== undefined && ` · ${f.content.split("\n").length}줄`}
+                  </span>
+                </span>
+                {risky.length > 0 && <Chip tone="warn">주의</Chip>}
+                <Icon name="edit" className="size-3.5 text-faint group-hover:text-accent flex-none" />
+              </button>
+            );
+          })}
         </div>
       )}
-      {notes.warnings.length > 0 && (
-        <div className="rounded-lg border border-warn/30 bg-warn-soft px-3 py-2 text-[12.5px] flex flex-col gap-0.5">
-          <b className="font-medium">서버 권한을 넘기는 설정이 있어요. 의도한 게 맞는지 확인하세요.</b>
-          {notes.warnings.map((w, i) => (
-            <span key={i}>
-              <span className="font-mono">{w.path}</span> · {w.message}
-            </span>
-          ))}
-        </div>
-      )}
-      {notes.dropped.length > 0 && (
-        <Hint>
-          빠진 파일: {notes.dropped.map((d) => `${d.path} (${d.reason})`).join(", ")}
-        </Hint>
-      )}
+      {dropped.length > 0 && <Hint>빠진 파일: {dropped.map((d) => `${d.path} (${d.reason})`).join(", ")}</Hint>}
     </Field>
+  );
+}
+
+/** Read or edit one file of the bundle: its path and content. A new file starts empty. */
+function FileEditorModal({
+  file,
+  taken,
+  onSave,
+  onDelete,
+  onClose,
+}: {
+  file: BundleFile | null;
+  taken: string[];
+  onSave: (f: BundleFile) => void;
+  onDelete?: () => void;
+  onClose: () => void;
+}) {
+  const { toast } = useApp();
+  const [path, setPath] = useState(file?.path ?? "");
+  const [content, setContent] = useState(file?.content ?? "");
+  const risky = riskyIn(content);
+  const lines = content.split("\n").length;
+
+  const save = () => {
+    const p = cleanFilePath(path);
+    if (!p) return toast("파일 이름은 docker-compose.yaml이나 k8s/01_namespace.yaml처럼 적어 주세요. /로 시작하거나 ..은 쓸 수 없어요.", "error");
+    if (p.split("/").pop() === ".env") return toast(".env는 파일로 두지 않아요. 환경 변수 단계에 넣어 주세요.", "error");
+    if (taken.includes(p)) return toast(`${p}이(가) 이미 있어요.`, "error");
+    const size = byteSize(content);
+    if (size > 512 * 1024) return toast("파일 하나는 512KB까지예요.", "error");
+    onSave({ path: p, content, size });
+    onClose();
+  };
+
+  return (
+    <>
+      <ModalHead title={file ? "파일" : "새 파일"} sub={file ? "내용을 보고 고칠 수 있어요. 저장하면 작업의 파일이 바뀌어요." : "서버의 $SERVICE_PATH에 이 이름으로 올라가요."} onClose={onClose} />
+      <div className="flex flex-col gap-3 px-5 pb-4 flex-1 min-h-0">
+        <Input mono aria-label="파일 이름" placeholder="docker-compose.yaml" value={path} onChange={(e) => setPath(e.target.value)} autoFocus={!file} />
+        <Textarea
+          aria-label="파일 내용"
+          spellCheck={false}
+          className="font-mono text-[12.5px] leading-relaxed flex-1 min-h-[320px] resize-none"
+          placeholder={"services:\n  app:\n    image: ghcr.io/acme/api:${API_TAG}\n    env_file: .env\n    restart: unless-stopped"}
+          value={content}
+          onChange={(e) => setContent(e.target.value)}
+          autoFocus={!!file}
+        />
+        <div className="flex items-center gap-2 flex-wrap text-[12px] text-muted">
+          <span>
+            {lines}줄 · {fmtSize(byteSize(content))}
+          </span>
+          {risky.length > 0 && <Chip tone="warn">서버 권한을 넘기는 설정: {risky.join(", ")}</Chip>}
+        </div>
+      </div>
+      <ModalFoot between>
+        {onDelete ? (
+          <Button
+            variant="dangerGhost"
+            icon="trash"
+            onClick={() => {
+              onDelete();
+              onClose();
+            }}
+          >
+            파일 빼기
+          </Button>
+        ) : (
+          <span />
+        )}
+        <span className="flex gap-2">
+          <Button onClick={onClose}>취소</Button>
+          <Button variant="primary" onClick={save}>
+            {file ? "저장" : "추가"}
+          </Button>
+        </span>
+      </ModalFoot>
+    </>
   );
 }
 

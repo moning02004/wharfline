@@ -231,7 +231,15 @@
 /* A field inside a section field is a plain sub-field: no second line, a regular-size title. */
 .modal-body .field .field { padding-left: 0; gap: 6px; }
 .modal-body .field .field::before { content: none; }
-.modal-body .field .field .field-label { font-size: 12.5px; font-weight: 500; letter-spacing: 0; color: var(--muted); }
+/* Subsection title inside a section: smaller than the section title, still bold, with a small dot. */
+.modal-body .field .field .field-label {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-size: 13px; font-weight: 600; letter-spacing: -0.005em; color: var(--fg);
+}
+.modal-body .field .field .field-label::before {
+  content: ""; flex: none; width: 5px; height: 5px; border-radius: 999px;
+  background: color-mix(in srgb, var(--section) 55%, transparent);
+}
 
 /* Guide bubble: a solid violet callout pointing up at the input it explains. */
 .guide-bubble {

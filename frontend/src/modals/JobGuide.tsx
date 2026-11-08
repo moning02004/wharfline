@@ -3,11 +3,12 @@ import { createContext, useContext, useEffect, useLayoutEffect, useState, type R
 import { createPortal } from "react-dom";
 import { Icon } from "../components/Icon";
 
-export type JobStepId = "name" | "playbook" | "target" | "image" | "env" | "access" | "review";
+export type JobStepId = "name" | "playbook" | "script" | "target" | "image" | "env" | "access" | "review";
 
 export const JOB_STEPS: { id: JobStepId; label: string }[] = [
   { id: "name", label: "기본 정보" },
   { id: "playbook", label: "배포 방법" },
+  { id: "script", label: "스크립트" }, // only when the deploy method is an SSH script
   { id: "target", label: "배포 대상" },
   { id: "image", label: "이미지" },
   { id: "env", label: "환경 변수" },
