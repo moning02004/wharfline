@@ -88,7 +88,7 @@ def list_jobs(db: Session = Depends(get_db), scope: set[str] | None = Depends(bu
 
 
 class PlaybookIn(BaseModel):
-    source: str = Field(pattern="^(git|builtin)$")
+    source: str = Field(pattern="^(git|builtin|script)$")
     url: str = ""
     branch: str = "main"
     path: str = ""
@@ -100,9 +100,16 @@ class EditorsIn(BaseModel):
     members: list[str] = []  # member emails
 
 
+class ScriptStep(BaseModel):
+    """One step of an SSH script: a name for the log, and shell commands run on every target server."""
+    name: str
+    run: str
+
+
 class JobIn(BaseModel):
     name: str
     playbook: PlaybookIn
+    script: list[ScriptStep] = []  # used when playbook.source == "script"
     inventory: str
     targets: list[str] = []
     image: str = ""
@@ -125,7 +132,7 @@ NO_EDIT = "이 작업을 고칠 권한이 없어요."
 
 # Activity log labels for PUT, in form order.
 FIELD_LABELS = {
-    "name": "이름", "playbook": "플레이북", "target": "배포 대상", "image": "이미지", "env": "환경 변수",
+    "name": "이름", "playbook": "배포 방법", "target": "배포 대상", "image": "이미지", "env": "환경 변수",
     "editors": "편집 권한", "hook": "자동 배포", "protected": "운영 보호", "lock": "동시 실행 잠금", "rollback": "실패 시 되돌리기",
 }
 
@@ -168,23 +175,52 @@ def check_editors(db: Session, ed: EditorsIn) -> dict[str, list[str]]:
     return {"groups": groups, "members": members}
 
 
-def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo, str, str | None, str]:
-    """Validate playbook + image; reuse or create the repo and register the image. Returns (repo, path, image ref, tag)."""
+MAX_SCRIPT_STEPS, MAX_STEP_NAME, MAX_STEP_RUN = 20, 60, 4000
+
+
+def check_script(steps: list[ScriptStep]) -> list[dict[str, str]]:
+    """Validate SSH script steps and return them as stored ([{name, run}])."""
+    if not steps:
+        raise HTTPException(400, "스크립트 단계를 하나 이상 넣어 주세요.")
+    if len(steps) > MAX_SCRIPT_STEPS:
+        raise HTTPException(400, f"스크립트 단계는 {MAX_SCRIPT_STEPS}개까지 넣을 수 있어요.")
+    out = []
+    for i, st in enumerate(steps, 1):
+        name, run = st.name.strip(), st.run.replace("\r\n", "\n").strip()
+        if not name or len(name) > MAX_STEP_NAME:
+            raise HTTPException(400, f"{i}번째 단계의 이름을 1~{MAX_STEP_NAME}자로 적어 주세요.")
+        if not run:
+            raise HTTPException(400, f"'{name}' 단계에 실행할 명령을 적어 주세요.")
+        if len(run) > MAX_STEP_RUN or "\x00" in run:
+            raise HTTPException(400, f"'{name}' 단계의 명령이 너무 길거나 쓸 수 없는 문자가 있어요.")
+        out.append({"name": name, "run": run})
+    return out
+
+
+def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | None, str | None, str, list[dict[str, str]] | None]:
+    """Validate the deploy method + image; reuse or create the repo and register the image.
+
+    Returns (repo, path, image ref, tag, script). An SSH script job has no repo or path.
+    """
     pb = body.playbook
     image_text = body.image.strip()
     ref, tag = s.parse_image(image_text) if image_text else (None, "latest")
-    if pb.source == "builtin":
+    script = None
+    if pb.source == "script":
+        script = check_script(body.script)
+        repo, path = None, None
+    elif pb.source == "builtin":
         if not ref:
             raise HTTPException(400, "기본 플레이북은 띄울 이미지가 있어야 해요.")
-        path = s.BUILTIN_BOOK
+        repo, path = s.builtin_repo(db), s.BUILTIN_BOOK
     else:
         path = pb.path.strip()
         if not s.PLAYBOOK_PATH_RE.match(path):
             raise HTTPException(400, BAD_PATH)
-    repo = s.builtin_repo(db) if pb.source == "builtin" else s.ensure_git_repo(db, pb.url, pb.branch, pb.key.strip())
+        repo = s.ensure_git_repo(db, pb.url, pb.branch, pb.key.strip())
     if ref:
         s.ensure_image(db, ref, tag)
-    return repo, path, ref, tag
+    return repo, path, ref, tag, script
 
 
 def existing_env(db: Session, env_name: str | None) -> str:
@@ -218,7 +254,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     name = check_name(db, body.name)
     check_target(db, body.inventory, body.targets)
     editors = check_editors(db, body.editors)
-    repo, path, ref, tag = resolve_playbook(db, body)
+    repo, path, ref, tag, script = resolve_playbook(db, body)
 
     if body.envMode == "none":
         env_name = ""  # no .env for this job; one can be attached later
@@ -228,12 +264,12 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         env_name = new_env_set(db, name, body.envVars)
 
     job = m.Job(
-        id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name, book=path,
+        id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
     )
     db.add(job)
-    s.log_act(db, "배포 작업 생성", f"{name} · {repo.name}/{path}")
+    s.log_act(db, "배포 작업 생성", f"{name} · " + (f"{repo.name}/{path}" if repo else f"SSH 스크립트 {len(script or [])}단계"))
     db.commit()
     return job_view(db, job, scope, who)
 
@@ -260,7 +296,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     if body.envMode == "paste" and current_set and not s.sudo_active(db):
         raise HTTPException(403, "sudo_required")
 
-    repo, path, ref, tag = resolve_playbook(db, body)
+    repo, path, ref, tag, script = resolve_playbook(db, body)
 
     changed: list[str] = []
     env_name = job.env
@@ -278,18 +314,18 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
             env_name = new_env_set(db, name, body.envVars)
 
     new = {
-        "name": name, "playbook": (repo.name, path), "target": (body.inventory, list(body.targets)),
+        "name": name, "playbook": (repo.name if repo else None, path, script), "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": body.hook, "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
     }
     old = {
-        "name": job.name, "playbook": (job.repo, job.book), "target": (job.inventory, list(job.targets or [])),
+        "name": job.name, "playbook": (job.repo, job.book, job.script), "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": job.hook, "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
     }
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
-    job.name, job.repo, job.book = name, repo.name, path
+    job.name, job.repo, job.book, job.script = name, repo.name if repo else None, path, script
     job.inventory, job.targets = body.inventory, list(body.targets)
     job.image, job.default_tag = ref, tag
     job.env, job.editors = env_name, editors

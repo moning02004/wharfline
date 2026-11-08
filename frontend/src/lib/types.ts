@@ -65,7 +65,7 @@ export interface ImageTag {
 
 export interface JobPlaybook {
   repo: string;
-  kind: "git" | "local" | "builtin";
+  kind: "git" | "local" | "builtin" | "script";
   url: string;
   branch: string;
   path: string;
@@ -79,6 +79,8 @@ export interface Job {
   tagNow: string;
   defaultTag: string;
   playbook: JobPlaybook;
+  /** SSH script steps when playbook.kind is "script", else null. */
+  script: { name: string; run: string }[] | null;
   inventory: string;
   targets: string[];
   env: string;

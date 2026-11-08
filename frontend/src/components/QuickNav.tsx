@@ -57,7 +57,7 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
                   key: `edit:${j.id}`,
                   kind: "편집",
                   label: j.name,
-                  hint: j.playbook.kind === "builtin" ? "기본 플레이북" : j.playbook.path,
+                  hint: j.playbook.kind === "builtin" ? "기본 플레이북" : j.playbook.path, // script jobs: "SSH 스크립트 · N단계"
                   icon: "edit" as IconName,
                   run: () => {
                     onClose();

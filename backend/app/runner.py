@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import random
+import re
 import time
 from typing import Any
 
@@ -30,6 +31,8 @@ PACE = 1.0
 
 def method_label(job: dict) -> str:
     pb = job["playbook"]
+    if job.get("script") is not None:
+        return f"SSH 스크립트 ({len(job['script'])}단계)"
     return f"기본 플레이북 {pb['path']}" if pb["kind"] == "builtin" else f"플레이북 {pb['repo']} / {pb['path']}"
 
 
@@ -45,7 +48,123 @@ def extra_vars(job: dict, tag: str, has_env: bool) -> dict[str, str]:
     return out
 
 
+# Simulation only: a step whose commands contain a line like `exit 1` or `false` fails on every server,
+# so the failure path (failed / skipped / recap) can be seen without real servers.
+FAIL_LINE = re.compile(r"^\s*(exit\s+[1-9]\d*|false)\s*$", re.M)
+
+
+def script_env(job: dict, tag: str, has_env: bool) -> dict[str, str]:
+    """Environment variables an SSH script gets: the playbook variables in upper case."""
+    return {k.upper(): v for k, v in extra_vars(job, tag, has_env).items()}
+
+
+def build_ssh_script(db: Session, job: dict, groups: list[str], no: int, tag: str, trigger: str) -> list[dict[str, Any]]:
+    """Steps for an SSH script job: each script step runs on every reachable server, in order.
+
+    A server whose step fails skips its remaining steps; the other servers carry on. The log ends with a
+    per-server recap (ok / failed / skipped), like an Ansible PLAY RECAP.
+    """
+    inv = s.inv_of(db, job)
+    img = s.image_of(db, job)
+    has_image = bool(job.get("image"))
+    all_hosts = s.target_hosts(inv, groups)
+    hosts = [h for h in all_hosts if not s.host_skip(h)]
+    unreachable = [h for h in all_hosts if s.host_skip(h)]
+    env = s.env_by_name(db, job["env"]) if job["env"] else None
+    reg = s.registry_of(db, job)
+    private = has_image and not reg.get("public")
+    names = ", ".join(h["name"] for h in hosts)
+    variables = script_env(job, tag, bool(env))
+    script = job["script"] or []
+
+    head_lines: list[Line] = [
+        ("h", f"▶ 실행 #{no} · {job['name']}"),
+        ("y", f"트리거: {trigger} · {s.actor_name(db)}") if trigger != "수동 실행" else ("", f"트리거: 수동 실행 · {s.actor_name(db)}"),
+        ("", f"방식: {method_label(job)}"),
+    ]
+    if has_image:
+        ti = s.tag_info(img, tag)
+        head_lines.append(("", f"이미지: {job['image']}:{tag} (sha256:{ti['digest']}…)"))
+    head_lines += [
+        ("", f"대상: {job['inventory']} / {s.target_label(groups, inv)} → {', '.join(h['ip'] for h in all_hosts)}"),
+        ("", f"잠금 획득: {names} (동시 실행 금지)"),
+    ]
+    steps: list[dict[str, Any]] = [{"name": "준비", "lines": head_lines}]
+
+    def header(title: str) -> Line:
+        return ("h", f"TASK [{title}] " + "*" * max(4, 40 - len(title)))
+
+    # Per-server tally for the recap.
+    tally = {h["name"]: {"ok": 0, "failed": 0, "skipped": 0} for h in hosts}
+    alive = [h for h in hosts]  # servers that haven't failed yet
+
+    connect: list[Line] = [header("SSH 연결")]
+    for h in hosts:
+        connect.append(("g", f"ok: [{h['name']}] {h.get('user', 'deploy')}@{h['ip']}:{h.get('port', 22)} · 호스트 키 확인됨"))
+        tally[h["name"]]["ok"] += 1
+    connect += [("y", f"skipping: [{h['name']}] {s.host_skip(h)}") for h in unreachable]
+    connect.append(("", "환경 변수: " + " ".join(f"{k}={v}" for k, v in variables.items())))
+    steps.append({"name": "서버 연결", "lines": connect})
+
+    if env:
+        lines: list[Line] = [header(f"Upload .env → {variables['ENV_FILE']} ({env['name']} v{env['ver']})")]
+        for h in alive:
+            lines.append(("y", f"changed: [{h['name']}] mode=0600"))
+            tally[h["name"]]["ok"] += 1
+        lines += [("m", f"  {k}=••••••••") for k in env["keys"][:3]]
+        steps.append({"name": ".env 전송", "lines": lines})
+    if private:
+        lines = [header("레지스트리 로그인 (읽기 전용 토큰, 스크립트에 노출하지 않아요)")]
+        for h in alive:
+            lines.append(("g", f"ok: [{h['name']}] docker login {job['image'].split('/')[0]}"))
+        steps.append({"name": "레지스트리 로그인", "lines": lines})
+
+    failed_at: str | None = None
+    for st in script:
+        lines = [header(st["name"])]
+        lines += [("", f"$ {cmd}") for cmd in st["run"].splitlines() if cmd.strip()][:6]
+        fails = bool(FAIL_LINE.search(st["run"]))
+        step = {"name": st["name"], "lines": lines}
+        for h in hosts:
+            if h not in alive:
+                lines.append(("y", f"skipping: [{h['name']}] 앞 단계가 실패했어요"))
+                tally[h["name"]]["skipped"] += 1
+            elif fails:
+                lines.append(("r", f"failed: [{h['name']}] exit 1"))
+                tally[h["name"]]["failed"] += 1
+                step["fail"] = True
+            else:
+                lines.append(("g", f"ok: [{h['name']}]"))
+                tally[h["name"]]["ok"] += 1
+        if fails:
+            alive = []
+            failed_at = failed_at or st["name"]
+        steps.append(step)
+
+    finish: list[Line] = []
+    if private:
+        finish.append(header("레지스트리 로그아웃"))
+        finish += [("g", f"ok: [{h['name']}]") for h in hosts]
+    finish.append(("h", "PLAY RECAP " + "*" * 30))
+    for h in hosts:
+        t = tally[h["name"]]
+        cls = "r" if t["failed"] else "g"
+        finish.append((cls, f"{h['name']:<14}: ok={t['ok']}  failed={t['failed']}  skipped={t['skipped']}"))
+    finish += [("y", f"{h['name']:<14}: unreachable · {s.host_skip(h)}") for h in unreachable]
+    finish.append(("", f"잠금 해제: {names}"))
+    bad = [h for h in hosts if tally[h["name"]]["failed"]]
+    if bad:
+        finish.append(("r", f"✘ 배포 실패 · '{failed_at}' 단계에서 서버 {len(bad)}대 실패"))
+    else:
+        done = f"{job['image'].split('/')[-1]}:{tag}" if has_image else method_label(job)
+        finish.append(("g", f"✔ 배포 성공 · {done} · 서버 {len(hosts)}대"))
+    steps.append({"name": "마무리", "lines": finish, **({"fail": True} if bad else {})})
+    return steps
+
+
 def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, trigger: str) -> list[dict[str, Any]]:
+    if job.get("script") is not None:
+        return build_ssh_script(db, job, groups, no, tag, trigger)
     inv = s.inv_of(db, job)
     img = s.image_of(db, job)
     has_image = bool(job.get("image"))
@@ -169,8 +288,8 @@ async def _play(no: int, steps: list[dict]) -> None:
         await asyncio.sleep(0.25 * PACE)
         if run["cancelled"]:
             return
-        _emit(no, {"t": "step", "i": i, "state": "ok", "d": f"{time.time() - step_t0:.1f}s"})
-    _finish(no, "ok")
+        _emit(no, {"t": "step", "i": i, "state": "bad" if step.get("fail") else "ok", "d": f"{time.time() - step_t0:.1f}s"})
+    _finish(no, "bad" if any(st.get("fail") for st in steps) else "ok")
 
 
 def _finish(no: int, status: str) -> None:

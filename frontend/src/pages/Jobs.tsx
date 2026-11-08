@@ -70,6 +70,8 @@ export function Jobs() {
                         <div className="pl-[22px] text-[12px] text-muted truncate max-w-[320px]">
                           {j.playbook.kind === "builtin" ? (
                             "기본 플레이북"
+                          ) : j.playbook.kind === "script" ? (
+                            j.playbook.path
                           ) : (
                             <>
                               {j.playbook.repo} · <span className="font-mono">{j.playbook.path}</span>

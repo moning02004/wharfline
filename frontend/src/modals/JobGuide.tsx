@@ -7,7 +7,7 @@ export type JobStepId = "name" | "playbook" | "target" | "image" | "env" | "acce
 
 export const JOB_STEPS: { id: JobStepId; label: string }[] = [
   { id: "name", label: "기본 정보" },
-  { id: "playbook", label: "플레이북" },
+  { id: "playbook", label: "배포 방법" },
   { id: "target", label: "배포 대상" },
   { id: "image", label: "이미지" },
   { id: "env", label: "환경 변수" },
@@ -23,6 +23,7 @@ export type TipId =
   | "playbook.path"
   | "playbook.key"
   | "playbook.builtin"
+  | "playbook.script"
   | "target.inv"
   | "target.groups"
   | "image"
@@ -41,7 +42,9 @@ export function tipFor(id: TipId, mode: Mode, opts: { builtin?: boolean } = {}):
     case "name":
       return { text: "무엇을 어디에 배포하는지 알 수 있게 이름을 적어요.", example: "api-server · production" };
     case "playbook.source":
-      return { text: "Ansible 플레이북이 있으면 Git 레포, 없으면 기본 플레이북을 골라요." };
+      return { text: "Ansible 플레이북이 있으면 Git 레포, 서버에서 실행할 명령만 있으면 SSH 스크립트, 이미지 하나만 띄우면 기본 플레이북을 골라요." };
+    case "playbook.script":
+      return { text: "서버에서 차례로 실행할 명령을 단계로 나눠 적어요. 단계마다 모든 서버에서 실행하고, 실패한 서버는 남은 단계를 건너뛰어요.", example: "docker compose pull" };
     case "playbook.url":
       return { text: "플레이북이 있는 저장소 주소예요. git clone 할 때 쓰는 주소를 붙여넣어요.", example: "git@git.acme.kr:ops/ansible.git" };
     case "playbook.branch":

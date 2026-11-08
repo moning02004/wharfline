@@ -15,6 +15,12 @@ const CUSTOM_TAG = "\u0000custom";
 /** Where a job's playbook comes from: the repo and the path inside it, or the built-in one. */
 export function PlaybookLine({ job }: { job: Job }) {
   const pb = job.playbook;
+  if (pb.kind === "script")
+    return (
+      <>
+        <Chip>SSH 스크립트</Chip> <span className="text-muted text-[12.5px]">{job.script?.map((st) => st.name).join(" → ")}</span>
+      </>
+    );
   if (pb.kind === "builtin")
     return (
       <>

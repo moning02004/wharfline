@@ -10,7 +10,7 @@ import { ModalFoot, ModalHead } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
-import { Button, Check, Chip, Field, Hint, Input, Select, Seg, Switch, cx } from "../components/ui";
+import { Button, Check, Chip, Field, Hint, Input, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /* Same rules as the server (docs/deploy-simplify.md). */
 const PATH_RE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml$/;
@@ -36,6 +36,20 @@ function parseImage(text: string): { ref: string; tag: string } | { error: strin
 const isSsh = (url: string) => /^(git@|ssh:\/\/)/.test(url.trim());
 
 type Mode = "new" | "edit";
+type Source = "git" | "builtin" | "script";
+interface StepDraft {
+  id: number;
+  name: string;
+  run: string;
+}
+let stepSeq = 0;
+
+/** A starting point like the usual CI deploy: pull the new image, recreate, clean up. */
+const SCRIPT_EXAMPLE: Omit<StepDraft, "id">[] = [
+  { name: "이미지 받기", run: "cd /srv/$APP_NAME\ndocker compose pull" },
+  { name: "컨테이너 교체", run: "cd /srv/$APP_NAME\ndocker compose up -d --remove-orphans" },
+  { name: "정리", run: "docker image prune -f" },
+];
 /** Environment choice: "keep" only exists when editing; "on" means EnvSource decides paste or existing. */
 type EnvChoice = "keep" | "none" | "on";
 
@@ -76,10 +90,12 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   const pb = job?.playbook;
   const [name, setName] = useState(job?.name ?? "");
-  const [source, setSource] = useState<"git" | "builtin">(pb?.kind === "builtin" ? "builtin" : "git");
-  const [url, setUrl] = useState(pb && pb.kind !== "builtin" ? pb.url : "");
-  const [branch, setBranch] = useState(pb && pb.kind !== "builtin" ? pb.branch : "main");
-  const [path, setPath] = useState(pb && pb.kind !== "builtin" ? pb.path : "");
+  const [source, setSource] = useState<Source>(pb?.kind === "builtin" ? "builtin" : pb?.kind === "script" ? "script" : "git");
+  const isRepo = pb && (pb.kind === "git" || pb.kind === "local");
+  const [url, setUrl] = useState(isRepo ? pb.url : "");
+  const [branch, setBranch] = useState(isRepo ? pb.branch : "main");
+  const [path, setPath] = useState(isRepo ? pb.path : "");
+  const [steps, setSteps] = useState<StepDraft[]>(() => (job?.script ?? []).map((st) => ({ ...st, id: ++stepSeq })));
   const [key, setKey] = useState(NO_KEY);
   const [inv, setInv] = useState(job?.inventory ?? "");
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
@@ -142,6 +158,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       case "name":
         return name.trim() ? "" : "이름을 넣어 주세요.";
       case "playbook":
+        if (source === "script") {
+          if (!steps.length) return "스크립트 단계를 하나 이상 넣어 주세요.";
+          const bad = steps.findIndex((st) => !st.name.trim() || !st.run.trim());
+          return bad >= 0 ? `${bad + 1}번째 단계의 이름과 명령을 적어 주세요.` : "";
+        }
         if (source !== "git") return "";
         if (!reused && !/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim()))
           return "저장소 주소를 확인해 주세요. 예: git@github.com:org/ansible.git 또는 https://github.com/org/ansible.git";
@@ -204,7 +225,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     playbook:
       source === "git"
         ? { source: "git", url: url.trim(), branch: branch.trim() || "main", path: path.trim(), key: reused ? NO_KEY : key }
-        : { source: "builtin" },
+        : { source },
+    script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
     inventory: inv,
     targets,
     image: image.trim(),
@@ -314,7 +336,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       : step === "playbook"
         ? source === "git"
           ? ["playbook.source", "playbook.url", "playbook.branch", "playbook.path", "playbook.key"]
-          : ["playbook.source", "playbook.builtin"]
+          : source === "script"
+            ? ["playbook.source", "playbook.script"]
+            : ["playbook.source", "playbook.builtin"]
         : step === "target"
           ? ["target.inv", "target.groups"]
           : step === "image"
@@ -328,6 +352,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 : [];
   // Where the guide starts on a step: the first input that still needs something.
   const firstTip = (): TipId | null => {
+    if (step === "playbook" && source === "script") return "playbook.script";
     if (step === "playbook") return source === "builtin" ? "playbook.builtin" : !url.trim() ? "playbook.url" : !path.trim() ? "playbook.path" : "playbook.key";
     if (step === "env" && envOn && envMode !== "existing" && !envText.trim()) return "env.vars";
     return tipOrder[0] ?? null;
@@ -378,12 +403,13 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
       case "playbook":
         return (
-          <Field label="플레이북">
+          <Field label="배포 방법">
             <TipSpot id="playbook.source">
               <div>
               <Seg
                 options={[
                   { value: "git", label: "Git 레포" },
+                  { value: "script", label: "SSH 스크립트" },
                   { value: "builtin", label: "기본 플레이북" },
                 ]}
                 value={source}
@@ -478,6 +504,10 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   </TipSpot>
                 </Field>
               </div>
+            ) : source === "script" ? (
+              <TipSpot id="playbook.script">
+                <ScriptEditor steps={steps} onChange={setSteps} />
+              </TipSpot>
             ) : (
               <TipSpot id="playbook.builtin">
               <div key="builtin" className="flex gap-2.5 items-start rounded-lg bg-surface-2 border border-line px-3.5 py-3 text-[13px] animate-fade">
@@ -765,8 +795,12 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           ["name", "이름", name.trim() || <span className="text-faint">없음</span>],
           [
             "playbook",
-            "플레이북",
-            source === "builtin" ? (
+            "배포 방법",
+            source === "script" ? (
+              <>
+                SSH 스크립트 · {steps.length}단계 <span className="text-muted text-[12.5px]">({steps.map((st) => st.name.trim() || "이름 없음").join(" → ")})</span>
+              </>
+            ) : source === "builtin" ? (
               <>
                 기본 플레이북 <span className="font-mono text-[12px] text-muted">container.yml</span>
               </>
@@ -925,6 +959,63 @@ function Toggle({ checked, onChange, title, desc, disabled }: { checked: boolean
       <span className="pt-0.5">
         <Switch checked={checked} onChange={onChange} label={title} disabled={disabled} />
       </span>
+    </div>
+  );
+}
+
+/** Ordered SSH script steps: each runs on every target server; a failed server skips its remaining steps. */
+function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: StepDraft[]) => void }) {
+  const set = (id: number, patch: Partial<StepDraft>) => onChange(steps.map((st) => (st.id === id ? { ...st, ...patch } : st)));
+  const move = (i: number, d: -1 | 1) => {
+    const next = [...steps];
+    [next[i], next[i + d]] = [next[i + d], next[i]];
+    onChange(next);
+  };
+  const add = () => onChange([...steps, { id: ++stepSeq, name: "", run: "" }]);
+  return (
+    <div className="flex flex-col gap-2.5 animate-fade">
+      {steps.length === 0 && (
+        <div className="flex items-center justify-between gap-3 flex-wrap rounded-lg border border-dashed border-line-strong px-3.5 py-3 text-[13px] text-muted">
+          아직 단계가 없어요.
+          <Button size="sm" onClick={() => onChange(SCRIPT_EXAMPLE.map((st) => ({ ...st, id: ++stepSeq })))}>
+            예시로 채우기
+          </Button>
+        </div>
+      )}
+      {steps.map((st, i) => (
+        <div key={st.id} className="rounded-lg border border-line bg-surface p-2.5 flex flex-col gap-2">
+          <div className="flex items-center gap-2">
+            <span className="grid place-items-center size-5 rounded-full bg-accent-soft text-accent text-[11px] font-semibold flex-none tabular-nums">{i + 1}</span>
+            <Input aria-label={`${i + 1}번째 단계 이름`} placeholder="단계 이름 (예: 이미지 받기)" value={st.name} onChange={(e) => set(st.id, { name: e.target.value })} />
+            <Button size="sm" variant="ghost" iconOnly icon="chev" className="rotate-180" aria-label="위로" disabled={i === 0} onClick={() => move(i, -1)} />
+            <Button size="sm" variant="ghost" iconOnly icon="chev" aria-label="아래로" disabled={i === steps.length - 1} onClick={() => move(i, 1)} />
+            <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label="단계 지우기" onClick={() => onChange(steps.filter((x) => x.id !== st.id))} />
+          </div>
+          <Textarea
+            aria-label={`${i + 1}번째 단계 명령`}
+            rows={Math.min(6, Math.max(2, st.run.split("\n").length))}
+            className="font-mono text-[12.5px]"
+            spellCheck={false}
+            placeholder={"docker compose pull"}
+            value={st.run}
+            onChange={(e) => set(st.id, { run: e.target.value })}
+          />
+        </div>
+      ))}
+      <div className="flex items-center justify-between gap-2 flex-wrap">
+        <Button size="sm" icon="plus" onClick={add}>
+          단계 추가
+        </Button>
+        {steps.length > 0 && (
+          <Button size="sm" variant="ghost" onClick={() => onChange(SCRIPT_EXAMPLE.map((st) => ({ ...st, id: ++stepSeq })))}>
+            예시로 바꾸기
+          </Button>
+        )}
+      </div>
+      <Hint>
+        단계마다 따로 셸이 열려요(앞 단계의 <span className="font-mono">cd</span>는 이어지지 않아요). 쓸 수 있는 변수:{" "}
+        <span className="font-mono">$IMAGE $IMAGE_TAG $IMAGE_REF $APP_NAME $ENV_FILE</span>. 비공개 이미지면 Wharfline이 앞뒤로 레지스트리 로그인·로그아웃을 해요.
+      </Hint>
     </div>
   );
 }
