@@ -6,6 +6,7 @@ A row's `stage` tracks a login that still needs something before it counts:
 "tfa_setup" (policy requires 2FA and the member has none). Only "ok" sessions are signed in.
 """
 
+import os
 import time
 from datetime import datetime
 
@@ -140,6 +141,8 @@ def _me(db: Session) -> dict:
         "tfa": bool(me and me.tfa),
         "recoveryCodes": len(me.recovery_codes or []) if me else 0,
         "enforce2fa": bool(_policy(db).get("enforce2fa")),
+        # Sample data is loaded (development): the login screen may list the sample accounts.
+        "sampleData": os.getenv("WHARFLINE_SAMPLE_DATA", "1") != "0",
         "sudoUntil": row.sudo_until * 1000 if me and s.sudo_active(db) else 0,
         "sudoMinutes": s.sudo_minutes(db),
     }

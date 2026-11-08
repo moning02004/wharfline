@@ -30,24 +30,24 @@ export default function Login() {
         ) : step === "tfa_setup" ? (
           <TfaSetupStep onDone={done} onBack={cancel} />
         ) : (
-          <PasswordStep onDone={done} />
+          <PasswordStep onDone={done} samples={!!session?.sampleData} />
         )}
       </div>
     </div>
   );
 }
 
-function Title({ title, sub }: { title: string; sub: ReactNode }) {
+function Title({ title, sub }: { title: string; sub?: ReactNode }) {
   return (
     <div>
       <h1 className="m-0 text-[23px] tracking-[-0.03em] font-semibold">{title}</h1>
-      <p className="mt-1 text-muted">{sub}</p>
+      {sub && <p className="mt-1 text-muted">{sub}</p>}
     </div>
   );
 }
 
-function PasswordStep({ onDone }: { onDone: (s: Session) => void }) {
-  const [email, setEmail] = useState("jeonghoon@acme.kr");
+function PasswordStep({ onDone, samples }: { onDone: (s: Session) => void; samples: boolean }) {
+  const [email, setEmail] = useState("");
   const [pw, setPw] = useState("");
   const [err, setErr] = useState("");
   const [busy, setBusy] = useState(false);
@@ -66,12 +66,12 @@ function PasswordStep({ onDone }: { onDone: (s: Session) => void }) {
       <div className="grid place-items-center size-9 rounded-md bg-primary text-primary-fg">
         <Icon name="arrow" className="size-5" strokeWidth={2.4} />
       </div>
-      <Title title="Wharfline에 로그인" sub="acme 워크스페이스" />
+      <Title title="Wharfline에 로그인" />
       <Field label="이메일" htmlFor="lEmail">
-        <Input id="lEmail" type="email" autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />
+        <Input id="lEmail" type="email" autoComplete="username" autoFocus placeholder="you@example.com" value={email} onChange={(e) => setEmail(e.target.value)} />
       </Field>
       <Field label="비밀번호" htmlFor="lPw">
-        <Input id="lPw" type="password" autoComplete="current-password" autoFocus value={pw} onChange={(e) => setPw(e.target.value)} />
+        <Input id="lPw" type="password" autoComplete="current-password" value={pw} onChange={(e) => setPw(e.target.value)} />
       </Field>
       <ErrorText>{err}</ErrorText>
       <Button variant="primary" size="lg" type="submit" disabled={busy || !email || !pw}>
@@ -82,6 +82,7 @@ function PasswordStep({ onDone }: { onDone: (s: Session) => void }) {
         <br />
         여러 번 틀리면 계정이 잠시 잠겨요. 비밀번호를 잊었다면 Owner에게 재설정을 부탁하세요.
       </div>
+      {samples && (
       <div className="text-xs text-muted rounded-md border border-line bg-surface-2 px-3 py-2.5 leading-relaxed">
         <b className="text-fg font-medium">예시 계정</b> · 비밀번호는 서버의 <span className="font-mono">WHARFLINE_SEED_PASSWORD</span>예요 (README 참고)
         {[
@@ -95,6 +96,7 @@ function PasswordStep({ onDone }: { onDone: (s: Session) => void }) {
           </button>
         ))}
       </div>
+      )}
     </form>
   );
 }

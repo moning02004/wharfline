@@ -23,6 +23,8 @@ export interface Session {
   tfa: boolean;
   recoveryCodes: number;
   enforce2fa: boolean;
+  /** Sample data is loaded (development), so the login screen lists the sample accounts. */
+  sampleData?: boolean;
   sudoUntil: number;
   sudoMinutes: number;
 }
