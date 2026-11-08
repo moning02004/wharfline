@@ -110,6 +110,7 @@ class JobIn(BaseModel):
     name: str
     playbook: PlaybookIn
     script: list[ScriptStep] = []  # used when playbook.source == "script"
+    servicePath: str = ""  # SSH script jobs: folder on the servers; default /srv/<job slug>
     inventory: str
     targets: list[str] = []
     image: str = ""
@@ -176,6 +177,16 @@ def check_editors(db: Session, ed: EditorsIn) -> dict[str, list[str]]:
 
 
 MAX_SCRIPT_STEPS, MAX_STEP_NAME, MAX_STEP_RUN = 20, 60, 4000
+SERVICE_PATH_RE = re.compile(r"^/(?!.*(^|/)\.\.?(/|$))[A-Za-z0-9._/-]{1,254}$")
+
+
+def check_service_path(text: str, job_name: str) -> str:
+    """Absolute folder for an SSH script job; empty means /srv/<job slug>."""
+    raw = text.strip()
+    path = raw.rstrip("/") or ("/" if raw else f"/srv/{s.app_slug(job_name)}")
+    if not SERVICE_PATH_RE.match(path):
+        raise HTTPException(400, "서비스 경로는 /srv/api-server처럼 /로 시작하는 폴더예요. ..은 쓸 수 없어요.")
+    return path
 
 
 def check_script(steps: list[ScriptStep]) -> list[dict[str, str]]:
@@ -197,17 +208,18 @@ def check_script(steps: list[ScriptStep]) -> list[dict[str, str]]:
     return out
 
 
-def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | None, str | None, str, list[dict[str, str]] | None]:
+def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | None, str | None, str, list[dict[str, str]] | None, str | None]:
     """Validate the deploy method + image; reuse or create the repo and register the image.
 
-    Returns (repo, path, image ref, tag, script). An SSH script job has no repo or path.
+    Returns (repo, path, image ref, tag, script, service path). An SSH script job has no repo or path.
     """
     pb = body.playbook
     image_text = body.image.strip()
     ref, tag = s.parse_image(image_text) if image_text else (None, "latest")
-    script = None
+    script = service_path = None
     if pb.source == "script":
         script = check_script(body.script)
+        service_path = check_service_path(body.servicePath, body.name)
         repo, path = None, None
     elif pb.source == "builtin":
         if not ref:
@@ -220,7 +232,7 @@ def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | Non
         repo = s.ensure_git_repo(db, pb.url, pb.branch, pb.key.strip())
     if ref:
         s.ensure_image(db, ref, tag)
-    return repo, path, ref, tag, script
+    return repo, path, ref, tag, script, service_path
 
 
 def existing_env(db: Session, env_name: str | None) -> str:
@@ -254,7 +266,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     name = check_name(db, body.name)
     check_target(db, body.inventory, body.targets)
     editors = check_editors(db, body.editors)
-    repo, path, ref, tag, script = resolve_playbook(db, body)
+    repo, path, ref, tag, script, service_path = resolve_playbook(db, body)
 
     if body.envMode == "none":
         env_name = ""  # no .env for this job; one can be attached later
@@ -264,7 +276,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         env_name = new_env_set(db, name, body.envVars)
 
     job = m.Job(
-        id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script,
+        id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script, service_path=service_path,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
     )
@@ -296,7 +308,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     if body.envMode == "paste" and current_set and not s.sudo_active(db):
         raise HTTPException(403, "sudo_required")
 
-    repo, path, ref, tag, script = resolve_playbook(db, body)
+    repo, path, ref, tag, script, service_path = resolve_playbook(db, body)
 
     changed: list[str] = []
     env_name = job.env
@@ -314,18 +326,18 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
             env_name = new_env_set(db, name, body.envVars)
 
     new = {
-        "name": name, "playbook": (repo.name if repo else None, path, script), "target": (body.inventory, list(body.targets)),
+        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": body.hook, "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
     }
     old = {
-        "name": job.name, "playbook": (job.repo, job.book, job.script), "target": (job.inventory, list(job.targets or [])),
+        "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": job.hook, "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
     }
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
-    job.name, job.repo, job.book, job.script = name, repo.name if repo else None, path, script
+    job.name, job.repo, job.book, job.script, job.service_path = name, repo.name if repo else None, path, script, service_path
     job.inventory, job.targets = body.inventory, list(body.targets)
     job.image, job.default_tag = ref, tag
     job.env, job.editors = env_name, editors

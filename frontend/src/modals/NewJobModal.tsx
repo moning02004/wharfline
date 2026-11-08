@@ -44,12 +44,20 @@ interface StepDraft {
 }
 let stepSeq = 0;
 
+/** Same as the server's app_slug: "api-server · production" -> "api-server-production". */
+function slug(name: string): string {
+  return name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+}
+
 /** A starting point like the usual CI deploy: pull the new image, recreate, clean up. */
 const SCRIPT_EXAMPLE: Omit<StepDraft, "id">[] = [
-  { name: "이미지 받기", run: "cd /srv/$APP_NAME\ndocker compose pull" },
-  { name: "컨테이너 교체", run: "cd /srv/$APP_NAME\ndocker compose up -d --remove-orphans" },
+  { name: "이미지 받기", run: 'mkdir -p "$SERVICE_PATH"\ncd "$SERVICE_PATH"\ndocker compose pull' },
+  { name: "컨테이너 교체", run: 'cd "$SERVICE_PATH"\ndocker compose up -d --remove-orphans' },
   { name: "정리", run: "docker image prune -f" },
 ];
+
+/** Same rule as the server: an absolute folder, no "..". */
+const SERVICE_PATH_RE = /^\/(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9._/-]{1,254}$/;
 /** Environment choice: "keep" only exists when editing; "on" means EnvSource decides paste or existing. */
 type EnvChoice = "keep" | "none" | "on";
 
@@ -96,6 +104,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [branch, setBranch] = useState(isRepo ? pb.branch : "main");
   const [path, setPath] = useState(isRepo ? pb.path : "");
   const [steps, setSteps] = useState<StepDraft[]>(() => (job?.script ?? []).map((st) => ({ ...st, id: ++stepSeq })));
+  const [servicePath, setServicePath] = useState(job?.servicePath ?? "");
   const [key, setKey] = useState(NO_KEY);
   const [inv, setInv] = useState(job?.inventory ?? "");
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
@@ -159,6 +168,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         return name.trim() ? "" : "이름을 넣어 주세요.";
       case "playbook":
         if (source === "script") {
+          const sp = servicePath.trim().replace(/\/+$/, "");
+          if (servicePath.trim() && (!sp || !SERVICE_PATH_RE.test(sp))) return "서비스 경로는 /srv/api-server처럼 /로 시작하는 폴더예요. ..은 쓸 수 없어요.";
           if (!steps.length) return "스크립트 단계를 하나 이상 넣어 주세요.";
           const bad = steps.findIndex((st) => !st.name.trim() || !st.run.trim());
           return bad >= 0 ? `${bad + 1}번째 단계의 이름과 명령을 적어 주세요.` : "";
@@ -227,6 +238,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         ? { source: "git", url: url.trim(), branch: branch.trim() || "main", path: path.trim(), key: reused ? NO_KEY : key }
         : { source },
     script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
+    servicePath: source === "script" ? servicePath.trim() : "",
     inventory: inv,
     targets,
     image: image.trim(),
@@ -505,9 +517,14 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 </Field>
               </div>
             ) : source === "script" ? (
-              <TipSpot id="playbook.script">
-                <ScriptEditor steps={steps} onChange={setSteps} />
-              </TipSpot>
+              <div key="script" className="flex flex-col gap-3 animate-fade">
+                <Field label="서비스 경로" htmlFor="jServicePath" hint={<>서버에서 작업할 폴더예요. 스크립트에 <span className="font-mono">$SERVICE_PATH</span>로 넘어가고, 환경 변수를 넣으면 <span className="font-mono">.env</span>도 여기에 올려요.</>}>
+                  <Input id="jServicePath" mono spellCheck={false} placeholder={`/srv/${slug(name) || "app"}`} value={servicePath} onChange={(e) => setServicePath(e.target.value)} />
+                </Field>
+                <TipSpot id="playbook.script">
+                  <ScriptEditor steps={steps} onChange={setSteps} />
+                </TipSpot>
+              </div>
             ) : (
               <TipSpot id="playbook.builtin">
               <div key="builtin" className="flex gap-2.5 items-start rounded-lg bg-surface-2 border border-line px-3.5 py-3 text-[13px] animate-fade">
@@ -799,6 +816,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             source === "script" ? (
               <>
                 SSH 스크립트 · {steps.length}단계 <span className="text-muted text-[12.5px]">({steps.map((st) => st.name.trim() || "이름 없음").join(" → ")})</span>
+                <span className="block font-mono text-[12px] text-muted">{servicePath.trim().replace(/\/+$/, "") || `/srv/${slug(name) || "app"}`}</span>
               </>
             ) : source === "builtin" ? (
               <>
@@ -1014,7 +1032,7 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
       </div>
       <Hint>
         단계마다 따로 셸이 열려요(앞 단계의 <span className="font-mono">cd</span>는 이어지지 않아요). 쓸 수 있는 변수:{" "}
-        <span className="font-mono">$IMAGE $IMAGE_TAG $IMAGE_REF $APP_NAME $ENV_FILE</span>. 비공개 이미지면 Wharfline이 앞뒤로 레지스트리 로그인·로그아웃을 해요.
+        <span className="font-mono">$SERVICE_PATH $IMAGE $IMAGE_TAG $IMAGE_REF $ENV_FILE</span>. 비공개 이미지면 Wharfline이 앞뒤로 레지스트리 로그인·로그아웃을 해요.
       </Hint>
     </div>
   );

@@ -54,8 +54,14 @@ FAIL_LINE = re.compile(r"^\s*(exit\s+[1-9]\d*|false)\s*$", re.M)
 
 
 def script_env(job: dict, tag: str, has_env: bool) -> dict[str, str]:
-    """Environment variables an SSH script gets: the playbook variables in upper case."""
-    return {k.upper(): v for k, v in extra_vars(job, tag, has_env).items()}
+    """Environment variables an SSH script gets. The .env goes into the service folder, where compose reads it."""
+    path = job.get("servicePath") or f"/srv/{s.app_slug(job['name'])}"
+    out: dict[str, str] = {"SERVICE_PATH": path}
+    if job.get("image"):
+        out.update(IMAGE=job["image"], IMAGE_TAG=tag, IMAGE_REF=f"{job['image']}:{tag}")
+    if has_env:
+        out["ENV_FILE"] = f"{path}/.env"
+    return out
 
 
 def build_ssh_script(db: Session, job: dict, groups: list[str], no: int, tag: str, trigger: str) -> list[dict[str, Any]]:
@@ -109,7 +115,8 @@ def build_ssh_script(db: Session, job: dict, groups: list[str], no: int, tag: st
     if env:
         lines: list[Line] = [header(f"Upload .env → {variables['ENV_FILE']} ({env['name']} v{env['ver']})")]
         for h in alive:
-            lines.append(("y", f"changed: [{h['name']}] mode=0600"))
+            # The service folder may not exist yet on a new server: create it before the upload.
+            lines.append(("y", f"changed: [{h['name']}] mkdir -p {variables['SERVICE_PATH']} · .env mode=0600"))
             tally[h["name"]]["ok"] += 1
         lines += [("m", f"  {k}=••••••••") for k in env["keys"][:3]]
         steps.append({"name": ".env 전송", "lines": lines})

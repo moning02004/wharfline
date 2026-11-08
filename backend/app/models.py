@@ -257,6 +257,7 @@ class Job(Base):
     repo: Mapped[str | None] = mapped_column(String(255))  # Repo.name; None for an SSH script job
     book: Mapped[str | None] = mapped_column(String(255))  # playbook path inside the repo; None for an SSH script job
     script: Mapped[list[dict[str, str]] | None] = mapped_column(JSONB)  # SSH script steps [{name, run}], in order
+    service_path: Mapped[str | None] = mapped_column(String(255))  # SSH script jobs: folder on the servers (SERVICE_PATH)
     inventory: Mapped[str] = mapped_column(String(128))
     targets: Mapped[list[str]] = mapped_column(JSONB, default=list)
     env: Mapped[str] = mapped_column(String(255))
@@ -281,7 +282,7 @@ class Job(Base):
             playbook = {"repo": self.repo, "kind": r.kind if r else "git", "url": r.url if r else "",
                         "branch": r.branch if r else "-", "path": self.book}
         return {"id": self.id, "name": self.name, "image": self.image, "tagNow": self.tag_now, "defaultTag": self.default_tag,
-                "playbook": playbook, "script": self.script,
+                "playbook": playbook, "script": self.script, "servicePath": self.service_path,
                 "inventory": self.inventory, "targets": self.targets, "env": self.env,
                 "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
                 "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration},

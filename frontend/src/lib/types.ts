@@ -81,6 +81,8 @@ export interface Job {
   playbook: JobPlaybook;
   /** SSH script steps when playbook.kind is "script", else null. */
   script: { name: string; run: string }[] | null;
+  /** SSH script jobs: the folder on the servers (SERVICE_PATH). */
+  servicePath: string | null;
   inventory: string;
   targets: string[];
   env: string;

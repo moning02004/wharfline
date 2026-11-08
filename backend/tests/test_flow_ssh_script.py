@@ -3,7 +3,7 @@
 from tests.conftest import builtin_job, log_text, wait_run
 
 STEPS = [
-    {"name": "이미지 받기", "run": "cd /srv/$APP_NAME\ndocker compose pull"},
+    {"name": "이미지 받기", "run": "mkdir -p \"$SERVICE_PATH\"\ncd \"$SERVICE_PATH\"\ndocker compose pull"},
     {"name": "교체", "run": "docker compose up -d --remove-orphans"},
     {"name": "정리", "run": "docker image prune -f"},
 ]
@@ -40,7 +40,7 @@ def test_script_run_succeeds_on_every_server(client, login):
     assert run["status"] == "ok"
     log = log_text(run)
     assert "IMAGE=ghcr.io/acme/api-server IMAGE_TAG=v1.8.1 IMAGE_REF=ghcr.io/acme/api-server:v1.8.1" in log
-    assert "APP_NAME=script-ok" in log
+    assert "SERVICE_PATH=/srv/script-ok" in log and "APP_NAME" not in log
     for st in STEPS:
         assert f"TASK [{st['name']}]" in log
     hosts = job["targetHosts"]
@@ -79,3 +79,17 @@ def test_switch_a_job_to_a_script_by_editing(client, login):
     assert r.json()["playbook"]["kind"] == "script" and r.json()["script"][0]["name"] == "재시작"
     acts = client.get("/api/activity").json()["items"]
     assert any(a["action"] == "배포 작업 수정" and "배포 방법" in a["object"] for a in acts)
+
+
+def test_service_path(client, login):
+    r = client.post("/api/jobs", json=script_job("script · path", STEPS, envMode="paste", envVars=[["A", "1"]]) | {"servicePath": "/opt/apps/web/"})
+    assert r.status_code == 200, r.text
+    job = r.json()
+    assert job["servicePath"] == "/opt/apps/web"  # trailing slash dropped
+    run = wait_run(client, client.post(f"/api/jobs/{job['id']}/runs", json={"tag": "v1.8.1", "groups": []}).json()["no"])
+    log = log_text(run)
+    assert "SERVICE_PATH=/opt/apps/web" in log and "ENV_FILE=/opt/apps/web/.env" in log
+    assert "mkdir -p /opt/apps/web · .env mode=0600" in log
+    for bad in ["relative/path", "/", "/srv/../etc", "/srv/a b", "/srv/$(id)"]:
+        body = script_job("script · badpath", STEPS) | {"servicePath": bad}
+        assert client.post("/api/jobs", json=body).status_code == 400, bad
