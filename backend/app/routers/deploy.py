@@ -281,8 +281,8 @@ def derived_images(db: Session, files: list[dict] | None, current: list[dict] | 
         names = {f"{var}_IMAGE", f"{var}_TAG", f"{var}_IMAGE_REF", it.get("tagVar") or ""}
         if var and (not VAR_RE.match(var) or names & RESERVED_VARS):
             continue
-        if any(x["ref"] == ref and x["var"] == var for x in out) or (var and any(x["var"] == var for x in out)):
-            continue
+        if any(x["ref"] == ref and x["var"] == var for x in out):
+            continue  # images may share a variable (one version for backend and frontend)
         s.ensure_image(db, ref, "latest")
         item = {"ref": ref, "var": var, "defaultTag": "latest", "literal": it["literal"],
                 "tagNow": before.get((ref, var), {}).get("tagNow", "-")}

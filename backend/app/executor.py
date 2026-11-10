@@ -162,7 +162,9 @@ def build_plan(db: Session, job: dict, groups: list[str], no: int, tag: str, hea
         plan.error = str(e)
     except crypto.CryptoError as e:
         plan.error = f"암호화된 키나 환경 변수를 풀지 못했어요: {e}"
-    plan.secrets = sorted({x for x in plan.secrets if x and len(x) >= 4}, key=len, reverse=True)
+    # Values the run passes openly (tags like "latest", paths) are not secrets even if a .env value matches.
+    public = set(plan.variables.values())
+    plan.secrets = sorted({x for x in plan.secrets if x and len(x) >= 4 and x not in public}, key=len, reverse=True)
     return plan
 
 

@@ -176,8 +176,17 @@ def check_files(files: list[dict]) -> list[dict[str, str]]:
 REGISTRY_TYPOS = {"ghrc.io": "ghcr.io", "gchr.io": "ghcr.io", "ghcr.com": "ghcr.io", "gcr.com": "gcr.io", "docker.com": "docker.io"}
 
 
-IMAGE_LINE = re.compile(r"^\s*-?\s*image:\s*[\"']?([^\s\"'#]+)", re.M)
-TAG_VAR = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(:-[^}]*)?\}$")
+# The value of an `image:` line; a ${...} may hold spaces (`${V:?set V in .env}`).
+IMAGE_LINE = re.compile(r"""^\s*-?\s*image:\s*["']?((?:\$\{[^}\n]*\}|[^\s"'#])+)""", re.M)
+# A tag that is one variable: ${V}, ${V:-default}, ${V-default}, ${V:?message}, ${V?message}.
+TAG_VAR = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(?::?[-?][^}]*)?\}$")
+
+
+def split_image(value: str) -> tuple[str, str | None]:
+    """(ref, tag) of an image value; colons and slashes inside ${...} don't count."""
+    plain = re.sub(r"\$\{[^}]*\}", lambda m: "x" * len(m.group(0)), value)
+    colon = plain.find(":", plain.rfind("/") + 1)
+    return (value[:colon], value[colon + 1:]) if colon >= 0 else (value, None)
 
 
 def file_images(files: list[dict]) -> list[dict]:
@@ -193,9 +202,7 @@ def file_images(files: list[dict]) -> list[dict]:
         for value in IMAGE_LINE.findall(f.get("content", "")):
             if "@" in value:
                 continue
-            slash = value.rfind("/")
-            colon = value.find(":", slash + 1)
-            ref, tag = (value[:colon], value[colon + 1:]) if colon >= 0 else (value, None)
+            ref, tag = split_image(value)
             if "${" in ref:
                 continue
             m = TAG_VAR.match(tag or "")

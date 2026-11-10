@@ -89,16 +89,17 @@ function findFileImages(files: BundleFile[]): FileImage[] {
   const out: FileImage[] = [];
   const seen = new Set<string>();
   for (const f of files) {
-    for (const m of (f.content ?? "").matchAll(/^\s*-?\s*image:\s*["']?([^\s"'#]+)/gm)) {
+    // Same rules as the server (bundles.file_images): a ${...} may hold spaces, e.g. ${V:?set V in .env}.
+    for (const m of (f.content ?? "").matchAll(/^\s*-?\s*image:\s*["']?((?:\$\{[^}\n]*\}|[^\s"'#])+)/gm)) {
       const value = m[1];
       if (seen.has(value) || value.includes("@")) continue;
       seen.add(value);
-      const slash = value.lastIndexOf("/");
-      const colon = value.indexOf(":", slash + 1);
+      const plain = value.replace(/\$\{[^}]*\}/g, (x) => "x".repeat(x.length)); // colons and slashes inside ${...} don't count
+      const colon = plain.indexOf(":", plain.lastIndexOf("/") + 1);
       const ref = colon >= 0 ? value.slice(0, colon) : value;
       const tag = colon >= 0 ? value.slice(colon + 1) : null;
       if (ref.includes("${")) continue; // the image name itself comes from a variable
-      const v = tag?.match(/^\$\{([A-Z_][A-Z0-9_]*)(:-[^}]*)?\}$/);
+      const v = tag?.match(/^\$\{([A-Z_][A-Z0-9_]*)(?::?[-?][^}]*)?\}$/);
       if (v) out.push({ path: f.path, value, ref, tag: null, var: v[1] === "IMAGE_TAG" ? "" : v[1].replace(/_TAG$/, ""), tagVar: v[1], fixed: false });
       else out.push({ path: f.path, value, ref, tag, var: varFromImage(ref), tagVar: "", fixed: true });
     }

@@ -328,9 +328,11 @@ function ConfirmRun({
           >
             <div className="flex flex-col gap-3">
               {extras.map((x) => (
-                <div key={x.var || x.ref} className="flex flex-col gap-1.5 min-w-0">
+                <div key={`${x.ref}|${x.var}`} className="flex flex-col gap-1.5 min-w-0">
                   <span className="flex items-baseline gap-2 min-w-0 flex-wrap text-[13px]">
-                    <span className="font-medium">{x.var ? x.var.replace(/_TAG$/, "").toLowerCase() : imageName(x.ref)}</span>
+                    <span className="font-medium">
+                      {x.var && extras.filter((o) => o.var === x.var).length === 1 ? x.var.replace(/_TAG$/, "").toLowerCase() : imageName(x.ref)}
+                    </span>
                     <span className="font-mono text-[12px] text-muted break-all">{x.ref}</span>
                     {jobBuilds?.[x.var || x.ref]?.active && <BuildBadge build={jobBuilds[x.var || x.ref]!} />}
                   </span>

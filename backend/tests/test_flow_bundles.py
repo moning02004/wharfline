@@ -226,3 +226,30 @@ def test_registry_lists_how_each_job_uses_an_image(client, login):
     assert api["role"] == "var" and api["var"] == "API_TAG" and api["inventory"] == "staging"
     redis = next(u for u in images["docker.io/library/redis"]["usage"] if u["job"] == "bundle · usage")
     assert redis["role"] == "fixed" and redis["literal"] == "7"
+
+
+def test_required_variable_with_a_message_is_a_tag_variable(client, login):
+    """`${V:?set V in .env}` (spaces inside) is one variable; backend and frontend may share it."""
+    from app import bundles
+
+    compose = ("services:\n"
+               "  backend:\n    image: ghcr.io/acme/req-backend:${WHARFLINE_VERSION:?set WHARFLINE_VERSION in .env, e.g. 2026.11.08-1}\n"
+               "  frontend:\n    image: ghcr.io/acme/req-frontend:${WHARFLINE_VERSION:?set WHARFLINE_VERSION in .env}\n"
+               "  web:\n    image: ghcr.io/acme/req-web:${WEB_TAG-latest}\n"
+               "  db:\n    image: postgres:16-alpine\n")
+    found = bundles.file_images([{"path": "docker-compose.yml", "content": compose}])
+    assert [(x["ref"], x["var"], x["literal"]) for x in found] == [
+        ("ghcr.io/acme/req-backend", "WHARFLINE_VERSION", None),
+        ("ghcr.io/acme/req-frontend", "WHARFLINE_VERSION", None),
+        ("ghcr.io/acme/req-web", "WEB", None),
+        ("postgres", None, "16-alpine"),
+    ]
+    assert bundles.split_image("ghcr.io/a/b:${V:?see docs/x: here}") == ("ghcr.io/a/b", "${V:?see docs/x: here}")
+
+    r = client.post("/api/jobs", json=script_job("bundle · required") | {"files": [{"path": "docker-compose.yml", "content": compose}]})
+    assert r.status_code == 200, r.text
+    tracked = {x["ref"]: x for x in r.json()["extraImages"]}
+    assert tracked["ghcr.io/acme/req-backend"]["var"] == tracked["ghcr.io/acme/req-frontend"]["var"] == "WHARFLINE_VERSION"
+    run = wait_run(client, client.post(f"/api/jobs/{r.json()['id']}/runs", json={"tag": "-", "groups": [], "extraTags": {"WHARFLINE_VERSION": "v2026.11.11-1"}}).json()["no"])
+    assert run["extraTags"]["WHARFLINE_VERSION"] == "v2026.11.11-1"
+    assert "WHARFLINE_VERSION=v2026.11.11-1" in log_text(run)  # the name the file reads
