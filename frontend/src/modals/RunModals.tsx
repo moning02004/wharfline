@@ -302,7 +302,6 @@ function ConfirmRun({
                 {tagOptions.map((t) => (
                   <option key={t.name} value={t.name}>
                     {t.name}
-                    {t.name === job.tagNow ? "  · 지금" : ""}
                   </option>
                 ))}
                 <option value={CUSTOM_TAG}>직접 입력…</option>
@@ -345,7 +344,6 @@ function ConfirmRun({
                         {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
                           <option key={t} value={t}>
                             {t}
-                            {t === x.tagNow ? "  · 지금" : ""}
                           </option>
                         ))}
                       </Select>
