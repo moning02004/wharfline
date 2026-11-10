@@ -359,10 +359,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     setReached((r) => Math.max(r, i));
   };
 
-  /** Index click on a new job: back freely; forward only through steps that are filled in, never past the next unfilled one. */
+  /** Index click on a new job: back freely; forward through filled-in steps, else stop at the first one to fill in and say why. */
   const pick = (i: number) => {
     if (i <= cur) return goto(i);
-    if (i > Math.max(reached, cur + 1)) return;
     for (let k = cur; k < i; k++) {
       const v = validateStep(flow[k].id);
       if (v) {
@@ -1254,7 +1253,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   );
 }
 
-/** 목차: step numbers and titles in a row. Edit: every step is done and clickable. New job: steps up to the furthest reached (and the next one) are clickable. */
+/** 목차: step numbers and titles in a row, all clickable. Edit: every step is done. New job: going forward checks the steps in between. */
 function StepIndex({ steps, mode, cur, reached, skipped, onPick }: { steps: typeof JOB_STEPS; mode: Mode; cur: number; reached: number; skipped: JobStepId[]; onPick: (i: number) => void }) {
   return (
     <nav aria-label="단계" className="flex-none px-5 pb-3 border-b border-line overflow-x-auto scroll-soft">
@@ -1263,7 +1262,6 @@ function StepIndex({ steps, mode, cur, reached, skipped, onPick }: { steps: type
           const now = i === cur;
           const wasSkipped = mode === "new" && skipped.includes(s.id) && !now;
           const done = mode === "edit" || ((i < cur || i < reached) && !now && !wasSkipped);
-          const open = mode === "edit" || i <= Math.max(reached, cur + 1);
           const mark = wasSkipped ? "–" : done ? <Icon name="check" className="size-3" strokeWidth={2.6} /> : i + 1;
           const inner = (
             <>
@@ -1280,7 +1278,7 @@ function StepIndex({ steps, mode, cur, reached, skipped, onPick }: { steps: type
           );
           return (
             <li key={s.id} className="flex items-center gap-1.5 flex-none sm:flex-auto sm:last:flex-none" aria-current={now ? "step" : undefined}>
-              {open && !now ? (
+              {!now ? (
                 <button type="button" onClick={() => onPick(i)} title={s.label} className="inline-flex items-center gap-1.5 rounded-md px-1 -mx-1 h-6 hover:bg-hover transition-colors">
                   {inner}
                 </button>
