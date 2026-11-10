@@ -3,7 +3,7 @@ import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Host, Image, Inventory, Key, PublicKeyInfo, Registry } from "../lib/types";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
+import { Banner, Button, cx, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
 
 export function copyText(text: string, toast: (m: string) => void) {
   try {
@@ -607,12 +607,24 @@ function ServerFields({ value: v, onChange, groups }: { value: ServerDraft; onCh
         <Input id="hName" placeholder={v.ip.trim() || "web-03"} value={v.name} onChange={(e) => set({ name: e.target.value })} />
       </Field>
       <Field label={<>그룹 {optional}</>} htmlFor="hGroup" hint="배포 대상을 고를 때 써요. 비우면 default예요.">
-        <Input id="hGroup" mono placeholder="default" value={v.group} onChange={(e) => set({ group: e.target.value })} list="hGroups" />
-        <datalist id="hGroups">
-          {groups.map((g) => (
-            <option key={g} value={g} />
-          ))}
-        </datalist>
+        <Input id="hGroup" mono placeholder="default" value={v.group} onChange={(e) => set({ group: e.target.value })} />
+        {groups.length > 0 && (
+          <div className="flex flex-wrap gap-1.5">
+            {groups.map((g) => (
+              <button
+                key={g}
+                type="button"
+                onClick={() => set({ group: g })}
+                className={cx(
+                  "h-6 px-2 rounded-[5px] border font-mono text-xs transition-colors",
+                  v.group.trim() === g ? "border-accent/30 bg-accent-soft text-accent" : "border-line text-muted hover:bg-hover",
+                )}
+              >
+                {g}
+              </button>
+            ))}
+          </div>
+        )}
       </Field>
     </>
   );
