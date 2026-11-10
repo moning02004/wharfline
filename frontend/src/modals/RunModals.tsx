@@ -274,7 +274,7 @@ function ConfirmRun({
             }
             hint={!tagOk ? "태그는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)만 쓸 수 있어요." : undefined}
           >
-            <VersionLine newest={latestTag}>
+            <VersionLine newest={latestTag} now={job.tagNow}>
             {custom ? (
               <Input
                 id="cTag"
@@ -339,7 +339,7 @@ function ConfirmRun({
                       {x.literal ?? "latest"}
                     </div>
                   ) : (
-                    <VersionLine newest={x.latestTag}>
+                    <VersionLine newest={x.latestTag} now={x.tagNow}>
                       <Select mono aria-label={`${x.var} 태그`} value={extraTags[x.var]} onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value })}>
                         {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
                           <option key={t} value={t}>
@@ -407,16 +407,37 @@ function imageName(ref: string) {
   return ref.slice(ref.lastIndexOf("/") + 1);
 }
 
-/** A version picker with the newest known version beside it. */
-function VersionLine({ newest, children }: { newest?: string | null; children: React.ReactNode }) {
+/** A version picker with what runs now and the newest build beside it, easy to tell apart. */
+function VersionLine({ newest, now, children }: { newest?: string | null; now?: string | null; children: React.ReactNode }) {
+  const running = now && now !== "-" ? now : null;
+  const tag = (label: string, cls: string) => <span className={cx("inline-block w-[30px] text-center rounded px-1 py-px text-[11px] font-semibold", cls)}>{label}</span>;
   return (
     <div className="flex items-center gap-3">
-      <div className="flex-1 min-w-[150px] max-w-[240px]">{children}</div>
-      {newest && (
-        <span className="font-mono text-[12.5px] text-muted whitespace-nowrap" title="가장 최신 버전">
-          {newest}
-        </span>
-      )}
+      <div className="flex-1 min-w-[150px] max-w-[220px]">{children}</div>
+      <div className="flex flex-col gap-1 text-[12.5px] font-mono whitespace-nowrap min-w-0">
+        {running && newest && running === newest ? (
+          <span className="flex items-center gap-1.5 text-ok">
+            {tag("최신", "bg-ok-soft text-ok")}
+            {newest}
+            <span className="font-sans text-[11.5px]">떠 있음</span>
+          </span>
+        ) : (
+          <>
+            {running && (
+              <span className="flex items-center gap-1.5 text-muted">
+                {tag("지금", "bg-surface-2 border border-line text-muted")}
+                {running}
+              </span>
+            )}
+            {newest && (
+              <span className="flex items-center gap-1.5 text-primary font-semibold">
+                {tag("최신", "bg-primary-soft text-primary")}
+                {newest}
+              </span>
+            )}
+          </>
+        )}
+      </div>
     </div>
   );
 }
