@@ -2,7 +2,7 @@ import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { Build, GitProvider, Image, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
+import type { Build, GitProvider, Image, ImageUsage, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
 import { HostKeyModal, NewHostModal, NewImageModal, NewInventoryModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
@@ -174,7 +174,16 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
                     )}
                   </td>
                   <td>
-                    <span className="flex gap-1.5">{i.usedBy.length ? i.usedBy.map((n) => <Chip key={n}>{n}</Chip>) : <span className="text-faint">없음</span>}</span>
+                    {i.usedBy.length ? (
+                      <span className="inline-flex items-center gap-2">
+                        <span>{i.usedBy.length}개</span>
+                        <Button size="sm" variant="ghost" onClick={() => openModal((c) => <ImageUsageModal image={i} onClose={c} />, "md")}>
+                          자세히
+                        </Button>
+                      </span>
+                    ) : (
+                      <span className="text-faint">없음</span>
+                    )}
                   </td>
                   <td className="text-right">
                     {manage && (
@@ -471,6 +480,66 @@ function UsedBy({ items, className }: { items: { job: string; path: string }[]; 
         </Chip>
       ))}
     </span>
+  );
+}
+
+/** Where an image is used: each job, how it names the image, the version running now, and auto-deploy. */
+function ImageUsageModal({ image, onClose }: { image: Image; onClose: () => void }) {
+  const usage = image.usage ?? [];
+  const how = (u: ImageUsage) =>
+    u.role === "main" ? (
+      "메인 이미지"
+    ) : u.role === "var" ? (
+      <span className="font-mono">{"${" + u.var + "}"}</span>
+    ) : (
+      <>
+        파일에 고정 <span className="font-mono">:{u.literal}</span>
+      </>
+    );
+  const hook = (u: ImageUsage) =>
+    !u.hook ? <span className="text-faint">꺼짐</span> : u.hookRule === "any" ? "모든 태그" : u.hookRule === "date" ? "날짜 태그" : u.hookRule.startsWith("re:") ? <span className="font-mono">{u.hookRule.slice(3)}</span> : <>v로 시작</>;
+  return (
+    <>
+      <ModalHead title="쓰는 작업" sub={image.ref} onClose={onClose} />
+      <ModalBody>
+        <TableWrap>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>작업</th>
+                <th>쓰는 방식</th>
+                <th>지금 버전</th>
+                <th>대상</th>
+                <th>자동 배포</th>
+              </tr>
+            </thead>
+            <tbody>
+              {usage.map((u, ix) => (
+                <tr key={u.jobId + ix}>
+                  <td className="font-medium">
+                    <Link to="/jobs" className="link" onClick={onClose}>
+                      {u.job}
+                    </Link>
+                  </td>
+                  <td className="text-[12.5px]">{how(u)}</td>
+                  <td className="font-mono text-[12.5px]">{u.role === "fixed" ? u.literal : u.tagNow && u.tagNow !== "-" ? u.tagNow : <span className="font-sans text-faint">배포 전</span>}</td>
+                  <td className="text-[12.5px]">
+                    {u.inventory}
+                    {u.targets.length ? <span className="text-muted"> · {u.targets.join(", ")}</span> : null}
+                  </td>
+                  <td className="text-[12.5px]">{hook(u)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </TableWrap>
+      </ModalBody>
+      <ModalFoot>
+        <Button variant="primary" onClick={onClose}>
+          닫기
+        </Button>
+      </ModalFoot>
+    </>
   );
 }
 

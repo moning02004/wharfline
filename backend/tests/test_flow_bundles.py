@@ -216,3 +216,13 @@ def test_build_repo_for_hand_entered_images(client, login):
     login(DEPLOYER)  # a Deployer can't change build repos: the value is ignored
     body2 = builtin_job("bundle · builds 2", "staging", "ghcr.io/acme/track-main:v1") | {"imageSourceRepo": "evil/repo"}
     assert client.post("/api/jobs", json=body2).json()["imageSourceRepo"] == "acme/track"
+
+
+def test_registry_lists_how_each_job_uses_an_image(client, login):
+    files = [{"path": "docker-compose.yaml", "content": "services:\n  a:\n    image: ghcr.io/acme/usage-api:${API_TAG}\n  d:\n    image: redis:7\n"}]
+    assert client.post("/api/jobs", json=script_job("bundle · usage") | {"files": files}).status_code == 200
+    images = {i["ref"]: i for i in client.get("/api/registries").json()["images"]}
+    api = next(u for u in images["ghcr.io/acme/usage-api"]["usage"] if u["job"] == "bundle · usage")
+    assert api["role"] == "var" and api["var"] == "API_TAG" and api["inventory"] == "staging"
+    redis = next(u for u in images["docker.io/library/redis"]["usage"] if u["job"] == "bundle · usage")
+    assert redis["role"] == "fixed" and redis["literal"] == "7"

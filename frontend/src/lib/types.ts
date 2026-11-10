@@ -214,6 +214,22 @@ export interface Image {
   sourceRepo: string | null;
   tags: ImageTag[];
   usedBy: string[];
+  /** How each job uses it (registry list only). */
+  usage?: ImageUsage[];
+}
+
+export interface ImageUsage {
+  job: string;
+  jobId: string;
+  inventory: string;
+  targets: string[];
+  hook: boolean;
+  hookRule: string;
+  /** main: the job's image · var: a tag variable in its file · fixed: a version written in its file */
+  role: "main" | "var" | "fixed";
+  var: string | null;
+  tagNow: string | null;
+  literal: string | null;
 }
 
 export interface Repo {

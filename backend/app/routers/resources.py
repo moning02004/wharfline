@@ -27,13 +27,31 @@ def list_registries(db: Session = Depends(get_db)):
     return {
         "registries": [{**r.to_dict(), "imageCount": sum(1 for i in images if i.registry_id == r.id)}
                        for r in db.scalars(select(m.Registry).order_by(m.Registry.ord))],
-        "images": [{**i.to_dict(), "usedBy": image_users(jobs, i.ref)} for i in images],
+        "images": [{**i.to_dict(), "usedBy": image_users(jobs, i.ref), "usage": image_usage(jobs, i.ref)} for i in images],
     }
 
 
 def image_users(jobs: list[m.Job], ref: str) -> list[str]:
     """Jobs that deploy or watch the image (main image or one of the extra / file images)."""
     return [j.name for j in jobs if j.image == ref or any(x.get("ref") == ref for x in j.extra_images or [])]
+
+
+def image_usage(jobs: list[m.Job], ref: str) -> list[dict]:
+    """How each job uses the image: main image, a tag variable, or a version written in its file."""
+    out: list[dict] = []
+    for j in jobs:
+        base = {"job": j.name, "jobId": j.id, "inventory": j.inventory, "targets": list(j.targets or []),
+                "hook": j.hook, "hookRule": j.hook_rule or "v"}
+        if j.image == ref:
+            out.append({**base, "role": "main", "var": "IMAGE", "tagNow": j.tag_now, "literal": None})
+        for x in j.extra_images or []:
+            if x.get("ref") != ref:
+                continue
+            if x.get("var"):
+                out.append({**base, "role": "var", "var": x.get("tagVar") or f"{x['var']}_TAG", "tagNow": x.get("tagNow"), "literal": None})
+            else:
+                out.append({**base, "role": "fixed", "var": None, "tagNow": None, "literal": x.get("literal") or "latest"})
+    return out
 
 
 class RegistryIn(BaseModel):
