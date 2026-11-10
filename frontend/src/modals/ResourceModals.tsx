@@ -220,11 +220,24 @@ function ServerPrepSteps({ user, info, last }: { user: string; info: PublicKeyIn
             <CmdBlock cmd={SUDOERS_LINE.replace(/^deploy/, u)} label="sudoers 줄" />
           </details>
         </Step>
-        <Step n={4} title="호스트 키 지문 보기">
+        <Step n={4} title={<>서비스 폴더 <span className="font-mono">/srv</span> 넘겨주기</>}>
+          <CmdBlock cmd={`sudo mkdir -p /srv && sudo chown ${u}:${u} /srv`} label="서비스 폴더 명령" />
+          <span className="text-[12px] text-faint">
+            앱은 <span className="font-mono">/srv/{"{project_name}"}</span>에 놓여요(작업의 서비스 경로 기본값). 폴더는 첫 배포 때 Wharfline이 만들어요.
+          </span>
+          <details className="text-[12px] text-muted">
+            <summary className="cursor-pointer select-none">이미 root로 만든 앱 폴더가 있으면</summary>
+            <p className="mt-1.5 mb-1.5">
+              그 폴더에는 <span className="font-mono">{u}</span>가 쓸 수 없어서 배포가 Permission denied로 실패해요. 소유자를 바꿔요.
+            </p>
+            <CmdBlock cmd={`sudo chown -R ${u}:${u} /srv/{project_name}`} label="앱 폴더 소유자 명령" />
+          </details>
+        </Step>
+        <Step n={5} title="호스트 키 지문 보기">
           <CmdBlock cmd="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub" label="지문 명령" />
           <span className="text-[12px] text-faint">연결 확인에서 나오는 지문과 같아야 해요.</span>
         </Step>
-        {last && <Step n={5} title={last} />}
+        {last && <Step n={6} title={last} />}
       </ol>
     </div>
   );

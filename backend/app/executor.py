@@ -609,12 +609,30 @@ async def _remote(conn: asyncssh.SSHClientConnection, out: Out, t: Target, comma
         return proc.exit_status if proc.exit_status is not None else 255
 
 
-async def _upload(conn: asyncssh.SSHClientConnection, path: str, content: str, mode: int) -> None:
+def upload_error(what: str, path: str, user: str, e: asyncssh.SFTPError) -> ValueError:
+    """Which upload step failed, on which path, and as whom: "Permission denied" alone doesn't say."""
+    msg = f"{path} {what} 실패: {e.reason or type(e).__name__}"
+    if isinstance(e, asyncssh.SFTPPermissionDenied):
+        msg += (f" · {user} 사용자에게 이 경로의 쓰기 권한이 없어요. 서버에서 "
+                f"`ls -ld {shlex.quote(path)}`로 소유자를 확인하고, 필요하면 "
+                f"`sudo chown -R {user} {shlex.quote(path)}`로 바꿔 주세요.")
+    return ValueError(msg)
+
+
+async def _upload(conn: asyncssh.SSHClientConnection, path: str, content: str, mode: int, user: str) -> None:
+    folder = str(PurePosixPath(path).parent)
     async with conn.start_sftp_client() as sftp:
-        await sftp.makedirs(str(PurePosixPath(path).parent), exist_ok=True)
-        async with sftp.open(path, "w", asyncssh.SFTPAttrs(permissions=mode)) as f:
-            await f.write(content)
-        await sftp.chmod(path, mode)
+        try:
+            await sftp.makedirs(folder, exist_ok=True)
+        except asyncssh.SFTPError as e:
+            raise upload_error("폴더 만들기", folder, user, e) from e
+        try:
+            async with sftp.open(path, "w", asyncssh.SFTPAttrs(permissions=mode)) as f:
+                await f.write(content)
+            await sftp.chmod(path, mode)
+        except asyncssh.SFTPError as e:
+            # Writing into a folder that exists: the folder or the old file belongs to someone else.
+            raise upload_error("파일 쓰기", path, user, e) from e
 
 
 SHELL = "sh -c 'if command -v bash >/dev/null 2>&1; then exec bash -s; else exec sh -s; fi'"
@@ -692,7 +710,7 @@ async def _run_script(plan: Plan, out: Out) -> bool:
 
             async def upload_files(t, conn):
                 for f in plan.files:
-                    await _upload(conn, safe_remote_path(plan.service_path, f["path"]), f["content"], 0o644)
+                    await _upload(conn, safe_remote_path(plan.service_path, f["path"]), f["content"], 0o644, t.user)
                 return True
 
             await each("파일 올리기", upload_files)
@@ -704,7 +722,7 @@ async def _run_script(plan: Plan, out: Out) -> bool:
                 out.line("m", f"  {k}={MASK}")
 
             async def upload_env(t, conn):
-                await _upload(conn, plan.env_path, text, 0o600)
+                await _upload(conn, plan.env_path, text, 0o600, t.user)
                 return True
 
             await each(".env 전송", upload_env)
