@@ -555,7 +555,7 @@ export function NewHostModal({ inventories, onClose, initialInventory }: { inven
 
   const save = async () => {
     const ok = await runAction(
-      () => api.post(`/inventory/${inv}/hosts`, { name: name.trim(), ip: ip.trim(), port: port.trim(), user: user.trim(), group: group.trim(), key }),
+      () => api.post(`/inventory/${inv}/hosts`, { name: name.trim(), ip: ip.trim(), port: port.trim(), user: user.trim(), group: group.trim(), key, fingerprint: result?.fingerprint ?? "" }),
       "서버를 추가했어요",
     );
     if (ok) onClose();

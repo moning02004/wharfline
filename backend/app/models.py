@@ -116,12 +116,14 @@ class Host(Base):
     ssh_user: Mapped[str] = mapped_column(String(64))
     grp: Mapped[str] = mapped_column(String(64))
     host_key: Mapped[str] = mapped_column(String(16), default="ok")  # ok | changed
+    # Pinned SSH host key ("SHA256:…"): checked on every deploy. None until the connection check or the first run records it.
+    host_fingerprint: Mapped[str | None] = mapped_column(String(128))
     status: Mapped[str] = mapped_column(String(16), default="on")  # on | off
     inventory: Mapped[Inventory] = relationship(back_populates="hosts")
 
     def to_dict(self) -> dict[str, Any]:
         return {"name": self.name, "ip": self.ip, "port": self.port, "user": self.ssh_user, "group": self.grp,
-                "hostKey": self.host_key, "status": self.status}
+                "hostKey": self.host_key, "fingerprint": self.host_fingerprint, "status": self.status}
 
 
 class Repo(Base):

@@ -16,10 +16,13 @@ def test_make_inventory_and_server(client, login):
     fp = client.post("/api/inventory/fingerprint", json={"ip": "10.9.0.11", "port": 22}).json()
     assert fp["type"] == "ED25519" and fp["fingerprint"].startswith("SHA256:")
 
-    assert _add_server(client, inv["id"]).status_code == 200
+    assert _add_server(client, inv["id"], fingerprint=fp["fingerprint"]).status_code == 200
     assert _add_server(client, inv["id"], name="app-02", ip="10.9.0.12").status_code == 200
+    assert _add_server(client, inv["id"], name="app-03", fingerprint="nope").status_code == 400
     hosts = next(i for i in client.get("/api/inventory").json() if i["name"] == "itest")["hosts"]
     assert [h["name"] for h in hosts] == ["app-01", "app-02"]
+    # The host key seen by the connection check is pinned for deploys; none yet means the first deploy pins it.
+    assert [h["fingerprint"] for h in hosts] == [fp["fingerprint"], None]
 
 
 def test_server_input_is_checked(client, login):

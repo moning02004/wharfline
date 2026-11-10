@@ -184,6 +184,10 @@ class HostIn(BaseModel):
     user: str
     group: str = "default"
     key: str = ""
+    fingerprint: str = ""  # host key seen by the connection check; pinned for deploys
+
+
+FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/=]{20,64}$")
 
 
 @router.post("/inventory/{inv_id}/hosts", dependencies=[Depends(require("resources"))])
@@ -204,7 +208,10 @@ def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.")
     if not name or any(h.name == name for h in inv.hosts):
         raise HTTPException(400, "서버 이름이 비었거나 이 인벤토리에 이미 있어요.")
-    h = m.Host(name=name, ip=ip, port=int(body.port), ssh_user=user, grp=group)
+    fp = body.fingerprint.strip()
+    if fp and not FINGERPRINT_RE.match(fp):
+        raise HTTPException(400, "호스트 키 지문 형식이 맞지 않아요. 연결 확인을 다시 해 주세요.")
+    h = m.Host(name=name, ip=ip, port=int(body.port), ssh_user=user, grp=group, host_fingerprint=fp or None)
     inv.hosts.append(h)
     s.log_act(db, "서버 추가", f"{inv.name} · {h.name} ({h.ip})")
     db.commit()
@@ -258,6 +265,7 @@ def accept_host_key(inv_id: str, ix: int, db: Session = Depends(get_db)):
         raise HTTPException(404, "서버를 찾을 수 없어요.")
     h = inv.hosts[ix]
     h.host_key = "ok"
+    h.host_fingerprint = None  # the next deploy pins the server's new key
     s.log_act(db, "호스트 키 변경 승인", f"{h.name} ({h.ip})", "warn")
     db.commit()
     return h.to_dict()
