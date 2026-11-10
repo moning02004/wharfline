@@ -4,6 +4,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PIP_NO_CACHE_DIR=1
 
+# The deploy runner clones playbook repos (git) and runs ansible-playbook, which logs in with OpenSSH.
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends git openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 COPY requirements.txt .
@@ -12,6 +17,8 @@ RUN pip install -r requirements.txt
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
+# Wharfline's built-in playbooks (store.BUILTIN_URL)
+COPY playbooks/builtin /var/lib/wharfline/playbooks/builtin
 
 # Run as an unprivileged user
 RUN useradd --create-home --uid 10001 wharf

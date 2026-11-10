@@ -1,6 +1,9 @@
-"""Simulated deploy runner.
+"""Deploy runs: start, stream, cancel, and record them.
 
-Builds the step/log script for a job and plays it back as a stream of events.
+A run really deploys through app/executor.py (ansible-playbook for playbook jobs, SSH for script
+jobs). With WHARFLINE_RUN_SIMULATE=1 or WHARFLINE_SSH_SIMULATE=1 (tests, demos) it instead plays
+back a simulated step/log script built here.
+
 Runs keep going in a background task even if nobody is watching the stream,
 so closing the log window in the UI does not stop a deploy. Live events are
 kept in memory while a run plays; the result and full log are written to the
@@ -18,6 +21,7 @@ from typing import Any
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
+from . import executor
 from . import githooks
 from . import models as m
 from . import store as s
@@ -388,7 +392,8 @@ def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, tr
     tag = s.resolve_tag(s.image_of(db, job), requested_tag) if job.get("image") else "-"
     extras = pin_extra_tags(db, job, extra_tags)
     job = {**job, "extraTags": extras}
-    step_names = [st["name"] for st in build_script(db, job, groups, no, tag, trigger)]
+    step_names = (executor.step_names(db, job) if not executor.simulated()
+                  else [st["name"] for st in build_script(db, job, groups, no, tag, trigger)])
     rec = m.Run(no=no, job=job["name"], job_id=job["id"], target=s.target_label(groups, s.inv_of(db, job)), tag=tag,
                 status=status, by=s.actor_name(db), trigger=trigger, time="방금", duration="-", steps=step_names,
                 requested_by=requested_by, extra_tags=extras or None, files_ver=job.get("filesVer"))
@@ -400,18 +405,52 @@ def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, tr
 def launch(db: Session, rec: m.Run, job: dict, groups: list[str], requested_tag: str | None = None, note: str | None = None) -> dict:
     """Start playing a run row back in a background task; commits. `note` adds a line under the trigger (e.g. who approved)."""
     job = {**job, "extraTags": rec.extra_tags or {}}
-    steps = _script(db, job, groups, rec.no, rec.tag, rec.trigger, requested_tag)
-    if note:
-        steps[0]["lines"].insert(2, ("y", note))
-    step_names = [st["name"] for st in steps]
+    plan = None
+    if executor.simulated():
+        steps = _script(db, job, groups, rec.no, rec.tag, rec.trigger, requested_tag)
+        if note:
+            steps[0]["lines"].insert(2, ("y", note))
+        step_names = [st["name"] for st in steps]
+    else:
+        head = real_head(db, job, groups, rec, requested_tag, note)
+        plan = executor.build_plan(db, job, groups, rec.no, rec.tag, head)
+        step_names = plan.steps
     rec.status, rec.time, rec.steps, rec.started_at = "run", "방금", step_names, time.time()
     db.commit()
 
     no = rec.no
     live[no] = {"events": [], "done": False, "cancelled": False, "t0": time.time(),
                 "job_id": job["id"], "job_name": job["name"], "tag": rec.tag, "extra": dict(rec.extra_tags or {})}
-    asyncio.get_running_loop().create_task(_play(no, steps))
+    coro = executor.execute(plan) if plan else _play(no, steps)
+    live[no]["task"] = asyncio.get_running_loop().create_task(coro)
     return {"no": no, "tag": rec.tag, "steps": step_names, "status": "run"}
+
+
+def real_head(db: Session, job: dict, groups: list[str], rec: m.Run, requested_tag: str | None, note: str | None) -> list[Line]:
+    """The first lines of a real run's log: who started it, what it deploys, where."""
+    inv = s.inv_of(db, job)
+    hosts = s.target_hosts(inv, groups)
+    who = s.actor_name(db)
+    lines: list[Line] = [("h", f"▶ 실행 #{rec.no} · {job['name']}")]
+    if rec.trigger == "되돌리기":
+        lines.append(("y", f"트리거: 되돌리기 · {who} · {job['tagNow']} → {rec.tag}"))
+    else:
+        lines.append(("y" if rec.trigger != "수동 실행" else "", f"트리거: {rec.trigger} · {who}"))
+    if note:
+        lines.append(("y", note))
+    lines.append(("", f"방식: {method_label(job)}"))
+    if job.get("image"):
+        lines.append(("", f"이미지: {job['image']}:{rec.tag}"))
+        if requested_tag == "latest":
+            lines.append(("", f"latest → {rec.tag}"))
+        built = githooks.build_for_tag(db, job["image"], rec.tag)
+        if built:
+            lines.append(("", githooks.build_line(built)))
+    elif job.get("script") is None:
+        lines.append(("", "이미지: 없음 · 플레이북만 실행"))
+    lines += extra_image_lines(job)
+    lines.append(("", f"대상: {job['inventory']} / {s.target_label(groups, inv)} → {', '.join(h['ip'] for h in hosts)}"))
+    return lines
 
 
 def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None = None,
@@ -434,6 +473,9 @@ def cancel_run(no: int, by: str) -> bool:
     if not run or run["done"]:
         return False
     run["cancelled"] = True
+    task = run.get("task")
+    if task and not task.done():
+        task.cancel()  # a real run stops its ansible-playbook process / SSH sessions
     _emit(no, {"t": "cancel"})
     _emit(no, {"t": "line", "c": "y", "text": f"! {by}님이 실행을 취소했어요. 진행 중이던 단계를 정리하고 잠금을 풀었어요.", "ts": s.now_hms()})
     _finish(no, "cancel")

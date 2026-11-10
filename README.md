@@ -125,6 +125,21 @@ Gitea(Forgejo), GitHub, GitLab의 CI가 이미지를 빌드하는 동안 배포 
 - 실제 Git 호스트 없이 확인하려면 Git 연동 카드에서 호스트를 고른 뒤 이미지 표의 **시험 빌드** / **실패 시험**을 누르면 그 호스트 형식의 이벤트가 같은 처리 경로로 흘러가요.
 - 웹훅 비밀값도 `make key-status` / `key-verify` / `key-rotate` 대상이에요.
 
+## 배포 실행
+
+배포 작업을 실행하면 backend가 서버에 실제로 배포해요. 로그 창에는 실제 출력이 그대로 흘러요.
+
+- **플레이북 작업**: 레포를 임시 폴더로 `git clone --depth 1` 해요. SSH 주소는 연결한 SSH 키로, HTTPS 주소는 연결한 액세스 토큰(Basic 인증)으로 받아요. 그다음 임시 인벤토리, SSH 키, known_hosts, `-e @vars.json`을 만들어 `ansible-playbook <경로> --limit <서버들>`을 실행해요. 종료 코드가 0이 아니면 실패예요. 레포 목록의 커밋은 실제로 받은 HEAD로 바뀌어요.
+  - 넘기는 변수: `app_name`, 이미지가 있으면 `image`·`image_tag`·`image_ref`, 환경 변수가 있으면 `env_file`(서버 경로)·`env_src`(실행기에 쓴 임시 .env 파일, `copy`의 `src`로 써요), 비공개 레지스트리면 `registry_host`·`registry_user`·`registry_password`, 추가 이미지마다 `<var>_image`·`<var>_tag`·`<var>_image_ref`.
+  - 레포의 `ansible.cfg`는 그대로 읽혀요(작업 폴더가 레포 루트예요). 호스트 키 검사, 키 파일, 인벤토리는 Wharfline이 정한 값이 우선해요.
+  - 기본 플레이북 `container.yml`은 `backend/playbooks/builtin`에 있어요. .env를 올리고, 이미지를 받고, 컨테이너 하나를 다시 띄워요. 포트 같은 인자는 `docker_run_args`로 넘겨요.
+- **SSH 스크립트 작업**: 서버마다 SSH로 접속해서 파일과 `.env`(0600)를 SFTP로 올리고, 레지스트리에 `docker login --password-stdin`을 한 뒤, 단계를 순서대로 `bash -s`(없으면 `sh`)로 실행해요. 각 단계는 `set -e`로 돌아서 명령 하나라도 실패하면 그 서버는 멈추고 나머지 단계는 건너뛰어요.
+- **호스트 키 고정**: 서버를 추가할 때 연결 확인에서 본 지문을 저장해요. 배포할 때마다 서버가 보낸 키와 비교하고, 다르면 그 서버를 `호스트 키 확인 필요`로 바꾸고 건너뛰어요. 인벤토리에서 새 키를 승인하면 다음 배포가 그때의 키를 다시 저장해요. 지문이 없는 예전 서버는 첫 배포에서 저장해요.
+- **비밀 값**: SSH 키, 토큰, .env 값은 실행을 시작할 때만 풀어요. 임시 폴더(0600 파일)에만 쓰고, 실행이 끝나면 폴더를 지워요. 로그에서는 값을 `••••••••`로 가려요. 자식 프로세스에는 `DATABASE_URL`이나 마스터 키 경로 같은 backend 환경 변수를 넘기지 않아요.
+- **동시 실행**: 같은 서버(IP:포트)에 배포 중인 실행이 있으면 그 서버는 실패로 처리해요. 실행을 취소하면 `ansible-playbook` 프로세스와 SSH 세션을 끊어요.
+- backend 이미지에 `ansible-core`, `git`, `openssh-client`가 들어 있어요. 대상 서버에는 Python 3(ansible용)과 docker가 있어야 하고, SSH 사용자는 sudo 없이 docker를 쓸 수 있어야 해요.
+- 실제 서버 없이 데모로 돌리려면 backend에 `WHARFLINE_RUN_SIMULATE=1`을 주세요. 예전처럼 로그를 흉내 내요(테스트는 `WHARFLINE_SSH_SIMULATE=1`로 흉내 내요).
+
 ## 보안 운영
 
 Wharfline 계정이나 키가 털려도 서버로 피해가 번지지 않게 하는 운영 규칙이에요.
@@ -207,7 +222,9 @@ cd frontend && npm install && npm run dev     # http://localhost:5173 (/api는 :
 
 ## 프로토타입 한계
 
-- 실제 SSH 접속, 레지스트리 조회(태그·digest), 호스트 키 지문 받기는 아직 흉내예요. 키와 토큰은 진짜로 만들어지고 암호화 저장돼서, 실행기를 붙이면 그대로 쓸 수 있어요.
+- 레지스트리 조회(태그·digest)와 인벤토리의 "응답 확인"(ping)은 아직 흉내예요. 배포는 태그로 받고, 받은 digest를 고정하지는 않아요.
+- 플레이북은 backend와 같은 사용자로 돌아요. 플레이북 레포에 쓸 수 있는 사람은 backend 컨테이너 안의 파일(마스터 키 포함)을 읽는 플레이북을 넣을 수 있으니, 플레이북 레포의 쓰기 권한은 Admin만큼 좁게 주세요.
+- Git 서버의 호스트 키는 실행마다 처음 본 키를 믿어요(`StrictHostKeyChecking=accept-new`).
 - Python에서는 복호화한 값을 메모리에서 확실히 지울 수 없어요. 서버 프로세스 메모리에 접근할 수 있으면 복호화된 값을 볼 수 있어요.
 - 패스키(WebAuthn)와 "이 기기 기억"은 아직 없어요. 2단계 인증 설정 화면은 QR 대신 설정 키와 `otpauth://` 링크를 보여 줘요.
-- 실제 SSH 접속이나 배포는 하지 않고 로그를 흉내 내요. 실행 중이던 배포는 backend가 재시작되면 "실패"로 표시돼요.
+- 실행 중이던 배포는 backend가 재시작되면 멈추고 "실패"로 표시돼요. 실행 상태는 backend 프로세스 메모리에 있어서 backend는 한 개만 띄워야 해요.

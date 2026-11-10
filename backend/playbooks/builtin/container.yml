@@ -1,0 +1,61 @@
+# Wharfline 기본 플레이북: 이미지를 .env와 함께 컨테이너 하나로 띄워요.
+#
+# Wharfline이 -e로 넘기는 변수:
+#   app_name, image_ref               항상 (이미지가 있는 작업)
+#   env_file, env_src                 환경 변수가 연결된 작업: 서버의 .env 경로, 실행기에 쓴 임시 파일
+#   registry_host/user/password       비공개 레지스트리 (읽기 전용 토큰)
+#   docker_run_args                   (선택) 포트 등 docker run에 덧붙일 인자. 예: "-p 8080:80"
+#
+# 서버의 SSH 사용자는 sudo 없이 docker를 쓸 수 있어야 해요 (docker 그룹).
+- name: "{{ app_name }}"
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Upload .env
+      when: env_src is defined
+      block:
+        - name: Create the .env folder
+          ansible.builtin.file:
+            path: "{{ env_file | dirname }}"
+            state: directory
+            mode: "0700"
+        - name: Copy .env (mode 0600)
+          ansible.builtin.copy:
+            src: "{{ env_src }}"
+            dest: "{{ env_file }}"
+            mode: "0600"
+
+    - name: Pull the image
+      block:
+        - name: Registry login (read-only token)
+          when: registry_password is defined
+          ansible.builtin.command:
+            cmd: docker login {{ registry_host | quote }} -u {{ registry_user | quote }} --password-stdin
+            stdin: "{{ registry_password }}"
+          no_log: true
+          changed_when: false
+
+        - name: Pull {{ image_ref }}
+          ansible.builtin.command: docker pull {{ image_ref | quote }}
+          register: pull
+          changed_when: "'Downloaded newer image' in pull.stdout"
+      always:
+        - name: Registry logout
+          when: registry_password is defined
+          ansible.builtin.command: docker logout {{ registry_host | quote }}
+          changed_when: false
+
+    - name: Recreate container
+      ansible.builtin.shell: |
+        docker rm -f {{ app_name | quote }} >/dev/null 2>&1 || true
+        docker run -d --name {{ app_name | quote }} --restart unless-stopped \
+          {{ ('--env-file ' ~ (env_file | quote)) if env_src is defined else '' }} \
+          {{ docker_run_args | default('') }} {{ image_ref | quote }}
+
+    - name: Wait until the container is running
+      ansible.builtin.command: docker inspect -f '{% raw %}{{.State.Running}}{% endraw %}' {{ app_name | quote }}
+      register: state
+      until: state.stdout == "true"
+      retries: 10
+      delay: 2
+      changed_when: false
