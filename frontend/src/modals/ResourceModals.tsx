@@ -3,7 +3,7 @@ import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Host, Image, Inventory, Key, PublicKeyInfo, Registry } from "../lib/types";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, cx, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
+import { Banner, Button, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
 
 export function copyText(text: string, toast: (m: string) => void) {
   try {
@@ -460,7 +460,6 @@ export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void;
   const [result, setResult] = useState<ConnCheck | null>(null);
   const [busy, setBusy] = useState(false);
   const keyObj = keys.find((k) => k.name === key);
-  const groups = [...new Set(all.flatMap((i) => i.hosts.map((h) => h.group)))];
   useEffect(() => {
     if (!key && keys[0]) setKey(keys[0].name);
   }, [keys, key]);
@@ -553,7 +552,7 @@ export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void;
               </Field>
             </>
           ) : (
-            <ServerFields value={srv} onChange={setSrv} groups={groups} />
+            <ServerFields value={srv} onChange={setSrv} groups={[]} />
           )}
         </ModalBody>
       </form>
@@ -592,8 +591,12 @@ function serverError(v: ServerDraft, taken: string[]): string {
   return "";
 }
 
+const NEW_GROUP = "\u0000new";
+
 function ServerFields({ value: v, onChange, groups }: { value: ServerDraft; onChange: (v: ServerDraft) => void; groups: string[] }) {
   const set = (patch: Partial<ServerDraft>) => onChange({ ...v, ...patch });
+  // A group of the inventory from the list, or a new one typed in.
+  const [typing, setTyping] = useState(false);
   const optional = <span className="text-muted font-normal text-[12.5px]">선택</span>;
   return (
     <>
@@ -606,24 +609,28 @@ function ServerFields({ value: v, onChange, groups }: { value: ServerDraft; onCh
       <Field label={<>이름 {optional}</>} htmlFor="hName" hint="화면과 실행 기록에서 부르는 이름이에요. 비우면 IP로 해요.">
         <Input id="hName" placeholder={v.ip.trim() || "web-03"} value={v.name} onChange={(e) => set({ name: e.target.value })} />
       </Field>
-      <Field label={<>그룹 {optional}</>} htmlFor="hGroup" hint="배포 대상을 고를 때 써요. 비우면 default예요.">
-        <Input id="hGroup" mono placeholder="default" value={v.group} onChange={(e) => set({ group: e.target.value })} />
-        {groups.length > 0 && (
-          <div className="flex flex-wrap gap-1.5">
-            {groups.map((g) => (
-              <button
-                key={g}
-                type="button"
-                onClick={() => set({ group: g })}
-                className={cx(
-                  "h-6 px-2 rounded-[5px] border font-mono text-xs transition-colors",
-                  v.group.trim() === g ? "border-accent/30 bg-accent-soft text-accent" : "border-line text-muted hover:bg-hover",
-                )}
-              >
+      <Field label={<>그룹 {optional}</>} htmlFor="hGroup" hint="배포 대상을 고를 때 써요.">
+        {groups.length && !typing ? (
+          <Select
+            id="hGroup"
+            mono
+            value={v.group.trim() || "default"}
+            onChange={(e) => {
+              if (e.target.value === NEW_GROUP) {
+                setTyping(true);
+                set({ group: "" });
+              } else set({ group: e.target.value === "default" ? "" : e.target.value });
+            }}
+          >
+            {[...new Set([...groups, "default"])].map((g) => (
+              <option key={g} value={g}>
                 {g}
-              </button>
+              </option>
             ))}
-          </div>
+            <option value={NEW_GROUP}>새 그룹 입력…</option>
+          </Select>
+        ) : (
+          <Input id="hGroup" mono placeholder="default" value={v.group} onChange={(e) => set({ group: e.target.value })} autoFocus={typing} />
         )}
       </Field>
     </>
