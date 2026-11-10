@@ -69,3 +69,11 @@ def test_connection_test_checks_every_server(client, login):
     assert out["total"] == 2 and out["ok"] == 2 and {h["name"] for h in out["hosts"]} == {"w-01", "w-02"}
     hosts = {h["name"]: h for h in _inv(client, "withhost")["hosts"]}
     assert hosts["w-02"]["fingerprint"]  # first contact pins the host key
+
+
+def test_server_name_and_group_default(client, login):
+    inv = _inv(client, "withhost")
+    a = client.post(f"/api/inventory/{inv['id']}/hosts", json={"name": "", "ip": "10.9.3.9", "port": "22", "group": ""}).json()
+    assert a["name"] == "10.9.3.9" and a["group"] == "default"
+    b = client.post(f"/api/inventory/{inv['id']}/hosts", json={"name": "", "ip": "10.9.3.9", "port": "2222", "group": ""}).json()
+    assert b["name"] == "10.9.3.9:2222"  # same address on another port

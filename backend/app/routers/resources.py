@@ -257,7 +257,9 @@ FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/=]{20,64}$")
 
 def new_host(inv: m.Inventory, name: str, ip: str, port: str, user: str, group: str, fingerprint: str) -> m.Host:
     """A server row after the same checks for every way in; not added to the session."""
-    name, ip, group = name.strip(), ip.strip(), group.strip() or "default"
+    ip, group = ip.strip(), group.strip() or "default"
+    # No name: the address (with the port when the address is already a server's name here).
+    name = name.strip() or (ip if not any(h.name == ip for h in inv.hosts) else f"{ip}:{str(port).strip()}")
     user = check_ssh_user(user)
     if not str(port).strip().isdigit() or not 1 <= int(port) <= 65535:
         raise HTTPException(400, "포트는 1~65535 사이 숫자여야 해요.")

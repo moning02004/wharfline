@@ -583,42 +583,37 @@ function userError(user: string): string {
 
 type ServerDraft = { name: string; group: string; ip: string; port: string };
 
-/** Same checks as the server, so mistakes show before going on. */
+/** Same checks as the server, so mistakes show before going on. Name and group may be empty (the server fills them in). */
 function serverError(v: ServerDraft, taken: string[]): string {
-  if (!v.name.trim()) return "서버 이름을 넣어 주세요.";
-  if (taken.includes(v.name.trim())) return "이 인벤토리에 같은 이름의 서버가 있어요.";
-  if (!/^[a-z0-9][a-z0-9_-]{0,31}$/.test(v.group.trim())) return "그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.";
   if (!/^[A-Za-z0-9.:-]{1,253}$/.test(v.ip.trim())) return "IP 또는 호스트 이름을 확인해 주세요.";
   if (!/^\d+$/.test(v.port.trim()) || +v.port < 1 || +v.port > 65535) return "포트는 1~65535 사이 숫자여야 해요.";
+  if (v.name.trim() && taken.includes(v.name.trim())) return "이 인벤토리에 같은 이름의 서버가 있어요.";
+  if (v.group.trim() && !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(v.group.trim())) return "그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.";
   return "";
 }
 
 function ServerFields({ value: v, onChange, groups }: { value: ServerDraft; onChange: (v: ServerDraft) => void; groups: string[] }) {
   const set = (patch: Partial<ServerDraft>) => onChange({ ...v, ...patch });
+  const optional = <span className="text-muted font-normal text-[12.5px]">선택</span>;
   return (
     <>
-      <div className="grid grid-cols-2 gap-2.5">
-        <Field label="이름" htmlFor="hName">
-          <Input id="hName" placeholder="web-03" value={v.name} onChange={(e) => set({ name: e.target.value })} autoFocus />
-        </Field>
-        <Field label="그룹" htmlFor="hGroup">
-          <Input id="hGroup" mono placeholder="web" value={v.group} onChange={(e) => set({ group: e.target.value })} list="hGroups" />
-          <datalist id="hGroups">
-            {groups.map((g) => (
-              <option key={g} value={g} />
-            ))}
-          </datalist>
-        </Field>
-      </div>
-      <div className="grid grid-cols-[minmax(0,1fr)_96px] gap-2.5">
-        <Field label="IP 또는 호스트" htmlFor="hIp">
-          <Input id="hIp" mono placeholder="10.0.1.18" value={v.ip} onChange={(e) => set({ ip: e.target.value })} />
-        </Field>
-        <Field label="포트" htmlFor="hPort">
-          <Input id="hPort" mono inputMode="numeric" value={v.port} onChange={(e) => set({ port: e.target.value })} />
-        </Field>
-      </div>
-      <Hint>그룹은 배포 작업에서 대상을 고를 때 써요. 같은 그룹 서버에는 함께 배포돼요.</Hint>
+      <Field label="IP 또는 호스트" htmlFor="hIp">
+        <Input id="hIp" mono placeholder="10.0.1.18" value={v.ip} onChange={(e) => set({ ip: e.target.value })} autoFocus />
+      </Field>
+      <Field label="포트" htmlFor="hPort">
+        <Input id="hPort" mono inputMode="numeric" value={v.port} onChange={(e) => set({ port: e.target.value })} />
+      </Field>
+      <Field label={<>이름 {optional}</>} htmlFor="hName" hint="화면과 실행 기록에서 부르는 이름이에요. 비우면 IP로 해요.">
+        <Input id="hName" placeholder={v.ip.trim() || "web-03"} value={v.name} onChange={(e) => set({ name: e.target.value })} />
+      </Field>
+      <Field label={<>그룹 {optional}</>} htmlFor="hGroup" hint="배포 대상을 고를 때 써요. 비우면 default예요.">
+        <Input id="hGroup" mono placeholder="default" value={v.group} onChange={(e) => set({ group: e.target.value })} list="hGroups" />
+        <datalist id="hGroups">
+          {groups.map((g) => (
+            <option key={g} value={g} />
+          ))}
+        </datalist>
+      </Field>
     </>
   );
 }
@@ -693,7 +688,7 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
   const { runAction, toast } = useApp();
   const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
   const [step, setStep] = useState<"info" | "prep">("info");
-  const [srv, setSrv] = useState<ServerDraft>({ name: "", group: inv.hosts[0]?.group ?? "", ip: "", port: "22" });
+  const [srv, setSrv] = useState<ServerDraft>({ name: "", group: "", ip: "", port: "22" });
   const [result, setResult] = useState<ConnCheck | null>(null);
   const keyObj = keys.find((k) => k.name === inv.key);
   const user = inv.user || "deploy";
