@@ -174,8 +174,9 @@ TAG_VAR = re.compile(r"^\$\{([A-Z_][A-Z0-9_]*)(:-[^}]*)?\}$")
 def file_images(files: list[dict]) -> list[dict]:
     """Images named on `image:` lines of compose / Kubernetes files.
 
-    Returns [{ref, var, literal}]: `ghcr.io/x/api:${API_TAG}` -> var "API" (IMAGE_TAG -> var "" = the main image);
+    Returns [{ref, var, literal, tagVar}]: `ghcr.io/x/api:${API_TAG}` -> var "API" (IMAGE_TAG -> var "" = the main image);
     a written tag (or none) -> var None and literal = that tag ("latest" when none). Names built from variables are skipped.
+    tagVar is the variable the file reads, as written: `${APP_VERSION}` -> var "APP_VERSION", tagVar "APP_VERSION".
     """
     out: list[dict] = []
     seen: set[tuple] = set()
@@ -190,7 +191,7 @@ def file_images(files: list[dict]) -> list[dict]:
                 continue
             m = TAG_VAR.match(tag or "")
             item = {"ref": ref, "var": ("" if m.group(1) == "IMAGE_TAG" else re.sub(r"_TAG$", "", m.group(1))) if m else None,
-                    "literal": None if m else (tag or "latest")}
+                    "literal": None if m else (tag or "latest"), "tagVar": m.group(1) if m else None}
             key = (item["ref"], item["var"], item["literal"])
             if key not in seen:
                 seen.add(key)

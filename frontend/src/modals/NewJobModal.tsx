@@ -79,6 +79,7 @@ interface FileImage {
   ref: string;
   tag: string | null;
   var: string; // tracking variable name ("" = main image)
+  tagVar: string; // the variable the file reads for the tag, as written (${APP_VERSION} -> APP_VERSION)
   fixed: boolean; // a literal tag (or none): not following a variable
 }
 const escapeRe = (t: string) => t.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -98,8 +99,8 @@ function findFileImages(files: BundleFile[]): FileImage[] {
       const tag = colon >= 0 ? value.slice(colon + 1) : null;
       if (ref.includes("${")) continue; // the image name itself comes from a variable
       const v = tag?.match(/^\$\{([A-Z_][A-Z0-9_]*)(:-[^}]*)?\}$/);
-      if (v) out.push({ path: f.path, value, ref, tag: null, var: v[1] === "IMAGE_TAG" ? "" : v[1].replace(/_TAG$/, ""), fixed: false });
-      else out.push({ path: f.path, value, ref, tag, var: varFromImage(ref), fixed: true });
+      if (v) out.push({ path: f.path, value, ref, tag: null, var: v[1] === "IMAGE_TAG" ? "" : v[1].replace(/_TAG$/, ""), tagVar: v[1], fixed: false });
+      else out.push({ path: f.path, value, ref, tag, var: varFromImage(ref), tagVar: "", fixed: true });
     }
   }
   return out;
@@ -280,6 +281,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     ...(source === "script" ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.var) : extras.map((x) => x.var))
       .filter(Boolean)
       .flatMap((v) => [`${v}_IMAGE`, `${v}_TAG`, `${v}_IMAGE_REF`]),
+    ...(source === "script" ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.tagVar) : []),
   ];
   const scriptVars =
     source === "script" ? usedVars([...steps.map((st) => st.run), ...files.map((f) => f.content ?? "")]).filter((v) => !SHELL_VARS.has(v)) : [];
@@ -734,7 +736,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                               </Button>
                             </>
                           ) : (
-                            <Chip mono tone="ok">{"$" + (fi.var || "IMAGE") + "_TAG"}</Chip>
+                            <Chip mono tone="ok">{"$" + (fi.tagVar || "IMAGE_TAG")}</Chip>
                           )}
                         </div>
                       ))}
@@ -1133,7 +1135,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             source === "script" ? (
               fileImages.length ? (
                 <span className="font-mono text-[12.5px] break-all">
-                  {fileImages.map((fi) => (fi.fixed ? `${fi.ref}:${fi.tag ?? "latest"}` : `${fi.ref} → ` + "$" + (fi.var || "IMAGE") + "_TAG")).join(", ")}
+                  {fileImages.map((fi) => (fi.fixed ? `${fi.ref}:${fi.tag ?? "latest"}` : `${fi.ref} → ` + "$" + (fi.tagVar || "IMAGE_TAG"))).join(", ")}
                 </span>
               ) : (
                 <span className="text-faint">파일에 이미지가 없어요</span>

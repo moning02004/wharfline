@@ -18,7 +18,7 @@ from .. import models as m
 from .. import runner
 from .. import store as s
 from ..db import get_db
-from ..deps import build_scope, require, require_login, viewer
+from ..deps import build_scope, require, require_login, require_sudo, viewer
 from .envs import replace_vars
 
 router = APIRouter(prefix="/api", tags=["deploy"], dependencies=[Depends(require_login)])
@@ -278,13 +278,17 @@ def derived_images(db: Session, files: list[dict] | None, current: list[dict] | 
             s.ensure_image(db, ref, "latest")
             continue
         var = it["var"] or ""
-        if var and (not VAR_RE.match(var) or {f"{var}_IMAGE", f"{var}_TAG", f"{var}_IMAGE_REF"} & RESERVED_VARS):
+        names = {f"{var}_IMAGE", f"{var}_TAG", f"{var}_IMAGE_REF", it.get("tagVar") or ""}
+        if var and (not VAR_RE.match(var) or names & RESERVED_VARS):
             continue
         if any(x["ref"] == ref and x["var"] == var for x in out) or (var and any(x["var"] == var for x in out)):
             continue
         s.ensure_image(db, ref, "latest")
-        out.append({"ref": ref, "var": var, "defaultTag": "latest", "literal": it["literal"],
-                    "tagNow": before.get((ref, var), {}).get("tagNow", "-")})
+        item = {"ref": ref, "var": var, "defaultTag": "latest", "literal": it["literal"],
+                "tagNow": before.get((ref, var), {}).get("tagNow", "-")}
+        if var and it.get("tagVar") and it["tagVar"] != f"{var}_TAG":
+            item["tagVar"] = it["tagVar"]  # ${APP_VERSION}: the file reads this name, so the run exports it too
+        out.append(item)
     return main, out
 
 
@@ -486,13 +490,13 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
             env_name = new_env_set(db, name, body.envVars)
 
     new = {
-        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal")} for x in extra_images], "target": (body.inventory, list(body.targets)),
+        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in extra_images], "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": (body.hook, check_hook_rule(body.hookRule)), "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
     }
     old = {
         "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "files": job.files,
-        "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
+        "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": (job.hook, job.hook_rule), "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
     }
@@ -513,6 +517,27 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     db.commit()
     db.refresh(job)  # reload playbook_repo when the repo changed
     return job_view(db, job, scope, who)
+
+
+@router.delete("/jobs/{job_id}", dependencies=[Depends(require("job_edit")), Depends(require_sudo)])
+def delete_job(job_id: str, db: Session = Depends(get_db)):
+    """Delete a deploy job and its file versions. Its runs stay in the history; its .env set and images stay too.
+
+    Nothing on the servers changes: running containers keep running.
+    """
+    job = db.get(m.Job, job_id)
+    if not job:
+        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    me = s.current_member(db)
+    if not s.can_edit(me, job) or (job.protected and not s.can(me, "run_protected")):
+        raise HTTPException(403, NO_EDIT)
+    busy = db.scalar(select(m.Run.no).where(m.Run.job_id == job.id, m.Run.status.in_(("run", "approval"))).limit(1))
+    if busy:
+        raise HTTPException(400, f"#{busy} 실행이 진행 중이거나 승인을 기다리고 있어 지울 수 없어요. 끝나거나 취소된 뒤에 지워 주세요.")
+    s.log_act(db, "배포 작업 삭제", job.name, "warn")
+    db.delete(job)  # file versions go with it (ON DELETE CASCADE)
+    db.commit()
+    return {"ok": True}
 
 
 class RunIn(BaseModel):

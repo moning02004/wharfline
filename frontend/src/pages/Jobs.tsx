@@ -7,6 +7,8 @@ import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
 import { EnvLink } from "../modals/EnvModals";
 import { FileHistoryModal } from "../modals/FileHistoryModal";
+import { api } from "../lib/api";
+import { ConfirmDelete } from "./Resources";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
 
 export function Jobs() {
@@ -16,8 +18,25 @@ export function Jobs() {
   useEffect(() => {
     setPoll(data?.some((j) => j.build?.active || j.last.status === "run") ? 3000 : 0);
   }, [data]);
-  const { openModal, can } = useApp();
+  const { openModal, can, withSudo, refresh, toast } = useApp();
   const { confirm } = useRun();
+  const del = (j: Job) =>
+    openModal((c) => (
+      <ConfirmDelete
+        title="배포 작업 삭제"
+        action="삭제"
+        onClose={c}
+        onConfirm={() =>
+          withSudo("배포 작업 삭제", async () => {
+            await api.del(`/jobs/${j.id}`);
+            refresh();
+            toast(`${j.name}을(를) 지웠어요`);
+          })
+        }
+      >
+        <span className="font-medium">{j.name}</span>을(를) Wharfline에서 지워요. 서버에서 돌고 있는 컨테이너와 파일은 그대로이고, 실행 기록과 환경 변수도 남아요.
+      </ConfirmDelete>
+    ));
   const [open, setOpen] = useState<string | null>(null);
   if (!data) return <Loading />;
 
@@ -117,6 +136,18 @@ export function Jobs() {
                             <Button size="sm" variant="ghost" icon="edit" onClick={() => openModal((c) => <EditJobModal job={j} onClose={c} />, "md")}>
                               편집
                             </Button>
+                          )}
+                          {j.canEdit && (!j.protected || can("run_protected")) && (
+                            <Button
+                              size="sm"
+                              variant="ghost"
+                              iconOnly
+                              icon="trash"
+                              aria-label={`${j.name} 배포 작업 삭제`}
+                              title={j.last.status === "run" ? "실행 중에는 지울 수 없어요" : "배포 작업 삭제"}
+                              disabled={j.last.status === "run"}
+                              onClick={() => del(j)}
+                            />
                           )}
                           {can("run") && (
                             <Button size="sm" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>

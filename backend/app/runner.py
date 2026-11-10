@@ -63,6 +63,8 @@ def extra_image_vars(job: dict) -> dict[str, str]:
             continue  # watched only: the file decides the version
         tag = tags.get(x["var"]) or x.get("defaultTag") or "latest"
         out.update({f"{x['var']}_IMAGE": x["ref"], f"{x['var']}_TAG": tag, f"{x['var']}_IMAGE_REF": f"{x['ref']}:{tag}"})
+        if x.get("tagVar"):  # the file reads ${APP_VERSION}, not ${APP_VERSION_TAG}
+            out[x["tagVar"]] = tag
     return out
 
 

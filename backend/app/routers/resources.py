@@ -27,8 +27,13 @@ def list_registries(db: Session = Depends(get_db)):
     return {
         "registries": [{**r.to_dict(), "imageCount": sum(1 for i in images if i.registry_id == r.id)}
                        for r in db.scalars(select(m.Registry).order_by(m.Registry.ord))],
-        "images": [{**i.to_dict(), "usedBy": [j.name for j in jobs if j.image == i.ref]} for i in images],
+        "images": [{**i.to_dict(), "usedBy": image_users(jobs, i.ref)} for i in images],
     }
+
+
+def image_users(jobs: list[m.Job], ref: str) -> list[str]:
+    """Jobs that deploy or watch the image (main image or one of the extra / file images)."""
+    return [j.name for j in jobs if j.image == ref or any(x.get("ref") == ref for x in j.extra_images or [])]
 
 
 class RegistryIn(BaseModel):
@@ -83,6 +88,22 @@ def add_image(body: ImageIn, db: Session = Depends(get_db)):
     s.log_act(db, "이미지 등록" if created else "이미지 태그 추가", f"{ref} ({', '.join(added) or '새 태그 없음'})")
     db.commit()
     return {**img.to_dict(), "created": created, "addedTags": added}
+
+
+@router.delete("/images", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def delete_image(ref: str, db: Session = Depends(get_db)):
+    """Forget an image and the tags Wharfline knows. Images a job deploys or watches stay; edit the job first."""
+    img = db.get(m.Image, ref)
+    if not img:
+        raise HTTPException(404, "이미지를 찾을 수 없어요.")
+    users = image_users(list(db.scalars(select(m.Job).order_by(m.Job.name))), ref)
+    if users:
+        names = ", ".join(users[:3]) + (f" 외 {len(users) - 3}개" if len(users) > 3 else "")
+        raise HTTPException(400, f"배포 작업 {len(users)}개에서 쓰고 있어 지울 수 없어요: {names}")
+    s.log_act(db, "이미지 삭제", f"{ref} · 태그 {len(img.tags)}개", "warn")
+    db.delete(img)  # its tags go with it
+    db.commit()
+    return {"ok": True}
 
 
 # ---------- playbook repos ----------

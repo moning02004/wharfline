@@ -174,6 +174,16 @@ def test_tracked_images_come_from_the_files(client, login):
     assert {x["var"] for x in job2["extraImages"]} == {"BACK", "WEB"}
 
 
+def test_a_tag_variable_not_ending_in_tag_is_exported_as_written(client, login):
+    files = [{"path": "docker-compose.yaml", "content": "services:\n  a:\n    image: ghcr.io/acme/ver-app:${APP_VERSION}\n"}]
+    job = client.post("/api/jobs", json=script_job("bundle · version var") | {"files": files}).json()
+    x = job["extraImages"][0]
+    assert (x["var"], x["tagVar"]) == ("APP_VERSION", "APP_VERSION")
+    run = wait_run(client, client.post(f"/api/jobs/{job['id']}/runs", json={"groups": [], "extraTags": {"APP_VERSION": "v3"}}).json()["no"])
+    assert run["status"] == "ok"
+    assert "APP_VERSION=v3" in log_text(run) and "APP_VERSION_TAG=v3" in log_text(run)
+
+
 def test_watched_only_image_redeploys_and_build_repo_links_itself(client, login):
     from app import githooks
     from app.db import SessionLocal

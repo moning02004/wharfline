@@ -71,7 +71,7 @@ export function Registries() {
 }
 
 function ImagesCard({ images, registries, provider }: { images: Image[]; registries: Registry[]; provider: GitProvider }) {
-  const { runAction, toast, openModal, can } = useApp();
+  const { runAction, toast, openModal, can, withSudo, refresh } = useApp();
   const manage = can("resources");
   const [editing, setEditing] = useState<string | null>(null);
   const [repo, setRepo] = useState("");
@@ -82,6 +82,25 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
   };
   const test = (ref: string, fail: boolean) =>
     runAction(() => api.post("/integrations/git/test", { ref, fail, provider }), fail ? "실패하는 시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요." : "시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요.").catch(() => toast("시험 빌드를 보내지 못했어요"));
+
+  const del = (i: Image) =>
+    openModal((c) => (
+      <ConfirmDelete
+        title="이미지 삭제"
+        action="삭제"
+        onClose={c}
+        onConfirm={() =>
+          withSudo("이미지 삭제", async () => {
+            await api.del(`/images?ref=${encodeURIComponent(i.ref)}`);
+            refresh();
+            toast(`${i.ref}을(를) 지웠어요`);
+          })
+        }
+      >
+        <span className="font-mono font-medium">{i.ref}</span>와(과) Wharfline이 알던 태그 {i.tags.length}개를 지워요. 레지스트리에 있는 이미지는 그대로예요. 다시 쓰려면 배포 작업에
+        적거나 이미지 추가로 넣으면 돼요.
+      </ConfirmDelete>
+    ));
 
   return (
     <Card>
@@ -158,14 +177,28 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
                     <span className="flex gap-1.5">{i.usedBy.length ? i.usedBy.map((n) => <Chip key={n}>{n}</Chip>) : <span className="text-faint">없음</span>}</span>
                   </td>
                   <td className="text-right">
-                    {i.sourceRepo && manage && (
+                    {manage && (
                       <span className="inline-flex gap-1">
-                        <Button size="sm" variant="ghost" onClick={() => test(i.ref, false)} title={`${PROVIDER_NAME[provider]} 형식으로 보내요`}>
-                          시험 빌드
-                        </Button>
-                        <Button size="sm" variant="dangerGhost" onClick={() => test(i.ref, true)}>
-                          실패 시험
-                        </Button>
+                        {i.sourceRepo && (
+                          <>
+                            <Button size="sm" variant="ghost" onClick={() => test(i.ref, false)} title={`${PROVIDER_NAME[provider]} 형식으로 보내요`}>
+                              시험 빌드
+                            </Button>
+                            <Button size="sm" variant="dangerGhost" onClick={() => test(i.ref, true)}>
+                              실패 시험
+                            </Button>
+                          </>
+                        )}
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          iconOnly
+                          icon="trash"
+                          aria-label={`${i.ref} 이미지 삭제`}
+                          title={i.usedBy.length ? "배포 작업에서 쓰고 있어 지울 수 없어요" : "이미지 삭제"}
+                          disabled={i.usedBy.length > 0}
+                          onClick={() => del(i)}
+                        />
                       </span>
                     )}
                   </td>
@@ -444,7 +477,7 @@ function UsedBy({ items, className }: { items: { job: string; path: string }[]; 
 /* ---------- inventory ---------- */
 
 /** Asks before deleting; the password re-check follows. */
-function ConfirmDelete({ title, children, action, onConfirm, onClose }: { title: string; children: React.ReactNode; action: string; onConfirm: () => void; onClose: () => void }) {
+export function ConfirmDelete({ title, children, action, onConfirm, onClose }: { title: string; children: React.ReactNode; action: string; onConfirm: () => void; onClose: () => void }) {
   return (
     <>
       <ModalHead title={title} onClose={onClose} />
