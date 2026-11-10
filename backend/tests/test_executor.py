@@ -42,9 +42,20 @@ def test_known_hosts_line_uses_brackets_for_other_ports():
     assert executor.known_hosts_line("10.0.0.5", 2222, key).startswith("[10.0.0.5]:2222 ssh-ed25519 ")
 
 
-def test_env_file_quotes_values_that_need_it():
-    text = executor.env_file_text([["A", "plain"], ["B", "has space"], ["C", 'q"uote']])
-    assert text == 'A=plain\nB="has space"\nC="q\\"uote"\n'
+ENV_CASES = [["A", "plain-v1.2"], ["B", "has space"], ["C", 'q"uote'], ["D", "pa$word"], ["E", "it's $x"], ["F", "a #b"], ["G", ""]]
+
+
+def test_env_file_for_compose_keeps_dollar_signs_literal():
+    text = executor.env_file_text(ENV_CASES)
+    assert text == ("A=plain-v1.2\nB='has space'\nC='q\"uote'\nD='pa$word'\n"
+                    "E=\"it's \\$x\"\nF='a #b'\nG=\n")
+
+
+def test_env_file_for_docker_run_is_raw():
+    text = executor.env_file_text(ENV_CASES, "docker")
+    assert text == "A=plain-v1.2\nB=has space\nC=q\"uote\nD=pa$word\nE=it's $x\nF=a #b\nG=\n"
+    with pytest.raises(ValueError):
+        executor.env_file_text([["K", "two\nlines"]], "docker")
 
 
 def test_safe_remote_path_stays_inside_the_service_folder():

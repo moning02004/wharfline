@@ -281,12 +281,29 @@ def known_hosts_line(ip: str, port: int, key: asyncssh.SSHKey) -> str:
     return f"{host} {alg} {blob}"
 
 
-def env_file_text(vars_: list[list[str]]) -> str:
-    """KEY=value lines for docker compose / --env-file. Values that need it are double-quoted."""
+PLAIN_VALUE = re.compile(r"[A-Za-z0-9_./:@%+,=-]*")
+
+
+def env_file_text(vars_: list[list[str]], style: str = "compose") -> str:
+    """KEY=value lines, written so the reader gets back exactly the stored value.
+
+    compose: docker compose reads .env with its own rules: unquoted and double-quoted values expand
+      `$VAR` (a password like pa$word would lose "$word") and unquoted ones drop " #…". Anything but
+      plain characters is single-quoted, which compose takes literally; a value containing ' or a
+      newline is double-quoted with \\ " $ and newlines escaped.
+    docker: `docker run --env-file` takes everything after = literally, quotes included, and has no
+      way to write a newline. Values are written as they are.
+    """
     out = []
     for k, v in vars_:
-        if re.search(r"[\s#\"'\\$]", v) or v != v.strip():
-            v = '"' + v.replace("\\", "\\\\").replace('"', '\\"').replace("\n", "\\n") + '"'
+        if style == "docker":
+            if "\n" in v:
+                raise ValueError(f"{k} 값에 줄바꿈이 있어요. docker --env-file로는 넘길 수 없어요.")
+        elif not PLAIN_VALUE.fullmatch(v):
+            if "'" not in v and "\n" not in v:
+                v = f"'{v}'"
+            else:
+                v = '"' + v.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("\n", "\\n") + '"'
         out.append(f"{k}={v}")
     return "\n".join(out) + "\n"
 
@@ -548,7 +565,15 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
     inv.write_text(json.dumps(inventory([t for t, _ in alive]), ensure_ascii=False))
     xv = dict(plan.extra_vars)
     if plan.env_vars is not None:
-        xv["env_src"] = str(_write_secret(tmp / "app.env", env_file_text(plan.env_vars)))
+        # The built-in playbook hands the file to `docker run --env-file`; other playbooks usually to compose.
+        style = "docker" if plan.repo["kind"] == "builtin" else "compose"
+        try:
+            text = env_file_text(plan.env_vars, style)
+        except ValueError as e:
+            out.line("r", f"✘ {e}")
+            out.end("플레이북 실행", False)
+            return False
+        xv["env_src"] = str(_write_secret(tmp / "app.env", text))
     vars_file = _write_secret(tmp / "vars.json", json.dumps(xv, ensure_ascii=False))
     (tmp / "cp").mkdir(mode=0o700)
     limit = ",".join(inventory_name(t.name) for t, _ in alive)
