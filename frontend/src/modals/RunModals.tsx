@@ -178,7 +178,6 @@ function ConfirmRun({
   const tagOptions = freshTag ? [{ name: freshTag, digest: "", pushed: "방금" }, ...job.imageTags] : job.imageTags;
   const latestTag = freshTag ?? job.latestTag;
   const resolved = tag === "latest" ? latestTag ?? "latest" : tag;
-  const info = tagOptions.find((t) => t.name === resolved) ?? { name: resolved, digest: "", pushed: "-" };
   const hosts = Object.values(job.groups)
     .flat()
     .filter((h) => !sel.length || sel.includes(h.group));
@@ -251,7 +250,12 @@ function ConfirmRun({
         )}
         {hasImage ? (
           <Field
-            label="이미지 태그"
+            label={
+              <span className="flex items-baseline gap-2 min-w-0 flex-wrap">
+                <span>{imageName(job.image!)}</span>
+                <span className="font-mono font-normal text-[12px] text-muted break-all">{job.image}</span>
+              </span>
+            }
             htmlFor="cTag"
             error={!tagOk}
             right={
@@ -268,27 +272,9 @@ function ConfirmRun({
                 </Button>
               )
             }
-            hint={
-              !tagOk ? (
-                "태그는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)으로 128자까지 쓸 수 있어요."
-              ) : custom ? (
-                <>
-                  목록에 없는 태그면 이미지에 기록해 두고 실행할 때 digest로 고정해요
-                  {tag === job.tagNow && " · 지금 배포된 버전과 같아서 다시 배포돼요"}
-                </>
-              ) : (
-                <>
-                  {tag === "latest" && (
-                    <>
-                      latest는 지금 <span className="font-mono">{resolved}</span>이에요. 이 digest로 고정해서 배포해요 ·{" "}
-                    </>
-                  )}
-                  {info.digest ? <span className="font-mono">sha256:{info.digest}…</span> : "digest는 실행할 때 고정해요"} · {info.pushed}
-                  {resolved === job.tagNow && " · 지금 배포된 버전과 같아서 다시 배포돼요"}
-                </>
-              )
-            }
+            hint={!tagOk ? "태그는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)만 쓸 수 있어요." : undefined}
           >
+            <VersionLine newest={latestTag}>
             {custom ? (
               <Input
                 id="cTag"
@@ -312,16 +298,17 @@ function ConfirmRun({
                   } else setTag(e.target.value);
                 }}
               >
-                <option value="latest">latest · 지금 {latestTag ?? "-"}</option>
+                <option value="latest">latest</option>
                 {tagOptions.map((t) => (
                   <option key={t.name} value={t.name}>
                     {t.name}
-                    {t.name === job.tagNow ? "  · 지금 배포됨" : ""}
+                    {t.name === job.tagNow ? "  · 지금" : ""}
                   </option>
                 ))}
                 <option value={CUSTOM_TAG}>직접 입력…</option>
               </Select>
             )}
+            </VersionLine>
           </Field>
         ) : (job.extraImages ?? []).length ? null : (
           <Hint className="flex items-center gap-1.5">
@@ -332,7 +319,6 @@ function ConfirmRun({
         {extras.length > 0 && (
           <Field
             label={hasImage ? "추가 이미지" : "이미지"}
-            hint="바꾸지 않은 이미지는 지금 떠 있는 버전 그대로 배포해요."
             right={
               activeVars.some((v) => v !== "") && !(hasImage && showBuild && latest?.active) ? (
                 <Button size="sm" variant={waitForBuild ? "primary" : "default"} onClick={() => setWaitForBuild(!waitForBuild)}>
@@ -341,32 +327,29 @@ function ConfirmRun({
               ) : undefined
             }
           >
-            <div className="flex flex-col gap-2">
+            <div className="flex flex-col gap-3">
               {extras.map((x) => (
-                <div key={x.var || x.ref} className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_200px] gap-2 items-center">
-                  <span className="min-w-0 text-[12.5px]">
-                    {x.var && <span className="font-mono font-medium">{x.var} </span>}
-                    <span className="font-mono text-muted break-all">{x.ref}</span>
-                    {x.tagNow && x.tagNow !== "-" && <span className="text-faint"> · 지금 {x.tagNow}</span>}
-                    {jobBuilds?.[x.var || x.ref] && (
-                      <span className="block mt-0.5">
-                        <BuildBadge build={jobBuilds[x.var || x.ref]!} />
-                      </span>
-                    )}
+                <div key={x.var || x.ref} className="flex flex-col gap-1.5 min-w-0">
+                  <span className="flex items-baseline gap-2 min-w-0 flex-wrap text-[13px]">
+                    <span className="font-medium">{x.var ? x.var.replace(/_TAG$/, "").toLowerCase() : imageName(x.ref)}</span>
+                    <span className="font-mono text-[12px] text-muted break-all">{x.ref}</span>
+                    {jobBuilds?.[x.var || x.ref]?.active && <BuildBadge build={jobBuilds[x.var || x.ref]!} />}
                   </span>
                   {!x.var ? (
-                    <span className="text-[12.5px] text-muted">
-                      파일에 적힌 <span className="font-mono">:{x.literal ?? "latest"}</span>
-                    </span>
+                    <div className="w-[240px] max-w-full h-9 px-3 flex items-center rounded-lg border border-line bg-surface-2 font-mono text-[13px] text-muted" title="파일에 적힌 버전">
+                      {x.literal ?? "latest"}
+                    </div>
                   ) : (
-                  <Select mono aria-label={`${x.var} 태그`} value={extraTags[x.var]} onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value })}>
-                    {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
-                      <option key={t} value={t}>
-                        {t === "latest" ? `latest · ${x.latestTag ?? "-"}` : t}
-                        {t === x.tagNow ? "  · 지금" : ""}
-                      </option>
-                    ))}
-                  </Select>
+                    <VersionLine newest={x.latestTag}>
+                      <Select mono aria-label={`${x.var} 태그`} value={extraTags[x.var]} onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value })}>
+                        {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                            {t === x.tagNow ? "  · 지금" : ""}
+                          </option>
+                        ))}
+                      </Select>
+                    </VersionLine>
                   )}
                 </div>
               ))}
@@ -375,7 +358,6 @@ function ConfirmRun({
         )}
         <KV
           items={[
-            ...(hasImage ? ([["이미지", job.image, "font-mono text-[12.5px]"]] as [string, string, string][]) : []),
             ["배포 방법", <PlaybookLine job={job} />],
             ["환경 변수", job.env ? <EnvLink name={job.env} /> : "없음"],
             ...(job.protected
@@ -404,9 +386,7 @@ function ConfirmRun({
             </div>
           ))}
         </div>
-        <Hint className="text-faint text-xs">
-          {changed ? "대상을 바꿨어요. 이번 실행에만 적용되고 작업 설정은 그대로예요." : "작업에 저장된 대상이에요. 선택 상자에서 그룹을 더하거나 빼면 이번 실행에만 적용돼요."}
-        </Hint>
+        {changed && <Hint className="text-faint text-xs">이번 실행에만 적용돼요.</Hint>}
       </ModalBody>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
@@ -421,6 +401,25 @@ function ConfirmRun({
         </Button>
       </ModalFoot>
     </>
+  );
+}
+
+/** Short name of an image: the last part of its ref (ghcr.io/acme/api-server → api-server). */
+function imageName(ref: string) {
+  return ref.slice(ref.lastIndexOf("/") + 1);
+}
+
+/** A version picker with the newest known version beside it. */
+function VersionLine({ newest, children }: { newest?: string | null; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center gap-3">
+      <div className="flex-1 min-w-[150px] max-w-[240px]">{children}</div>
+      {newest && (
+        <span className="font-mono text-[12.5px] text-muted whitespace-nowrap" title="가장 최신 버전">
+          {newest}
+        </span>
+      )}
+    </div>
   );
 }
 
