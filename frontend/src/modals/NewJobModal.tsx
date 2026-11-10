@@ -233,6 +233,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [edGroups, setEdGroups] = useState<string[]>(job?.editors?.groups ?? []);
   const [edMembers, setEdMembers] = useState<string[]>(job?.editors?.members ?? []);
   const [cur, setCur] = useState(0);
+  // New job: the furthest step reached, so the index can jump back to it.
+  const [reached, setReached] = useState(0);
   const [skipped, setSkipped] = useState<JobStepId[]>([]);
   const [guide, setGuide] = useState(initialGuide);
   const [busy, setBusy] = useState(false);
@@ -354,6 +356,22 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   const goto = (i: number) => {
     setCur(i);
+    setReached((r) => Math.max(r, i));
+  };
+
+  /** Index click on a new job: back freely; forward only through steps that are filled in, never past the next unfilled one. */
+  const pick = (i: number) => {
+    if (i <= cur) return goto(i);
+    if (i > Math.max(reached, cur + 1)) return;
+    for (let k = cur; k < i; k++) {
+      const v = validateStep(flow[k].id);
+      if (v) {
+        if (k !== cur) goto(k);
+        return fail(v);
+      }
+    }
+    setSkipped((s) => s.filter((x) => x !== step));
+    goto(i);
   };
 
   const next = () => {
@@ -1182,7 +1200,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           </Button>
         }
       />
-      <StepIndex steps={flow} mode={editing ? "edit" : "new"} cur={cur} skipped={skipped} onPick={goto} />
+      <StepIndex steps={flow} mode={editing ? "edit" : "new"} cur={cur} reached={reached} skipped={skipped} onPick={editing ? goto : pick} />
       <form id="jobForm" onSubmit={submit} className="contents" noValidate>
         <div
           ref={bodyRef}
@@ -1236,15 +1254,16 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   );
 }
 
-/** 목차: step numbers and titles in a row. New job: progress only. Edit: every step is done and clickable. */
-function StepIndex({ steps, mode, cur, skipped, onPick }: { steps: typeof JOB_STEPS; mode: Mode; cur: number; skipped: JobStepId[]; onPick: (i: number) => void }) {
+/** 목차: step numbers and titles in a row. Edit: every step is done and clickable. New job: steps up to the furthest reached (and the next one) are clickable. */
+function StepIndex({ steps, mode, cur, reached, skipped, onPick }: { steps: typeof JOB_STEPS; mode: Mode; cur: number; reached: number; skipped: JobStepId[]; onPick: (i: number) => void }) {
   return (
     <nav aria-label="단계" className="flex-none px-5 pb-3 border-b border-line overflow-x-auto scroll-soft">
       <ol className="flex items-center gap-1.5 min-w-max sm:min-w-0">
         {steps.map((s, i) => {
           const now = i === cur;
           const wasSkipped = mode === "new" && skipped.includes(s.id) && !now;
-          const done = mode === "edit" || (i < cur && !wasSkipped);
+          const done = mode === "edit" || ((i < cur || i < reached) && !now && !wasSkipped);
+          const open = mode === "edit" || i <= Math.max(reached, cur + 1);
           const mark = wasSkipped ? "–" : done ? <Icon name="check" className="size-3" strokeWidth={2.6} /> : i + 1;
           const inner = (
             <>
@@ -1261,7 +1280,7 @@ function StepIndex({ steps, mode, cur, skipped, onPick }: { steps: typeof JOB_ST
           );
           return (
             <li key={s.id} className="flex items-center gap-1.5 flex-none sm:flex-auto sm:last:flex-none" aria-current={now ? "step" : undefined}>
-              {mode === "edit" ? (
+              {open && !now ? (
                 <button type="button" onClick={() => onPick(i)} title={s.label} className="inline-flex items-center gap-1.5 rounded-md px-1 -mx-1 h-6 hover:bg-hover transition-colors">
                   {inner}
                 </button>

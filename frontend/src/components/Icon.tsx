@@ -160,12 +160,14 @@ const P = {
 
 export type IconName = keyof typeof P;
 
-export function Icon({ name, className = "size-4", strokeWidth = 1.7 }: { name: IconName; className?: string; strokeWidth?: number }) {
+export function Icon({ name, className = "", strokeWidth = 1.7 }: { name: IconName; className?: string; strokeWidth?: number }) {
+  // 16px unless the class sets a size; a color-only class must not make the icon fill its box.
+  const sized = /(^|\s)!?(size|w|h)-/.test(className);
   return (
     <svg
       viewBox="0 0 24 24"
       aria-hidden="true"
-      className={`flex-none ${className}`}
+      className={`flex-none ${sized ? "" : "size-4 "}${className}`}
       fill="none"
       stroke="currentColor"
       strokeWidth={strokeWidth}
