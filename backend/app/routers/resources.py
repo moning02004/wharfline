@@ -143,9 +143,31 @@ def list_inventory(db: Session = Depends(get_db)):
     return [i.to_dict() for i in db.scalars(select(m.Inventory).order_by(m.Inventory.ord))]
 
 
+USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def check_ssh_user(user: str) -> str:
+    user = user.strip()
+    if user == "root":
+        raise HTTPException(400, "root로는 접속할 수 없어요. 권한이 제한된 배포용 사용자를 만들어 주세요.")
+    if not USER_RE.match(user):
+        raise HTTPException(400, "SSH 사용자 이름을 확인해 주세요. 영문 소문자, 숫자, -, _ 예: deploy")
+    return user
+
+
+class FirstHostIn(BaseModel):
+    name: str
+    ip: str
+    port: str = "22"
+    group: str = "default"
+    fingerprint: str = ""
+
+
 class InventoryIn(BaseModel):
     name: str
     key: str
+    user: str = "deploy"
+    host: FirstHostIn | None = None  # the first server, checked with the connection check before this call
 
 
 @router.post("/inventory", dependencies=[Depends(require("resources"))])
@@ -158,10 +180,14 @@ def add_inventory(body: InventoryIn, db: Session = Depends(get_db)):
     key = db.scalar(select(m.Key).where(m.Key.name == body.key, m.Key.kind == "ssh"))
     if not key:
         raise HTTPException(400, "서버 접속에 쓸 SSH 키를 골라 주세요.")
-    inv = m.Inventory(id=s.new_id("i"), name=name, key=key.name)
+    user = check_ssh_user(body.user or "deploy")
+    inv = m.Inventory(id=s.new_id("i"), name=name, key=key.name, ssh_user=user)
+    if body.host:
+        h = body.host
+        inv.hosts.append(new_host(inv, h.name, h.ip, h.port, user, h.group, h.fingerprint))
     key.used_count += 1
     db.add(inv)
-    s.log_act(db, "인벤토리 생성", f"{name} · 키 {key.name}")
+    s.log_act(db, "인벤토리 생성", f"{name} · {user} · 키 {key.name}" + (f" · 서버 {body.host.name.strip()}" if body.host else ""))
     db.commit()
     return inv.to_dict()
 
@@ -220,7 +246,7 @@ class HostIn(BaseModel):
     name: str
     ip: str
     port: str
-    user: str
+    user: str = ""  # empty: the inventory's user
     group: str = "default"
     key: str = ""
     fingerprint: str = ""  # host key seen by the connection check; pinned for deploys
@@ -229,17 +255,11 @@ class HostIn(BaseModel):
 FINGERPRINT_RE = re.compile(r"^SHA256:[A-Za-z0-9+/=]{20,64}$")
 
 
-@router.post("/inventory/{inv_id}/hosts", dependencies=[Depends(require("resources"))])
-def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
-    inv = db.get(m.Inventory, inv_id)
-    if not inv:
-        raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
-    name, ip, user, group = body.name.strip(), body.ip.strip(), body.user.strip(), body.group.strip() or "default"
-    if user == "root":
-        raise HTTPException(400, "root로는 접속할 수 없어요. 권한이 제한된 deploy 사용자를 만들어 주세요.")
-    if not re.match(r"^[a-z_][a-z0-9_-]{0,31}$", user):
-        raise HTTPException(400, "SSH 사용자 이름을 확인해 주세요. 예: deploy")
-    if not body.port.strip().isdigit() or not 1 <= int(body.port) <= 65535:
+def new_host(inv: m.Inventory, name: str, ip: str, port: str, user: str, group: str, fingerprint: str) -> m.Host:
+    """A server row after the same checks for every way in; not added to the session."""
+    name, ip, group = name.strip(), ip.strip(), group.strip() or "default"
+    user = check_ssh_user(user)
+    if not str(port).strip().isdigit() or not 1 <= int(port) <= 65535:
         raise HTTPException(400, "포트는 1~65535 사이 숫자여야 해요.")
     if not re.match(r"^[A-Za-z0-9.:-]{1,253}$", ip):
         raise HTTPException(400, "IP 또는 호스트 이름을 확인해 주세요.")
@@ -247,10 +267,19 @@ def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.")
     if not name or any(h.name == name for h in inv.hosts):
         raise HTTPException(400, "서버 이름이 비었거나 이 인벤토리에 이미 있어요.")
-    fp = body.fingerprint.strip()
+    fp = fingerprint.strip()
     if fp and not FINGERPRINT_RE.match(fp):
         raise HTTPException(400, "호스트 키 지문 형식이 맞지 않아요. 연결 확인을 다시 해 주세요.")
-    h = m.Host(name=name, ip=ip, port=int(body.port), ssh_user=user, grp=group, host_fingerprint=fp or None)
+    return m.Host(name=name, ip=ip, port=int(port), ssh_user=user, grp=group, host_fingerprint=fp or None)
+
+
+@router.post("/inventory/{inv_id}/hosts", dependencies=[Depends(require("resources"))])
+def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
+    """Add a server to an inventory; it deploys as the inventory's user with the inventory's key."""
+    inv = db.get(m.Inventory, inv_id)
+    if not inv:
+        raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
+    h = new_host(inv, body.name, body.ip, body.port, body.user or inv.ssh_user, body.group, body.fingerprint)
     inv.hosts.append(h)
     s.log_act(db, "서버 추가", f"{inv.name} · {h.name} ({h.ip})")
     db.commit()
@@ -259,12 +288,30 @@ def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
 
 @router.post("/inventory/{inv_id}/ping", dependencies=[Depends(require("resources"))])
 async def ping(inv_id: str, db: Session = Depends(get_db)):
+    """Connect to every server with the inventory's key: answering servers are on, others off (deploys skip them).
+
+    A server whose host key differs from the pinned one is marked changed and blocked until someone approves the new key.
+    """
     inv = db.get(m.Inventory, inv_id)
     if not inv:
         raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
-    total, ok = len(inv.hosts), sum(1 for h in inv.hosts if h.status == "on")
-    await asyncio.sleep(1.0)
-    return {"total": total, "ok": ok}
+    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
+    private = (key.get_secret() if key else None) or ""
+    results = await asyncio.gather(*(sshcheck.check(h.ip, h.port, h.ssh_user, private) for h in inv.hosts))
+    out = []
+    for h, r in zip(inv.hosts, results):
+        changed = bool(h.host_fingerprint and r["fingerprint"] and r["fingerprint"] != h.host_fingerprint)
+        if changed:
+            h.host_key = "changed"
+        elif r["login"] and not h.host_fingerprint:
+            h.host_fingerprint = r["fingerprint"]  # first contact: pin it
+        h.status = "on" if r["login"] and not changed else "off"
+        error = "호스트 키가 저장된 값과 달라요" if changed else r["error"]
+        out.append({"name": h.name, "ok": h.status == "on", "error": error})
+    ok = sum(1 for x in out if x["ok"])
+    s.log_act(db, "연결 테스트", f"{inv.name} · {len(out)}대 중 {ok}대 응답", "ok" if ok == len(out) else "warn")
+    db.commit()
+    return {"total": len(out), "ok": ok, "hosts": out}
 
 
 @router.delete("/inventory/{inv_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])

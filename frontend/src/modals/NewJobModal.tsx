@@ -795,8 +795,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewInventoryModal onClose={c} onCreated={(i) => setInv(i.name)} />)}>
                   인벤토리 추가
                 </Button>
-                {inventories.length > 0 && (
-                  <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewHostModal inventories={inventories} initialInventory={inv} onClose={c} />)}>
+                {invObj && (
+                  <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewHostModal inventory={invObj} onClose={c} />)}>
                     서버 추가
                   </Button>
                 )}

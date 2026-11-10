@@ -54,6 +54,8 @@ export interface Inventory {
   id: string;
   name: string;
   key: string;
+  /** SSH user its servers deploy as */
+  user: string;
   hosts: Host[];
 }
 

@@ -100,10 +100,12 @@ class Inventory(Base):
     ord: Mapped[int] = mapped_column(Integer, Identity())
     name: Mapped[str] = mapped_column(String(128), unique=True)
     key: Mapped[str] = mapped_column(String(128))
+    # The SSH user its servers deploy as (new servers take it).
+    ssh_user: Mapped[str] = mapped_column(String(32), default="deploy", server_default="deploy")
     hosts: Mapped[list[Host]] = relationship(back_populates="inventory", order_by="Host.id", cascade="all, delete-orphan")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"id": self.id, "name": self.name, "key": self.key, "hosts": [h.to_dict() for h in self.hosts]}
+        return {"id": self.id, "name": self.name, "key": self.key, "user": self.ssh_user, "hosts": [h.to_dict() for h in self.hosts]}
 
 
 class Host(Base):

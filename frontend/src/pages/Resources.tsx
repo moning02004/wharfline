@@ -576,8 +576,11 @@ export function Inventory() {
   const ping = async (inv: Inv) => {
     setPinging(inv.id);
     try {
-      const r = await api.post<{ total: number; ok: number }>(`/inventory/${inv.id}/ping`);
-      toast(`${inv.name}: ${r.total}대 중 ${r.ok}대 응답`);
+      const r = await api.post<{ total: number; ok: number; hosts: { name: string; ok: boolean; error: string | null }[] }>(`/inventory/${inv.id}/ping`);
+      refresh();
+      const bad = r.hosts.filter((h) => !h.ok);
+      if (!bad.length) toast(`${inv.name}: ${r.total}대 모두 연결됐어요`);
+      else toast(`${inv.name}: ${r.total}대 중 ${bad.length}대 실패 · ${bad.map((h) => `${h.name}: ${h.error ?? "연결 안 됨"}`).join(" / ")}`, "error");
     } catch (e) {
       toast(errMsg(e));
     }
@@ -632,14 +635,9 @@ export function Inventory() {
       >
         {manage && (
           <>
-            <Button icon="plus" onClick={() => openModal((c) => <NewInventoryModal onClose={c} />)}>
+            <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewInventoryModal onClose={c} />)}>
               인벤토리 추가
             </Button>
-            {data.length > 0 && (
-              <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewHostModal inventories={data} onClose={c} />)}>
-                서버 추가
-              </Button>
-            )}
           </>
         )}
       </PageHeader>
@@ -653,8 +651,10 @@ export function Inventory() {
               title={
                 <span className="flex items-center gap-2 flex-wrap">
                   {inv.name}
-                  <span className="inline-flex items-center gap-1 text-xs text-muted font-mono font-normal">
-                    <Icon name="key" className="size-[13px]" />
+                  <span className="inline-flex items-center gap-1 text-xs text-muted font-mono font-normal" title="배포 사용자 · SSH 키">
+                    <Icon name="users" className="size-[13px]" />
+                    {inv.user}
+                    <Icon name="key" className="size-[13px] ml-1.5" />
                     {inv.key}
                   </span>
                   {sharedWith.length > 0 && <SharedKeyChip others={sharedWith} />}
@@ -668,7 +668,10 @@ export function Inventory() {
             >
               {manage && (
                 <div className="flex items-center gap-1.5">
-                  <Button size="sm" icon="refresh" disabled={pinging === inv.id} onClick={() => ping(inv)}>
+                  <Button size="sm" icon="plus" onClick={() => openModal((c) => <NewHostModal inventory={inv} onClose={c} />)}>
+                    서버 추가
+                  </Button>
+                  <Button size="sm" icon="refresh" disabled={pinging === inv.id || !inv.hosts.length} onClick={() => ping(inv)}>
                     {pinging === inv.id ? "확인 중…" : "연결 테스트"}
                   </Button>
                   <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label={`${inv.name} 인벤토리 삭제`} title="인벤토리 삭제" onClick={() => delInventory(inv)} />
