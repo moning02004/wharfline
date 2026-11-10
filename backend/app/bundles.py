@@ -164,7 +164,16 @@ def check_files(files: list[dict]) -> list[dict[str, str]]:
         out[path] = content
     if total > MAX_TOTAL_BYTES:
         raise HTTPException(400, "파일은 모두 합쳐 2MB까지 올릴 수 있어요.")
+    for path, content in out.items():
+        for value in IMAGE_LINE.findall(content):
+            host = value.split("/", 1)[0].lower() if "/" in value else ""
+            if host in REGISTRY_TYPOS:
+                raise HTTPException(400, f"{path}의 {value}: {host}는 {REGISTRY_TYPOS[host]}의 오타 같아요. 이 주소로는 이미지를 받을 수 없어요.")
     return [{"path": p, "content": out[p]} for p in sorted(out)]
+
+
+# Registry hosts that are easy to mistype; pulls from them fail on every server.
+REGISTRY_TYPOS = {"ghrc.io": "ghcr.io", "gchr.io": "ghcr.io", "ghcr.com": "ghcr.io", "gcr.com": "gcr.io", "docker.com": "docker.io"}
 
 
 IMAGE_LINE = re.compile(r"^\s*-?\s*image:\s*[\"']?([^\s\"'#]+)", re.M)

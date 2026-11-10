@@ -13,6 +13,7 @@ database when it ends.
 from __future__ import annotations
 
 import asyncio
+import os
 import random
 import re
 import time
@@ -453,6 +454,51 @@ def real_head(db: Session, job: dict, groups: list[str], rec: m.Run, requested_t
     lines += extra_image_lines(job)
     lines.append(("", f"대상: {job['inventory']} / {s.target_label(groups, inv)} → {', '.join(h['ip'] for h in hosts)}"))
     return lines
+
+
+# ---------- one run at a time per job ----------
+
+def active_run(job_id: str) -> int | None:
+    """The run of this job playing now, if any."""
+    return next((no for no, r in live.items() if r.get("job_id") == job_id and not r["done"]), None)
+
+
+# Auto-deploys wait this long for more pushes before starting, so the images of one release
+# (backend and frontend pushed seconds apart) go out in a single run.
+AUTO_DELAY = float(os.environ.get("WHARFLINE_AUTO_DELAY", "20"))
+# job id -> {"tag": main image tag or None, "extra": {VAR: tag}, "task": asyncio.Task}
+pending: dict[str, dict[str, Any]] = {}
+
+
+def queue_auto(job_id: str, main_tag: str | None, extra_tags: dict[str, str]) -> None:
+    """Add a pushed tag to the job's next auto-deploy, which starts after AUTO_DELAY and after any run playing now."""
+    p = pending.setdefault(job_id, {"tag": None, "extra": {}, "task": None})
+    if main_tag:
+        p["tag"] = main_tag
+    p["extra"].update(extra_tags)
+    if p["task"] is None or p["task"].done():
+        p["task"] = asyncio.get_running_loop().create_task(_auto_after(job_id))
+
+
+async def _auto_after(job_id: str) -> None:
+    await asyncio.sleep(AUTO_DELAY)
+    while active_run(job_id) is not None:  # a push during a run deploys after it, on top of what it deployed
+        await asyncio.sleep(1 if AUTO_DELAY else 0.05)
+    p = pending.pop(job_id, None)
+    if not p:
+        return
+    with SessionLocal() as db:
+        job = db.get(m.Job, job_id)
+        if not job or not job.hook:
+            return
+        j = job.to_dict()
+        if not [h for h in s.target_hosts(s.inv_of(db, j), j["targets"]) if not s.host_skip(h)]:
+            return
+        main = p["tag"] or (job.tag_now if job.tag_now not in ("", "-") else job.default_tag)
+        if job.protected:
+            request_approval(db, j, j["targets"], main, "새 이미지 push", None, extra_tags=p["extra"])
+        else:
+            start_run(db, j, j["targets"], main, "새 이미지 push", extra_tags=p["extra"])
 
 
 def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None = None,

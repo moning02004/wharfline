@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.conftest import DEPLOYER, OWNER, VIEWER, builtin_job, send_hook, wait_run
+from tests.conftest import DEPLOYER, OWNER, VIEWER, builtin_job, last_run_no, send_hook, wait_auto_run, wait_run
 
 ADMIN = "admin-roles@acme.kr"
 NO_PERM = "이 작업을 할 권한이 없어요."
@@ -229,10 +229,11 @@ def test_auto_deploy_of_a_protected_job_waits_for_approval(client, login):
     assert r.status_code == 200, r.text
     assert client.put("/api/images/source", json={"ref": HOOK_IMAGE, "sourceRepo": HOOK_REPO}).status_code == 200
 
+    before = last_run_no(client)
     pkg = {"action": "created", "package": {"type": "container", "name": "roles-hook", "version": "v1.0.1", "owner": {"login": "acme"}}}
     out = send_hook(client, secret, "package", pkg).json()
-    assert out["tags"] == [f"{HOOK_IMAGE}:v1.0.1"] and len(out["runs"]) == 1
-    no = out["runs"][0]
+    assert out["tags"] == [f"{HOOK_IMAGE}:v1.0.1"] and out["queued"] == ["roles · hook prod"]
+    no = wait_auto_run(client, "roles · hook prod", before, status="approval")["no"]
     assert no not in runner.live
     run = client.get(f"/api/runs/{no}").json()
     assert run["status"] == "approval" and run["trigger"] == "새 이미지 push" and run["tag"] == "v1.0.1"

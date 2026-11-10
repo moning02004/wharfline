@@ -25,14 +25,14 @@ hooks = APIRouter(prefix="/api/hooks", tags=["hooks"])  # called by the Git host
 router = APIRouter(prefix="/api", tags=["integrations"], dependencies=[Depends(require_login)])
 
 
-def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[int]:
-    """Start runs for jobs with auto-deploy on, for each newly pushed release tag.
+def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[str]:
+    """Queue auto-deploys for jobs with auto-deploy on, for each newly pushed release tag. Returns the job names.
 
     The tag goes to whichever watched image it belongs to (the main one or an extra one); the other
-    images keep the version running now. A protected job is not started: its run waits for an
-    Owner/Admin to approve it.
+    images keep the version running now. Pushes close together go out as one run (runner.queue_auto).
+    A protected job is not started: its run waits for an Owner/Admin to approve it.
     """
-    started: list[int] = []
+    queued: list[str] = []
     for img, tag in released:
         for job in db.scalars(select(m.Job).where(m.Job.hook.is_(True)).order_by(m.Job.ord)):
             extra = next((x for x in job.extra_images or [] if x["ref"] == img.ref), None)
@@ -40,20 +40,15 @@ def auto_deploy(db: Session, released: list[tuple[m.Image, str]]) -> list[int]:
                 continue
             if not githooks.tag_matches(job.hook_rule or "v", tag):
                 continue  # not a tag this job deploys automatically
-            j = job.to_dict()
-            if not [h for h in s.target_hosts(s.inv_of(db, j), j["targets"]) if not s.host_skip(h)]:
-                continue
             if job.image == img.ref:
-                main_tag, extra_tags = tag, {}
+                runner.queue_auto(job.id, tag, {})
             else:
-                main_tag = job.tag_now if job.tag_now not in ("", "-") else job.default_tag
                 # A named image gets the new tag; a watched-only one (written tag in the file) just redeploys.
-                extra_tags = {extra["var"]: tag} if extra["var"] else {}
-            if job.protected:
-                started.append(runner.request_approval(db, j, j["targets"], main_tag, "새 이미지 push", None, extra_tags=extra_tags)["no"])
-            else:
-                started.append(runner.start_run(db, j, j["targets"], main_tag, "새 이미지 push", extra_tags=extra_tags)["no"])
-    return started
+                runner.queue_auto(job.id, None, {extra["var"]: tag} if extra["var"] else {})
+            if job.name not in queued:
+                queued.append(job.name)
+                s.log_act(db, "자동 배포 예약", f"{job.name} · {img.ref}:{tag}")
+    return queued
 
 
 def process(db: Session, provider: str, event: str, payload: dict) -> dict:
@@ -80,7 +75,7 @@ def process(db: Session, provider: str, event: str, payload: dict) -> dict:
     db.commit()
     out: dict = {"build": build.id if build else None}
     if released:
-        out |= {"tags": [f"{i.ref}:{t}" for i, t in released], "runs": auto_deploy(db, released)}
+        out |= {"tags": [f"{i.ref}:{t}" for i, t in released], "queued": auto_deploy(db, released)}
     return out
 
 

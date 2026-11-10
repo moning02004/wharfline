@@ -578,6 +578,7 @@ async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # a
     email = me.email if me else None
     if job.protected and not s.can(me, "run_protected"):
         return runner.request_approval(db, j, body.groups, tag, trigger, email, extra_tags=body.extraTags)
+    check_lock(job)
     return runner.start_run(db, j, body.groups, tag, trigger, requested_by=email, extra_tags=body.extraTags)
 
 
@@ -703,12 +704,20 @@ def pending(db: Session, no: int) -> m.Run:
     return rec
 
 
+def check_lock(job: m.Job) -> None:
+    """동시 실행 잠금: one run at a time per job, so two runs never replace each other's containers."""
+    no = runner.active_run(job.id) if job.lock else None
+    if no is not None:
+        raise HTTPException(409, f"이 작업은 지금 #{no}이(가) 실행 중이에요. 끝난 뒤 다시 실행해 주세요.")
+
+
 @router.post("/runs/{no}/approve", dependencies=[Depends(require("approve"))])
 async def approve(no: int, db: Session = Depends(get_db)):  # async: the runner schedules a task on the event loop
     rec = pending(db, no)
     job = db.get(m.Job, rec.job_id)
     if not job:
         raise HTTPException(400, "작업이 지워져서 실행할 수 없어요.")
+    check_lock(job)
     me = s.current_member(db)
     rec.decided_by, rec.decided_at = me.email, datetime.now(timezone.utc)
     s.log_act(db, "배포 승인", f"{rec.job} #{no} · {rec.tag} · 요청 {rec.by}")

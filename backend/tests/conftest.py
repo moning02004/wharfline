@@ -19,7 +19,8 @@ import pytest
 _base = urlsplit(os.environ.get("DATABASE_URL", "postgresql+psycopg://wharfline:wharfline@localhost:55432/wharfline"))
 TEST_DB = os.environ.get("WHARFLINE_TEST_DB", "wharfline_test")
 os.environ["DATABASE_URL"] = urlunsplit(_base._replace(path=f"/{TEST_DB}"))
-os.environ["WHARFLINE_SSH_SIMULATE"] = "1"  # no reachable SSH servers in tests (see app/sshcheck.py)
+os.environ["WHARFLINE_SSH_SIMULATE"] = "1"
+os.environ["WHARFLINE_AUTO_DELAY"] = "0"  # auto-deploys start right away (they batch pushes for 20s otherwise)  # no reachable SSH servers in tests (see app/sshcheck.py)
 ADMIN_URL = urlunsplit(_base._replace(path="/postgres"))
 
 
@@ -150,3 +151,19 @@ def builtin_job(name: str, inventory: str, image: str, **extra) -> dict:
     """POST /api/jobs body for a job on the built-in playbook."""
     return {"name": name, "playbook": {"source": "builtin"}, "inventory": inventory, "targets": [], "image": image,
             "envMode": "none", "envVars": [], "hook": False, "protected": False, "lock": True, "rollback": True, **extra}
+
+
+def wait_auto_run(client, job_name: str, after: int = 0, status: str | None = None, timeout: float = 10) -> dict:
+    """The first run of a job numbered above `after`, started by an auto-deploy (queued, so it appears shortly)."""
+    end = time.time() + timeout
+    while time.time() < end:
+        runs = [r for r in client.get("/api/runs").json() if r["job"] == job_name and r["no"] > after and r["trigger"] == "새 이미지 push"]
+        runs = [r for r in runs if status is None or r["status"] == status]
+        if runs:
+            return min(runs, key=lambda r: r["no"])
+        time.sleep(0.05)
+    raise AssertionError(f"no auto-deploy run for {job_name}")
+
+
+def last_run_no(client) -> int:
+    return max((r["no"] for r in client.get("/api/runs").json()), default=0)

@@ -5,7 +5,7 @@ import io
 import stat
 import zipfile
 
-from tests.conftest import builtin_job, log_text, send_hook, wait_run
+from tests.conftest import builtin_job, last_run_no, log_text, send_hook, wait_auto_run, wait_run
 
 COMPOSE = """services:
   api:
@@ -101,13 +101,11 @@ def test_new_tag_of_an_extra_image_deploys_only_that_image(client, login):
     with SessionLocal() as db:
         secret = githooks.new_secret(db)
         db.commit()
+    before = last_run_no(client)
     pkg = {"action": "created", "package": {"type": "container", "name": "api-server", "version": "v1.9.0", "owner": {"login": "acme"}}}
     r = send_hook(client, secret, "package", pkg).json()
-    jobs = {j["name"]: j for j in client.get("/api/jobs").json()}
-    job = jobs["bundle · app"]
-    runs = [no for no in r["runs"] if client.get(f"/api/runs/{no}").json()["jobId"] == job["id"]]
-    assert len(runs) == 1
-    run = wait_run(client, runs[0])
+    assert "bundle · app" in r["queued"]
+    run = wait_run(client, wait_auto_run(client, "bundle · app", before)["no"])
     assert run["extraTags"]["API"] == "v1.9.0" and run["extraTags"]["WEB"] == "v2.3.1"  # WEB keeps the version running now
 
 
@@ -118,6 +116,8 @@ def test_files_and_images_are_checked(client, login):
     assert post(files=[{"path": ".env", "content": "A=1"}]) == 400
     assert post(files=[{"path": "../x.yaml", "content": "a"}]) == 400
     assert post(files=[{"path": "a.yaml", "content": "x"}, {"path": "a.yaml", "content": "y"}]) == 400
+    typo = client.post("/api/jobs", json=script_job("bundle · bad") | {"files": [{"path": "c.yaml", "content": "services:\n  a:\n    image: ghrc.io/acme/app:${APP_TAG}\n"}]})
+    assert typo.status_code == 400 and "ghcr.io의 오타" in typo.json()["detail"]
     # images of a git/builtin job are still entered by hand and checked
     hand = builtin_job("bundle · bad images", "staging", "nginx:1")
     assert client.post("/api/jobs", json=hand | {"extraImages": [{"image": "nginx:1", "var": "1BAD"}]}).status_code == 400
@@ -196,10 +196,10 @@ def test_watched_only_image_redeploys_and_build_repo_links_itself(client, login)
     pkg = {"action": "published", "repository": {"full_name": "acme/watch"},
            "registry_package": {"name": "watch-web", "package_type": "CONTAINER", "owner": {"login": "acme"},
                                 "package_version": {"version": "sha256:cc", "container_metadata": {"tag": {"name": "v7"}}}}}
+    before = last_run_no(client)
     r = send_hook(client, secret, "registry_package", pkg, provider="github").json()
-    mine = [no for no in r["runs"] if client.get(f"/api/runs/{no}").json()["jobId"] == job["id"]]
-    assert len(mine) == 1  # a watched-only image still redeploys
-    assert wait_run(client, mine[0])["extraTags"] == {}  # the file decides the version
+    assert "bundle · watch" in r["queued"]  # a watched-only image still redeploys
+    assert wait_run(client, wait_auto_run(client, "bundle · watch", before)["no"])["extraTags"] == {}  # the file decides the version
     view = next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])
     assert view["extraImages"][0]["sourceRepo"] == "acme/watch"  # learned from the event
 

@@ -2,7 +2,7 @@
 
 import pytest
 
-from tests.conftest import builtin_job, send_hook, wait_run
+from tests.conftest import builtin_job, last_run_no, send_hook, wait_auto_run, wait_run
 
 REPO = "acme/hook-demo"
 IMAGE = "ghcr.io/acme/hook-demo"
@@ -55,16 +55,17 @@ def test_gitea_build_progress_then_success_and_auto_deploy(client, login, secret
     b = _build(client, hook_job["id"])
     assert b["status"] == "in_progress" and b["step"] == "Build and push"  # 빌드 중
 
+    before = last_run_no(client)
     pkg = {"action": "created", "package": {"type": "container", "name": "hook-demo", "version": "v1.0.1", "owner": {"login": "acme"}}}
     r = send_hook(client, secret, "package", pkg).json()
     assert r["tags"] == [f"{IMAGE}:v1.0.1"]
-    assert len(r["runs"]) == 1  # auto-deploy started for the job with 자동 배포 on
+    assert r["queued"] == ["hook · demo"]  # auto-deploy queued for the job with 자동 배포 on
 
     send_hook(client, secret, "workflow_run", run_payload(5001, "completed", "success"))
     b = _build(client, hook_job["id"])
     assert b["status"] == "success" and not b["active"] and b["tag"] == "v1.0.1"  # 빌드 성공 → v1.0.1
 
-    run = wait_run(client, r["runs"][0])
+    run = wait_run(client, wait_auto_run(client, "hook · demo", before)["no"])
     assert run["status"] == "ok" and run["tag"] == "v1.0.1" and run["trigger"] == "새 이미지 push"
 
 
@@ -127,8 +128,7 @@ def test_hook_rule_decides_which_tags_deploy(client, login, secret):
 
     def push(tag: str) -> set[str]:
         pkg = {"action": "created", "package": {"type": "container", "name": "rule-demo", "version": tag, "owner": {"login": "acme"}}}
-        runs = send_hook(client, secret, "package", pkg).json().get("runs", [])
-        return {client.get(f"/api/runs/{no}").json()["job"] for no in runs}
+        return set(send_hook(client, secret, "package", pkg).json().get("queued", []))
 
     assert push("v2026.11.08-1") == {"rule · v", "rule · date"}
     assert push("2026.11.09-1") == {"rule · date"}
