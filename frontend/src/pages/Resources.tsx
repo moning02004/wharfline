@@ -175,12 +175,9 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
                   </td>
                   <td>
                     {i.usedBy.length ? (
-                      <span className="inline-flex items-center gap-2">
-                        <span>{i.usedBy.length}개</span>
-                        <Button size="sm" variant="ghost" onClick={() => openModal((c) => <ImageUsageModal image={i} onClose={c} />, "md")}>
-                          자세히
-                        </Button>
-                      </span>
+                      <Button size="sm" variant="ghost" onClick={() => openModal((c) => <ImageUsageModal image={i} onClose={c} />, "md")}>
+                        자세히
+                      </Button>
                     ) : (
                       <span className="text-faint">없음</span>
                     )}
