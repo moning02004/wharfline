@@ -44,6 +44,7 @@ export function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCre
         refresh();
         onCreated?.(k);
         if (k.kind === "token") toast("토큰을 저장했어요. 다시 볼 수 없어요.");
+        else if (onCreated) toast(`${k.name} 키를 만들었어요. 서버에 넣는 명령은 서버 준비 단계에 나와요.`);
         else openModal((close) => <PubKeyModal k={k} fresh onClose={close} />);
       } catch (e) {
         if ((e as { sudoRequired?: boolean }).sudoRequired) throw e;
@@ -164,6 +165,15 @@ function CmdBlock({ cmd, label }: { cmd: string; label: string }) {
   );
 }
 
+function CopyAll({ text }: { text: string }) {
+  const { toast } = useApp();
+  return (
+    <Button size="sm" icon="copy" onClick={() => copyText(text, toast)}>
+      전체 복사
+    </Button>
+  );
+}
+
 function Step({ n, title, children }: { n: number | string; title: ReactNode; children?: ReactNode }) {
   return (
     <li className="grid grid-cols-[22px_minmax(0,1fr)] gap-x-2.5 gap-y-1.5">
@@ -179,23 +189,39 @@ function ServerPrepSteps({ user, info, last }: { user: string; info: PublicKeyIn
   const u = user.trim() || "deploy";
   const home = `/home/${u}`;
   const line = info?.authorizedKeysLine ?? "";
-  const addUser = `sudo useradd -m -s /bin/bash ${u}`;
+  const addUser = `id -u ${u} >/dev/null 2>&1 || sudo useradd -m -s /bin/bash ${u}`;
   const [perm, setPerm] = useState<"group" | "sudo">("group");
   const sudoersFile = `/etc/sudoers.d/wharfline-${u}`;
   const sudoers = `echo '${u} ALL=(root) NOPASSWD: /usr/bin/docker' | sudo tee ${sudoersFile}\nsudo chmod 440 ${sudoersFile} && sudo visudo -cf ${sudoersFile}`;
   const addKey = [
     `sudo mkdir -p ${home}/.ssh`,
-    `echo ${line ? sq(line) : "'…'"} | sudo tee -a ${home}/.ssh/authorized_keys`,
+    `sudo grep -qxF ${line ? sq(line) : "'…'"} ${home}/.ssh/authorized_keys 2>/dev/null || echo ${line ? sq(line) : "'…'"} | sudo tee -a ${home}/.ssh/authorized_keys >/dev/null`,
     `sudo chown -R ${u}:${u} ${home}/.ssh`,
     `sudo chmod 700 ${home}/.ssh && sudo chmod 600 ${home}/.ssh/authorized_keys`,
   ].join("\n");
+  const fingerprintCmd = "ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub";
+  const srvCmd = `sudo mkdir -p /srv && sudo chown ${u}:${u} /srv`;
+  const all = [
+    `# 1. 배포용 사용자 ${u}`,
+    addUser,
+    "# 2. 공개 키",
+    addKey,
+    perm === "group" ? "# 3. docker 그룹" : "# 3. sudoers (sudo docker만)",
+    perm === "group" ? `sudo usermod -aG docker ${u}` : sudoers,
+    "# 4. 서비스 폴더",
+    srvCmd,
+    "# 5. 호스트 키 지문 (연결 확인 결과와 비교)",
+    fingerprintCmd,
+  ].join("\n");
   return (
     <div className="flex flex-col gap-3">
-      <p className="m-0 text-[13px] text-muted">대상 서버에 접속해서 차례로 실행해요.</p>
+      <div className="flex items-center gap-2">
+        <p className="m-0 text-[13px] text-muted flex-1">대상 서버에 접속해서 차례로 실행해요. 여러 번 실행해도 괜찮아요.</p>
+        <CopyAll text={all} />
+      </div>
       <ol className="m-0 p-0 list-none flex flex-col gap-3.5">
         <Step n={1} title={<>배포용 사용자 <span className="font-mono">{u}</span> 만들기</>}>
           <CmdBlock cmd={addUser} label="사용자 만들기 명령" />
-          <span className="text-[12px] text-faint">이미 있으면 건너뛰어요.</span>
         </Step>
         <Step n={2} title="공개 키 넣기">
           <CmdBlock cmd={addKey} label="공개 키 넣기 명령" />
@@ -242,7 +268,7 @@ function ServerPrepSteps({ user, info, last }: { user: string; info: PublicKeyIn
           <span className="text-[12px] text-warn">어느 쪽이든 docker를 쓸 수 있으면 root와 같은 권한이에요. 배포할 서버에만 줘요.</span>
         </Step>
         <Step n={4} title={<>서비스 폴더 <span className="font-mono">/srv</span> 넘겨주기</>}>
-          <CmdBlock cmd={`sudo mkdir -p /srv && sudo chown ${u}:${u} /srv`} label="서비스 폴더 명령" />
+          <CmdBlock cmd={srvCmd} label="서비스 폴더 명령" />
           <span className="text-[12px] text-faint">
             앱은 <span className="font-mono">/srv/{"{project_name}"}</span>에 놓여요(작업의 서비스 경로 기본값). 폴더는 첫 배포 때 Wharfline이 만들어요.
           </span>
@@ -255,7 +281,7 @@ function ServerPrepSteps({ user, info, last }: { user: string; info: PublicKeyIn
           </details>
         </Step>
         <Step n={5} title="호스트 키 지문 보기">
-          <CmdBlock cmd="ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub" label="지문 명령" />
+          <CmdBlock cmd={fingerprintCmd} label="지문 명령" />
           <span className="text-[12px] text-faint">연결 확인에서 나오는 지문과 같아야 해요.</span>
         </Step>
         {last && <Step n={6} title={last} />}
