@@ -167,6 +167,33 @@ def test_script_run_stops_a_server_after_a_failed_step(tmp_path):
     assert any("✘ 배포 실패" in t for t in texts)
 
 
+@pytest.mark.skipif(os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0), reason="needs POSIX permissions (root ignores them)")
+def test_a_folder_the_user_cannot_write_names_the_path(tmp_path):
+    key = sshkeys.generate("t@wharfline")
+    start, host_key = _server(key.public_line, [])
+    locked = tmp_path / "locked"
+    locked.mkdir(mode=0o500)  # exists, not writable: like a service folder owned by another user
+
+    async def go():
+        server, port = await start()
+        plan = _plan(port, host_key.get_fingerprint("sha256"), key.private_openssh, str(locked / "svc"), [{"name": "x", "run": "true"}])
+        runner.live[plan.no] = {"events": [], "done": False, "cancelled": False}
+        try:
+            return plan, await executor._run_script(plan, executor.Out(plan))
+        finally:
+            server.close()
+
+    try:
+        plan, ok = asyncio.run(go())
+    finally:
+        locked.chmod(0o700)
+    texts = [e.get("text", "") for e in runner.live.pop(plan.no)["events"]]
+    executor._release(plan)
+    assert not ok
+    failed = next(t for t in texts if t.startswith("failed: [web-1]"))
+    assert f"{locked}/svc 폴더 만들기 실패" in failed and "deploy 사용자에게" in failed and "chown" in failed, failed
+
+
 def test_a_changed_host_key_skips_the_server(tmp_path, monkeypatch):
     key = sshkeys.generate("t@wharfline")
     start, _ = _server(key.public_line, [])

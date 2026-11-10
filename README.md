@@ -138,6 +138,7 @@ Gitea(Forgejo), GitHub, GitLab의 CI가 이미지를 빌드하는 동안 배포 
 - **비밀 값**: SSH 키, 토큰, .env 값은 실행을 시작할 때만 풀어요. 임시 폴더(0600 파일)에만 쓰고, 실행이 끝나면 폴더를 지워요. 로그에서는 값을 `••••••••`로 가려요. 자식 프로세스에는 `DATABASE_URL`이나 마스터 키 경로 같은 backend 환경 변수를 넘기지 않아요.
 - **동시 실행**: 같은 서버(IP:포트)에 배포 중인 실행이 있으면 그 서버는 실패로 처리해요. 실행을 취소하면 `ansible-playbook` 프로세스와 SSH 세션을 끊어요.
 - backend 이미지에 `ansible-core`, `git`, `openssh-client`가 들어 있어요. 대상 서버에는 Python 3(ansible용)과 docker가 있어야 하고, SSH 사용자는 sudo 없이 docker를 쓸 수 있어야 해요.
+- 앱은 서버의 `/srv/{project_name}`에 놓아요(스크립트 작업의 서비스 경로 기본값). 서버를 준비할 때 `sudo chown deploy:deploy /srv`로 `/srv`를 배포 사용자에게 넘겨 두면 첫 배포 때 앱 폴더가 저절로 만들어져요. root로 만든 앱 폴더가 남아 있으면 Permission denied로 실패하니 그 폴더도 `chown -R` 해 주세요.
 - 실제 서버 없이 데모로 돌리려면 backend에 `WHARFLINE_RUN_SIMULATE=1`을 주세요. 예전처럼 로그를 흉내 내요(테스트는 `WHARFLINE_SSH_SIMULATE=1`로 흉내 내요).
 
 ## 보안 운영
