@@ -155,6 +155,9 @@ function ConfirmRun({
   const [extraTags, setExtraTags] = useState<Record<string, string>>(() =>
     Object.fromEntries(extras.filter((x) => x.var).map((x) => [x.var, x.tagNow && x.tagNow !== "-" ? x.tagNow : x.defaultTag])),
   );
+  // Extra images whose tag is typed ("직접 입력…") instead of picked.
+  const [customExtra, setCustomExtra] = useState<Record<string, boolean>>({});
+  const extraOk = Object.values(extraTags).every((t) => t === "latest" || TAG_RE.test(t));
   const [busy, setBusy] = useState(false);
 
   // Latest CI build of every tracked image ("" = the main image), polled while any runs,
@@ -174,7 +177,8 @@ function ConfirmRun({
     if (jobBuilds) setPoll(activeVars.length ? 2500 : 0);
   }, [jobBuilds, activeVars.length]);
 
-  const freshTag = latest?.status === "success" && latest.tag && !job.imageTags.some((t) => t.name === latest.tag) ? latest.tag : null;
+  const freshTag =
+    latest?.status === "success" && latest.tag && !isTestTag(latest.tag) && !job.imageTags.some((t) => t.name === latest.tag) ? latest.tag : null;
   const tagOptions = freshTag ? [{ name: freshTag, digest: "", pushed: "방금" }, ...job.imageTags] : job.imageTags;
   const latestTag = freshTag ?? job.latestTag;
   const resolved = tag === "latest" ? latestTag ?? "latest" : tag;
@@ -203,10 +207,11 @@ function ConfirmRun({
     const awaited = waiting.map((v) => [v, jobBuilds[v] ?? null] as const);
     if (awaited.some(([, b]) => b?.active)) return;
     setWaiting(null);
-    const bad = awaited.filter(([, b]) => !b || b.status !== "success" || !b.tag);
+    const bad = awaited.filter(([, b]) => !b || b.status !== "success" || !b.tag || isTestTag(b.tag));
     if (bad.length) {
       const names = bad.map(([v, b]) => `${v || "이미지"}${b ? ` #${b.runNumber ?? b.runId}` : ""}`).join(", ");
-      toast(`빌드(${names})가 실패했거나 새 태그가 없어서 배포하지 않았어요`, "error");
+      const test = bad.some(([, b]) => isTestTag(b?.tag));
+      toast(test ? `시험 빌드(${names})라서 배포하지 않았어요` : `빌드(${names})가 실패했거나 새 태그가 없어서 배포하지 않았어요`, "error");
       return;
     }
     let mainTag = tag;
@@ -341,15 +346,53 @@ function ConfirmRun({
                       {x.literal ?? "latest"}
                     </div>
                   ) : (
-                    <VersionLine newest={x.latestTag} now={x.tagNow}>
-                      <Select mono aria-label={`${x.var} 태그`} value={extraTags[x.var]} onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value })}>
-                        {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
-                          <option key={t} value={t}>
-                            {t}
-                          </option>
-                        ))}
-                      </Select>
-                    </VersionLine>
+                    <div className="flex items-center gap-2">
+                      <VersionLine newest={x.latestTag} now={x.tagNow}>
+                        {customExtra[x.var] ? (
+                          <Input
+                            mono
+                            aria-label={`${x.var} 태그`}
+                            value={extraTags[x.var]}
+                            onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value.trim() })}
+                            placeholder="예: v1.8.3"
+                            autoComplete="off"
+                            spellCheck={false}
+                            autoFocus
+                          />
+                        ) : (
+                          <Select
+                            mono
+                            aria-label={`${x.var} 태그`}
+                            value={extraTags[x.var]}
+                            onChange={(e) => {
+                              if (e.target.value === CUSTOM_TAG) {
+                                setCustomExtra({ ...customExtra, [x.var]: true });
+                                setExtraTags({ ...extraTags, [x.var]: "" });
+                              } else setExtraTags({ ...extraTags, [x.var]: e.target.value });
+                            }}
+                          >
+                            {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
+                              <option key={t} value={t}>
+                                {t}
+                              </option>
+                            ))}
+                            <option value={CUSTOM_TAG}>직접 입력…</option>
+                          </Select>
+                        )}
+                      </VersionLine>
+                      {customExtra[x.var] && (
+                        <Button
+                          size="sm"
+                          variant="ghost"
+                          onClick={() => {
+                            setCustomExtra({ ...customExtra, [x.var]: false });
+                            setExtraTags({ ...extraTags, [x.var]: x.tagNow && x.tagNow !== "-" ? x.tagNow : x.defaultTag });
+                          }}
+                        >
+                          목록에서 고르기
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
               ))}
@@ -393,7 +436,7 @@ function ConfirmRun({
         <Button
           variant="primary"
           icon={needsApproval ? "lock" : "play"}
-          disabled={!ready.length || busy || waitForBuild || !tagOk || (hasImage && !tag)}
+          disabled={!ready.length || busy || waitForBuild || !tagOk || (hasImage && !tag) || !extraOk}
           onClick={() => go()}
           autoFocus
         >
@@ -403,6 +446,9 @@ function ConfirmRun({
     </>
   );
 }
+
+/** A 시험 빌드 tag (server: githooks.TEST_TAG_PREFIX): the registry has no such image, so it is never deployed. */
+export const isTestTag = (t?: string | null) => !!t && t.startsWith("wharfline-test-");
 
 /** Short name of an image: the last part of its ref (ghcr.io/acme/api-server → api-server). */
 function imageName(ref: string) {
@@ -480,7 +526,12 @@ function BuildPanel({ build, selected, waiting, onUseTag, onWait }: { build: Bui
           </label>
         </>
       )}
-      {build.status === "success" && build.tag && (
+      {build.status === "success" && isTestTag(build.tag) && (
+        <div className="text-[12.5px] text-muted">
+          시험 빌드예요. <span className="font-mono">{build.tag}</span>는 레지스트리에 없는 태그라 배포할 수 없어요.
+        </div>
+      )}
+      {build.status === "success" && build.tag && !isTestTag(build.tag) && (
         <div className="flex items-center gap-2 flex-wrap text-[12.5px]">
           <span>
             새 이미지 <span className="font-mono font-medium">{build.tag}</span>가 올라왔어요.

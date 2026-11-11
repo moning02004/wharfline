@@ -304,21 +304,38 @@ def images_for_package(db: Session, owner: str, name: str) -> list[m.Image]:
     return images_for_path(db, f"{owner}/{name}")
 
 
+TEST_TAG_PREFIX = "wharfline-test-"  # tags of 시험 빌드: shown on the build, never stored on images or deployed
+
+
+def is_test_tag(tag: str | None) -> bool:
+    return bool(tag) and str(tag).startswith(TEST_TAG_PREFIX)
+
+
+def _recent_build(db: Session, repo: str) -> m.Build | None:
+    return db.scalar(select(m.Build).where(m.Build.repo == repo, m.Build.tag.is_(None),
+                                           m.Build.updated_at > time.time() - 3600).order_by(m.Build.updated_at.desc()).limit(1))
+
+
 def record_tag(db: Session, images: list[m.Image], tag: str) -> list[tuple[m.Image, str]]:
-    """Add a pushed tag to each image. Returns (image, tag) pairs that are new release tags (candidates for auto-deploy)."""
+    """Add a pushed tag to each image. Returns (image, tag) pairs that are new release tags (candidates for auto-deploy).
+
+    A test build tag (wharfline-test-…) only shows on its build: the registry has no such image.
+    """
     released: list[tuple[m.Image, str]] = []
     if tag == "latest":  # a moving pointer, not a version: the newest known tag already plays this role
+        return released
+    if is_test_tag(tag):
+        for repo in {i.source_repo for i in images if i.source_repo}:
+            if b := _recent_build(db, repo):
+                b.tag = tag
         return released
     for img in images:
         if any(t.name == tag for t in img.tags):
             continue
         img.tags.append(m.ImageTag(name=tag, digest="", pushed="방금", pushed_at=time.time()))
         s.log_act(db, "새 이미지 태그", f"{img.ref}:{tag}")
-        if img.source_repo:
-            recent = db.scalar(select(m.Build).where(m.Build.repo == img.source_repo, m.Build.tag.is_(None),
-                                                     m.Build.updated_at > time.time() - 3600).order_by(m.Build.updated_at.desc()).limit(1))
-            if recent:
-                recent.tag = tag
+        if img.source_repo and (recent := _recent_build(db, img.source_repo)):
+            recent.tag = tag
         released.append((img, tag))  # each job's auto-deploy rule decides which of these deploy
     return released
 

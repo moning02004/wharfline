@@ -134,3 +134,22 @@ def test_hook_rule_decides_which_tags_deploy(client, login, secret):
     assert push("2026.11.09-1") == {"rule · date"}
     assert push("v2.0.0") == {"rule · v"}
     assert push("sha-abc1234") == set()
+
+
+def test_a_test_build_tag_shows_on_the_build_but_never_lands_on_the_image(client, login, secret, hook_job):
+    send_hook(client, secret, "workflow_run", run_payload(5901, "in_progress"))
+    before = last_run_no(client)
+    pkg = {"action": "created", "package": {"type": "container", "name": "hook-demo", "version": "wharfline-test-abc123", "owner": {"login": "acme"}}}
+    r = send_hook(client, secret, "package", pkg).json()
+    assert "tags" not in r  # nothing recorded, nothing auto-deployed
+    assert last_run_no(client) == before
+    assert _build(client, hook_job["id"])["tag"] == "wharfline-test-abc123"
+    image = next(i for i in client.get("/api/registries").json()["images"] if i["ref"] == IMAGE)
+    assert "wharfline-test-abc123" not in [t["name"] for t in image["tags"]]
+
+
+def test_a_known_tag_can_be_deleted(client, login, hook_job):
+    assert client.post("/api/images", json={"image": f"{IMAGE}:v9.9.9-typo"}).status_code == 200
+    r = client.delete("/api/images/tags", params={"ref": IMAGE, "tag": "v9.9.9-typo"})
+    assert r.status_code == 200 and "v9.9.9-typo" not in [t["name"] for t in r.json()["tags"]]
+    assert client.delete("/api/images/tags", params={"ref": IMAGE, "tag": "v9.9.9-typo"}).status_code == 404

@@ -139,7 +139,7 @@ class Repo(Base):
     commit: Mapped[str] = mapped_column(String(64))
 
     def to_dict(self) -> dict[str, Any]:
-        return {"name": self.name, "kind": self.kind, "url": self.url, "branch": self.branch, "auth": self.auth,
+        return {"id": self.id, "name": self.name, "kind": self.kind, "url": self.url, "branch": self.branch, "auth": self.auth,
                 "commit": self.commit}
 
 

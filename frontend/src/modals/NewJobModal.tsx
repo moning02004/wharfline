@@ -708,7 +708,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 >
                   <TipSpot id="playbook.key">
                   <Select id="jKey" value={reused ? NO_KEY : key} onChange={(e) => setKey(e.target.value)} disabled={!!reused} placeholder={ssh ? "SSH 키를 추가해 주세요" : undefined}>
-                    {reused && <option value={NO_KEY}>연결된 레포의 인증을 그대로 써요</option>}
+                    {reused && <option value={NO_KEY}>연결된 레포의 인증을 그대로 써요 (플레이북 레포에서 바꿔요)</option>}
                     {!reused && !ssh && <option value={NO_KEY}>공개 저장소(키 없음)</option>}
                     {!reused &&
                       keyOptions.map((k) => (

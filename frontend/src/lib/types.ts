@@ -235,6 +235,7 @@ export interface ImageUsage {
 }
 
 export interface Repo {
+  id: number;
   name: string;
   kind: "git" | "local" | "builtin";
   url: string;

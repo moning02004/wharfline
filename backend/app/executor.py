@@ -118,16 +118,18 @@ class Plan:
 
 
 def _registry_rows(db: Session, job: dict) -> list[m.Registry]:
-    """Registries with a pull token for the job's images (main and extra), one per host."""
+    """Registries with a pull token for the job's images (main and extra), one per host.
+
+    docker keeps one login per host, so the first image on a host picks that host's registry (s.registry_for).
+    """
     refs = ([job["image"]] if job.get("image") else []) + [x["ref"] for x in job.get("extraImages") or []]
+    regs = list(db.scalars(select(m.Registry).order_by(m.Registry.ord)))
     out: dict[str, m.Registry] = {}
     for ref in refs:
         host = ref.split("/")[0]
         if host in out:
             continue
-        img = db.get(m.Image, ref)
-        reg = db.get(m.Registry, img.registry_id) if img and img.registry_id else None
-        reg = reg or db.scalar(select(m.Registry).where(m.Registry.host == host).order_by(m.Registry.ord).limit(1))
+        reg = s.registry_for(db, ref, regs)
         if reg and reg.has_secret:
             out[host] = reg
     return list(out.values())

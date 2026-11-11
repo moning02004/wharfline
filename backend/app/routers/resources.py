@@ -24,10 +24,12 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ ·-]{0,63}$")
 def list_registries(db: Session = Depends(get_db)):
     images = list(db.scalars(select(m.Image).order_by(m.Image.ord)))
     jobs = list(db.scalars(select(m.Job).order_by(m.Job.ord)))
+    regs = list(db.scalars(select(m.Registry).order_by(m.Registry.ord)))
+    pulled_by = {i.ref: (r.id if (r := s.registry_for(db, i.ref, regs)) else None) for i in images}
     return {
-        "registries": [{**r.to_dict(), "imageCount": sum(1 for i in images if i.registry_id == r.id)}
-                       for r in db.scalars(select(m.Registry).order_by(m.Registry.ord))],
-        "images": [{**i.to_dict(), "usedBy": image_users(jobs, i.ref), "usage": image_usage(jobs, i.ref)} for i in images],
+        "registries": [{**r.to_dict(), "imageCount": sum(1 for v in pulled_by.values() if v == r.id)} for r in regs],
+        "images": [{**i.to_dict(), "registry": pulled_by[i.ref], "usedBy": image_users(jobs, i.ref), "usage": image_usage(jobs, i.ref)}
+                   for i in images],
     }
 
 
@@ -71,24 +73,74 @@ def registry_name(host: str) -> str:
     return "Gitea"
 
 
+NAMESPACE_RE = re.compile(r"^[a-z0-9._-]+(/[a-z0-9._-]+)*$")
+
+
+def registry_auth(name: str, has_token: bool) -> str:
+    if not has_token:
+        return "없음 · 공개 이미지"
+    scope = "read:packages" if name.startswith("GitHub") else "read_registry" if name.startswith("GitLab") else "read:package"
+    return f"토큰 · {scope}"
+
+
+def check_registry_fields(body: "RegistryIn", has_token: bool) -> tuple[str, str]:
+    ns = body.namespace.strip().strip("/").lower()
+    if ns and not NAMESPACE_RE.match(ns):
+        raise HTTPException(400, "조직 또는 사용자는 ermore나 group/sub처럼 넣어 주세요.")
+    user = body.user.strip()
+    if has_token and not user:
+        raise HTTPException(400, "토큰을 쓰려면 로그인 계정도 넣어 주세요.")
+    return ns, user
+
+
 @router.post("/registries", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def add_registry(body: RegistryIn, db: Session = Depends(get_db)):
     host = body.host.strip().lower().removeprefix("https://").rstrip("/")
     if not re.match(r"^[a-z0-9.-]+(:\d+)?$", host):
         raise HTTPException(400, "주소는 ghcr.io나 git.example.com처럼 호스트 이름만 넣어 주세요.")
     token = body.token.strip()
-    if token and not body.user.strip():
-        raise HTTPException(400, "토큰을 쓰려면 사용자 이름도 넣어 주세요.")
+    ns, user = check_registry_fields(body, bool(token))
+    if db.scalar(select(m.Registry).where(m.Registry.host == host, m.Registry.namespace == ns)):
+        raise HTTPException(400, f"{host}/{ns} 레지스트리가 이미 있어요. 토큰을 바꾸려면 목록에서 편집해 주세요.")
     name = registry_name(host)
-    scope = "read:packages" if name.startswith("GitHub") else "read:package"
-    reg = m.Registry(id=s.new_id("r"), name=name, host=host, namespace=body.namespace.strip(), user=body.user.strip(),
-                     auth=f"토큰 · {scope}" if token else "없음 · 공개 이미지")
+    reg = m.Registry(id=s.new_id("r"), name=name, host=host, namespace=ns, user=user, auth=registry_auth(name, bool(token)))
     if token:
         reg.set_secret(token)  # envelope-encrypted; never returned
     db.add(reg)
     s.log_act(db, "레지스트리 추가", f"{host}/{reg.namespace}")
     db.commit()
     return reg.to_dict()
+
+
+@router.put("/registries/{reg_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def update_registry(reg_id: str, body: RegistryIn, db: Session = Depends(get_db)):
+    """Change the namespace, user or token. An empty token keeps the saved one; the host stays (add another registry instead)."""
+    reg = db.get(m.Registry, reg_id)
+    if not reg:
+        raise HTTPException(404, "레지스트리를 찾을 수 없어요.")
+    token = body.token.strip()
+    ns, user = check_registry_fields(body, bool(token) or reg.has_secret)
+    if db.scalar(select(m.Registry).where(m.Registry.host == reg.host, m.Registry.namespace == ns, m.Registry.id != reg.id)):
+        raise HTTPException(400, f"{reg.host}/{ns} 레지스트리가 이미 있어요.")
+    reg.namespace, reg.user = ns, user
+    if token:
+        reg.set_secret(token)
+    reg.auth = registry_auth(reg.name, reg.has_secret)
+    s.log_act(db, "레지스트리 수정", f"{reg.host}/{ns}" + (" · 토큰 교체" if token else ""), "warn" if token else "ok")
+    db.commit()
+    return reg.to_dict()
+
+
+@router.delete("/registries/{reg_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def delete_registry(reg_id: str, db: Session = Depends(get_db)):
+    """Forget a registry and its token. Its images stay; they are then pulled without a login (or by another registry on the host)."""
+    reg = db.get(m.Registry, reg_id)
+    if not reg:
+        raise HTTPException(404, "레지스트리를 찾을 수 없어요.")
+    s.log_act(db, "레지스트리 삭제", f"{reg.host}/{reg.namespace}", "warn")
+    db.delete(reg)  # images.registry_id -> NULL
+    db.commit()
+    return {"ok": True}
 
 
 class ImageIn(BaseModel):
@@ -106,6 +158,19 @@ def add_image(body: ImageIn, db: Session = Depends(get_db)):
     s.log_act(db, "이미지 등록" if created else "이미지 태그 추가", f"{ref} ({', '.join(added) or '새 태그 없음'})")
     db.commit()
     return {**img.to_dict(), "created": created, "addedTags": added}
+
+
+@router.delete("/images/tags", dependencies=[Depends(require("resources"))])
+def delete_image_tag(ref: str, tag: str, db: Session = Depends(get_db)):
+    """Forget one tag Wharfline knows for an image (a mistyped one, or one that was removed from the registry)."""
+    img = db.get(m.Image, ref)
+    t = next((x for x in img.tags if x.name == tag), None) if img else None
+    if not t:
+        raise HTTPException(404, "태그를 찾을 수 없어요.")
+    img.tags.remove(t)  # delete-orphan removes the row
+    s.log_act(db, "이미지 태그 삭제", f"{ref}:{tag}", "warn")
+    db.commit()
+    return img.to_dict()
 
 
 @router.delete("/images", dependencies=[Depends(require("resources")), Depends(require_sudo)])
@@ -134,6 +199,52 @@ def list_repos(db: Session = Depends(get_db)):
     jobs = list(db.scalars(select(m.Job).order_by(m.Job.ord)))
     repos = db.scalars(select(m.Repo).order_by((m.Repo.kind != "builtin"), m.Repo.id))
     return [{**r.to_dict(), "usedBy": [{"job": j.name, "path": j.book} for j in jobs if j.repo == r.name]} for r in repos]
+
+
+def git_repo(db: Session, repo_id: int) -> m.Repo:
+    repo = db.get(m.Repo, repo_id)
+    if not repo:
+        raise HTTPException(404, "레포를 찾을 수 없어요.")
+    if repo.kind != "git":
+        raise HTTPException(400, "Wharfline 기본 플레이북은 바꾸거나 지울 수 없어요.")
+    return repo
+
+
+class RepoKeyIn(BaseModel):
+    key: str = ""  # key store name; "" = a public repo (HTTPS only)
+
+
+@router.put("/repos/{repo_id}/key", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def change_repo_key(repo_id: int, body: RepoKeyIn, db: Session = Depends(get_db)):
+    """Use another SSH key or access token for a repo, e.g. after the old token was revoked on the Git host."""
+    repo = git_repo(db, repo_id)
+    new, auth = s.repo_key_for(db, repo.url, body.key.strip())
+    old = s.repo_key(db, repo)
+    if old is not new:
+        if old and old.used_count:
+            old.used_count -= 1
+        if new:
+            new.used_count += 1
+    repo.auth = auth
+    s.log_act(db, "플레이북 레포 키 변경", f"{repo.name} · {auth}", "warn")
+    db.commit()
+    return repo.to_dict()
+
+
+@router.delete("/repos/{repo_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def delete_repo(repo_id: int, db: Session = Depends(get_db)):
+    repo = git_repo(db, repo_id)
+    users = list(db.scalars(select(m.Job.name).where(m.Job.repo == repo.name).order_by(m.Job.name)))
+    if users:
+        names = ", ".join(users[:3]) + (f" 외 {len(users) - 3}개" if len(users) > 3 else "")
+        raise HTTPException(400, f"배포 작업 {len(users)}개에서 쓰고 있어 지울 수 없어요: {names}")
+    key = s.repo_key(db, repo)
+    if key and key.used_count:
+        key.used_count -= 1
+    s.log_act(db, "플레이북 레포 삭제", f"{repo.name} ({repo.url} · {repo.branch})", "warn")
+    db.delete(repo)
+    db.commit()
+    return {"ok": True}
 
 
 # ---------- inventory ----------

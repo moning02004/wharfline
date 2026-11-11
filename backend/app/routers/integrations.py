@@ -168,12 +168,9 @@ class TestIn(BaseModel):
     provider: Literal["gitea", "github", "gitlab"] = "gitea"
 
 
-def next_tag(img: m.Image) -> str:
-    for t in img.tags:
-        parts = t.name.lstrip("v").split(".")
-        if t.name.startswith("v") and len(parts) == 3 and all(p.isdigit() for p in parts):
-            return f"v{parts[0]}.{parts[1]}.{int(parts[2]) + 1}"
-    return "v0.1.0"
+def test_tag() -> str:
+    """A tag no real build pushes: it shows on the build but never lands on the image or deploys (githooks.is_test_tag)."""
+    return f"{githooks.TEST_TAG_PREFIX}{random.getrandbits(24):06x}"
 
 
 STEPS = ["Set up job", "Checkout", "Login to registry", "Build and push", "Post job"]
@@ -227,7 +224,7 @@ async def _simulate(ref: str, fail: bool, provider: str) -> None:
     with SessionLocal() as db:
         img = db.get(m.Image, ref)
         owner, name = ref.split("/")[-2:]
-        repo, tag = img.source_repo or f"{owner}/{name}", next_tag(img)
+        repo, tag = img.source_repo or f"{owner}/{name}", test_tag()
     seq = gitlab_sequence(repo, tag, fail) if provider == "gitlab" else actions_sequence(provider, repo, owner, name, tag, fail)
     for delay, event, payload in seq:
         await asyncio.sleep(delay)

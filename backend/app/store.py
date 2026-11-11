@@ -230,15 +230,28 @@ def repo_by_name(db: Session, name: str | None) -> dict | None:
     return r.to_dict() if r else None
 
 
+def registry_for(db: Session, ref: str, registries: list[m.Registry] | None = None) -> m.Registry | None:
+    """The registry whose token pulls `ref`, read from the image address itself.
+
+    The host decides (ghcr.io, registry.gitlab.com, git.example.com …). Among several registries on one
+    host, the one whose namespace starts the image path wins (ghcr.io/acme/api -> namespace "acme"),
+    then one without a namespace, then the first added. No match: a public image.
+    """
+    host, _, path = ref.partition("/")
+    regs = registries if registries is not None else list(db.scalars(select(m.Registry).order_by(m.Registry.ord)))
+    same = [r for r in regs if r.host.strip().lower() == host]
+    owned = [r for r in same if r.namespace and (path + "/").startswith(r.namespace.strip("/") + "/")]
+    if owned:
+        return max(owned, key=lambda r: len(r.namespace))
+    return next((r for r in same if not r.namespace), same[0] if same else None)
+
+
 def registry_of(db: Session, job: dict) -> dict:
-    """The registry the image was registered with; falls back to the first one on the same host."""
+    """The registry that pulls the job's image (see registry_for)."""
     if not job.get("image"):
         return {"host": "", "user": "", "public": True}
-    host = job["image"].split("/")[0]
-    img = db.get(m.Image, job["image"])
-    r = db.get(m.Registry, img.registry_id) if img and img.registry_id else None
-    r = r or db.scalar(select(m.Registry).where(m.Registry.host == host).order_by(m.Registry.ord))
-    return r.to_dict() if r else {"host": host, "user": "", "public": True}
+    r = registry_for(db, job["image"])
+    return r.to_dict() if r else {"host": job["image"].split("/")[0], "user": "", "public": True}
 
 
 def groups_of(inv: dict | None) -> dict[str, list[dict]]:
@@ -372,8 +385,7 @@ def ensure_image(db: Session, ref: str, tag: str = "latest", pushed: str = "방�
     img = db.get(m.Image, ref)
     created = img is None
     if not img:
-        host = ref.split("/")[0]
-        reg = db.scalar(select(m.Registry).where(m.Registry.host == host).order_by(m.Registry.ord).limit(1))
+        reg = registry_for(db, ref)
         img = m.Image(ref=ref, registry_id=reg.id if reg else None)
         db.add(img)
     added: list[str] = []
@@ -403,6 +415,29 @@ GIT_URL_RE = re.compile(r"^(git@|ssh://|https://)")
 BRANCH_RE = re.compile(r"^(?!.*\.\.)[A-Za-z0-9._/-]{1,128}$")
 
 
+def repo_key_for(db: Session, url: str, key_name: str) -> tuple[m.Key | None, str]:
+    """The key a repo at `url` would use, and its auth label. SSH urls need an SSH key; HTTPS urls take an optional token."""
+    from fastapi import HTTPException
+
+    is_ssh = bool(re.match(r"^(git@|ssh://)", url))
+    if not key_name:
+        if is_ssh:
+            raise HTTPException(400, "SSH 주소는 SSH 키가 있어야 해요.")
+        return None, "공개 저장소"
+    key = db.scalar(select(m.Key).where(m.Key.name == key_name))
+    if not key:
+        raise HTTPException(400, "고른 키를 찾을 수 없어요.")
+    if key.kind != ("ssh" if is_ssh else "token"):
+        raise HTTPException(400, "SSH 주소에는 SSH 키를, HTTPS 주소에는 액세스 토큰을 골라 주세요.")
+    return key, ("SSH 키 · " if is_ssh else "토큰 · ") + key.name
+
+
+def repo_key(db: Session, repo: m.Repo) -> m.Key | None:
+    """The key a repo uses now ("토큰 · name" / "SSH 키 · name"), if any."""
+    name = repo.auth.split(" · ", 1)[1] if " · " in (repo.auth or "") else ""
+    return db.scalar(select(m.Key).where(m.Key.name == name)) if name else None
+
+
 def ensure_git_repo(db: Session, url: str, branch: str, key_name: str) -> m.Repo:
     """Reuse the repo with the same url+branch (the key is then ignored), or create one.
 
@@ -420,22 +455,12 @@ def ensure_git_repo(db: Session, url: str, branch: str, key_name: str) -> m.Repo
     existing = db.scalar(select(m.Repo).where(m.Repo.url == u, m.Repo.branch == br))
     if existing:
         return existing
-    is_ssh = bool(re.match(r"^(git@|ssh://)", u))
-    key = None
-    if key_name:
-        key = db.scalar(select(m.Key).where(m.Key.name == key_name))
-        if not key:
-            raise HTTPException(400, "고른 키를 찾을 수 없어요.")
-        if key.kind != ("ssh" if is_ssh else "token"):
-            raise HTTPException(400, "SSH 주소에는 SSH 키를, HTTPS 주소에는 액세스 토큰을 골라 주세요.")
-    elif is_ssh:
-        raise HTTPException(400, "SSH 주소는 SSH 키가 있어야 해요.")
+    key, auth = repo_key_for(db, u, key_name)
     base = found.group(1)
     taken = set(db.scalars(select(m.Repo.name).where(m.Repo.name.startswith(base, autoescape=True))))
     name, n = base, 2
     while name in taken:
         name, n = f"{base}-{n}", n + 1
-    auth = (("SSH 키 · " if is_ssh else "토큰 · ") + key.name) if key else "공개 저장소"
     commit = hashlib.sha1(f"{u}#{br}".encode()).hexdigest()[:7]  # simulated: a real runner reads HEAD
     repo = m.Repo(name=name, kind="git", url=u, branch=br, auth=auth, commit=commit)
     if key:

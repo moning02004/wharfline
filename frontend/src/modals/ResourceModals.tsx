@@ -292,11 +292,12 @@ function ServerPrepSteps({ user, info, last }: { user: string; info: PublicKeyIn
 
 /* ---------- registry ---------- */
 
-export function NewRegistryModal({ onClose }: { onClose: () => void }) {
+/** Add a registry, or edit one (`reg`): user, namespace and token. An empty token keeps the saved one. */
+export function NewRegistryModal({ onClose, reg }: { onClose: () => void; reg?: Registry }) {
   const { withSudo, refresh, toast } = useApp();
-  const [host, setHost] = useState("ghcr.io");
-  const [ns, setNs] = useState("acme-labs");
-  const [user, setUser] = useState("deploy-bot");
+  const [host, setHost] = useState(reg?.host ?? "");
+  const [ns, setNs] = useState(reg?.namespace ?? "");
+  const [user, setUser] = useState(reg?.user ?? "");
   const [tok, setTok] = useState("");
   const [err, setErr] = useState("");
   const isGh = /(^|\.)ghcr\.io$/.test(host.trim());
@@ -306,10 +307,11 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
     e.preventDefault();
     withSudo("레지스트리 토큰 저장", async () => {
       try {
-        await api.post("/registries", { host, namespace: ns, user, token: tok });
+        if (reg) await api.put(`/registries/${reg.id}`, { host: reg.host, namespace: ns, user, token: tok });
+        else await api.post("/registries", { host, namespace: ns, user, token: tok });
         onClose();
         refresh();
-        toast("연결을 확인하고 저장했어요");
+        toast(reg ? (tok ? "토큰을 바꿨어요" : "저장했어요") : "레지스트리를 추가했어요");
       } catch (e) {
         if ((e as { sudoRequired?: boolean }).sudoRequired) throw e;
         setErr(errMsg(e));
@@ -319,17 +321,25 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <ModalHead title="레지스트리 추가" sub="이미지를 받을 때만 쓰는 읽기 전용 토큰을 넣어 주세요." onClose={onClose} />
+      <ModalHead
+        title={reg ? "레지스트리 편집" : "레지스트리 추가"}
+        sub={reg ? `${reg.host}/${reg.namespace}` : "이미지를 받을 때만 쓰는 읽기 전용 토큰을 넣어 주세요."}
+        onClose={onClose}
+      />
       <form id="regForm" onSubmit={submit} className="contents">
         <ModalBody>
-          <Field label="주소" htmlFor="gHost">
-            <Input id="gHost" mono spellCheck={false} value={host} onChange={(e) => setHost(e.target.value)} />
+          <Field label="주소" htmlFor="gHost" hint={reg ? "주소는 바꿀 수 없어요. 다른 주소라면 레지스트리를 새로 추가해 주세요." : "이미지 주소의 맨 앞부분이에요. 예: ghcr.io, registry.gitlab.com, git.example.com"}>
+            <Input id="gHost" mono spellCheck={false} placeholder="ghcr.io" disabled={!!reg} value={host} onChange={(e) => setHost(e.target.value)} />
           </Field>
-          <Field label="조직 또는 사용자" htmlFor="gNs">
-            <Input id="gNs" mono value={ns} onChange={(e) => setNs(e.target.value)} />
+          <Field
+            label="이미지 소유자 (조직 또는 사용자)"
+            htmlFor="gNs"
+            hint="이미지가 들어 있는 곳이에요. 이미지 주소에서 주소 바로 다음 부분이에요. 예: ghcr.io/ermore/app → ermore. 같은 주소에 레지스트리가 여럿이면 이걸로 골라요."
+          >
+            <Input id="gNs" mono spellCheck={false} placeholder="ermore" value={ns} onChange={(e) => setNs(e.target.value)} />
           </Field>
-          <Field label="사용자 이름" htmlFor="gUser">
-            <Input id="gUser" mono value={user} onChange={(e) => setUser(e.target.value)} />
+          <Field label="로그인 계정" htmlFor="gUser" hint="토큰을 만든 계정이에요. docker login -u 에 들어가요. 조직 이미지라도 로그인은 사람이나 봇 계정으로 해요.">
+            <Input id="gUser" mono spellCheck={false} placeholder="deploy-bot" value={user} onChange={(e) => setUser(e.target.value)} />
           </Field>
           <Field
             label="토큰"
@@ -339,10 +349,20 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
                 ? "GitHub Container Registry예요. 토큰에는 read:packages 권한만 주세요."
                 : isGl
                   ? "GitLab Container Registry예요. 토큰에는 read_registry 권한만 주세요."
-                  : "Gitea 레지스트리로 연결해요. 토큰에는 read:package 권한만 주세요."
+                  : host.trim()
+                    ? "Gitea 레지스트리로 연결해요. 토큰에는 read:package 권한만 주세요."
+                    : "이미지를 받는 읽기 권한만 준 토큰을 넣어 주세요."
             }
           >
-            <Input id="gTok" mono type="password" placeholder="ghp_… 또는 Gitea 토큰" autoComplete="off" value={tok} onChange={(e) => setTok(e.target.value)} />
+            <Input
+              id="gTok"
+              mono
+              type="password"
+              placeholder={reg?.hasSecret ? "비워 두면 저장된 토큰을 그대로 써요" : "ghp_…, glpat-… 또는 Gitea 토큰"}
+              autoComplete="off"
+              value={tok}
+              onChange={(e) => setTok(e.target.value)}
+            />
           </Field>
           <ErrorText>{err}</ErrorText>
           <Banner icon="lock" title="토큰은 암호화해 저장하고 다시 보여주지 않아요">
@@ -353,7 +373,7 @@ export function NewRegistryModal({ onClose }: { onClose: () => void }) {
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
         <Button variant="primary" type="submit" form="regForm">
-          연결 테스트 후 저장
+          저장
         </Button>
       </ModalFoot>
     </>
@@ -382,10 +402,15 @@ export function parseImage(text: string): { ref: string; tag: string } | { error
   return { ref, tag };
 }
 
-/** The registered registry whose token pulls this ref, matched by host like the server does. */
+/** The registered registry whose token pulls this ref, like the server's registry_for: the host, then the longest
+ *  namespace that starts the image path, then one without a namespace, then the first on the host. */
 export function registryFor(ref: string, registries: Registry[]): Registry | undefined {
-  const host = ref.split("/")[0];
-  return registries.find((r) => r.host.trim().toLowerCase() === host);
+  const [host, ...rest] = ref.split("/");
+  const path = rest.join("/") + "/";
+  const same = registries.filter((r) => r.host.trim().toLowerCase() === host);
+  const owned = same.filter((r) => r.namespace && path.startsWith(r.namespace.replace(/^\/+|\/+$/g, "") + "/"));
+  if (owned.length) return owned.reduce((a, b) => (b.namespace.length > a.namespace.length ? b : a));
+  return same.find((r) => !r.namespace) ?? same[0];
 }
 
 /** Register an image by typing it the way you would for docker pull. */

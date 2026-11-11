@@ -6,12 +6,50 @@ import type { Build, GitProvider, Image, ImageUsage, Inventory as Inv, Key, Regi
 import { HostKeyModal, NewHostModal, NewImageModal, NewInventoryModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, Card, CardHeader, Chip, Dot, Field, Input, Loading, PageHeader, Seg, TableWrap, Textarea } from "../components/ui";
+import { Banner, Button, Card, CardHeader, Chip, Dot, ErrorText, Field, Input, Loading, PageHeader, Seg, Select, TableWrap, Textarea } from "../components/ui";
 import { PROVIDER_NAME } from "../components/BuildBadge";
 
 const Mono = ({ children }: { children: React.ReactNode }) => <span className="font-mono">{children}</span>;
 
 /* ---------- registries ---------- */
+
+function RegistryActions({ g }: { g: Registry }) {
+  const { openModal, withSudo, refresh, toast } = useApp();
+  const del = () =>
+    openModal((c) => (
+      <ConfirmDelete
+        title="레지스트리 삭제"
+        action="삭제"
+        onClose={c}
+        onConfirm={() =>
+          withSudo("레지스트리 삭제", async () => {
+            await api.del(`/registries/${g.id}`);
+            refresh();
+            toast(`${g.host}/${g.namespace} 레지스트리를 지웠어요`);
+          })
+        }
+      >
+        <span className="font-mono font-medium">
+          {g.host}/{g.namespace}
+        </span>
+        와(과) 저장된 토큰을 지워요.
+        {g.imageCount > 0 && (
+          <>
+            {" "}
+            이 레지스트리로 받던 이미지 {g.imageCount}개는 이제 로그인 없이 받거나(같은 주소에 다른 레지스트리가 있으면 그걸로) 받아요. 비공개 이미지라면 배포가 실패해요.
+          </>
+        )}
+      </ConfirmDelete>
+    ));
+  return (
+    <span className="inline-flex gap-1">
+      <Button size="sm" variant="ghost" icon="edit" onClick={() => openModal((c) => <NewRegistryModal reg={g} onClose={c} />)}>
+        편집
+      </Button>
+      <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label={`${g.host}/${g.namespace} 레지스트리 삭제`} title="레지스트리 삭제" onClick={del} />
+    </span>
+  );
+}
 
 export function Registries() {
   const { data } = useApi<{ registries: Registry[]; images: Image[] }>("/registries");
@@ -39,12 +77,13 @@ export function Registries() {
                 <th>계정</th>
                 <th>인증</th>
                 <th>이미지</th>
+                {can("resources") && <th />}
               </tr>
             </thead>
             <tbody>
               {!data.registries.length && (
                 <tr>
-                  <td colSpan={5} className="text-center text-muted py-6 !whitespace-normal">
+                  <td colSpan={can("resources") ? 6 : 5} className="text-center text-muted py-6 !whitespace-normal">
                     등록한 레지스트리가 없어요. 공개 이미지만 쓴다면 그대로 두어도 돼요.
                   </td>
                 </tr>
@@ -58,6 +97,11 @@ export function Registries() {
                   <td className="font-mono text-muted">{g.user}</td>
                   <td className="text-muted">{g.auth}</td>
                   <td className="tabular-nums">{g.imageCount}개</td>
+                  {can("resources") && (
+                    <td className="text-right">
+                      <RegistryActions g={g} />
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -83,6 +127,8 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
   const test = (ref: string, fail: boolean) =>
     runAction(() => api.post("/integrations/git/test", { ref, fail, provider }), fail ? "실패하는 시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요." : "시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요.").catch(() => toast("시험 빌드를 보내지 못했어요"));
 
+  const delTag = (ref: string, tag: string) => runAction(() => api.del(`/images/tags?ref=${encodeURIComponent(ref)}&tag=${encodeURIComponent(tag)}`), `${tag} 태그를 지웠어요`);
+  const showTags = (i: Image) => openModal((c) => <ImageTagsModal image={i} canDelete={manage} onDelete={delTag} onClose={c} />);
   const del = (i: Image) =>
     openModal((c) => (
       <ConfirmDelete
@@ -137,9 +183,31 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
               const t = i.tags[0];
               return (
                 <tr key={i.ref}>
-                  <td className="font-mono">{i.ref}</td>
+                  <td>
+                    <div className="font-mono">{i.ref}</div>
+                    <div className="text-[12px] text-muted">
+                      {(() => {
+                        const r = registries.find((x) => x.id === i.registry);
+                        return r ? (
+                          <>
+                            <span className="font-mono">
+                              {r.host}/{r.namespace}
+                            </span>{" "}
+                            {r.hasSecret ? "토큰으로 받아요" : "레지스트리(토큰 없음)"}
+                          </>
+                        ) : (
+                          "공개 이미지로 받아요"
+                        );
+                      })()}
+                    </div>
+                  </td>
                   <td>
                     <span className="font-mono">{t?.name ?? "-"}</span> <span className="text-faint text-[12px]">{t?.pushed}</span>
+                    {i.tags.length > 0 && (
+                      <button type="button" className="ml-1.5 text-[12px] text-accent hover:underline" onClick={() => showTags(i)}>
+                        태그 {i.tags.length}개
+                      </button>
+                    )}
                   </td>
                   <td>
                     {editing === i.ref ? (
@@ -215,6 +283,46 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
         </table>
       </TableWrap>
     </Card>
+  );
+}
+
+/** Every tag Wharfline knows for an image, newest first; a wrong one (typo, test, removed from the registry) can be deleted. */
+function ImageTagsModal({ image, canDelete, onDelete, onClose }: { image: Image; canDelete: boolean; onDelete: (ref: string, tag: string) => Promise<unknown>; onClose: () => void }) {
+  const [tags, setTags] = useState(image.tags);
+  return (
+    <>
+      <ModalHead title="이미지 태그" sub={image.ref} onClose={onClose} />
+      <ModalBody>
+        <div className="text-[12.5px] text-muted">
+          Wharfline이 아는 태그예요. 실행할 때 고르는 목록과 latest가 가리키는 태그가 여기서 나와요. 레지스트리의 이미지는 지우지 않아요.
+        </div>
+        <div className="rounded-lg border border-line divide-y divide-line max-h-[360px] overflow-auto">
+          {tags.map((t) => (
+            <div key={t.name} className="flex items-center gap-2 px-3 py-2 text-[13px]">
+              <span className="font-mono flex-1 truncate">{t.name}</span>
+              <span className="text-faint text-[12px]">{t.pushed}</span>
+              {canDelete && (
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  iconOnly
+                  icon="trash"
+                  aria-label={`${t.name} 태그 삭제`}
+                  title="태그 삭제"
+                  onClick={async () => {
+                    if ((await onDelete(image.ref, t.name)) !== false) setTags((x) => x.filter((y) => y.name !== t.name));
+                  }}
+                />
+              )}
+            </div>
+          ))}
+          {!tags.length && <div className="px-3 py-4 text-center text-muted text-[13px]">아는 태그가 없어요.</div>}
+        </div>
+      </ModalBody>
+      <ModalFoot>
+        <Button onClick={onClose}>닫기</Button>
+      </ModalFoot>
+    </>
   );
 }
 
@@ -389,7 +497,26 @@ function SecretModal({ secret, onClose }: { secret: string; onClose: () => void 
 
 export function Repos() {
   const { data } = useApi<Repo[]>("/repos");
+  const { openModal, can, withSudo, refresh, toast } = useApp();
+  const manage = can("resources");
   if (!data) return <Loading />;
+  const del = (r: Repo) =>
+    openModal((c) => (
+      <ConfirmDelete
+        title="플레이북 레포 삭제"
+        action="삭제"
+        onClose={c}
+        onConfirm={() =>
+          withSudo("플레이북 레포 삭제", async () => {
+            await api.del(`/repos/${r.id}`);
+            refresh();
+            toast(`${r.name}을(를) 지웠어요`);
+          })
+        }
+      >
+        <span className="font-mono font-medium">{r.name}</span> ({r.branch})을(를) Wharfline에서 지워요. Git 저장소와 키 저장소의 키는 그대로예요.
+      </ConfirmDelete>
+    ));
   const builtin = data.find((r) => r.kind === "builtin");
   const repos = data.filter((r) => r.kind !== "builtin");
   return (
@@ -430,12 +557,13 @@ export function Repos() {
                 <th>브랜치</th>
                 <th>인증</th>
                 <th>쓰는 작업</th>
+                {manage && <th />}
               </tr>
             </thead>
             <tbody>
               {!repos.length && (
                 <tr>
-                  <td colSpan={4} className="text-center text-muted py-6 !whitespace-normal">
+                  <td colSpan={manage ? 5 : 4} className="text-center text-muted py-6 !whitespace-normal">
                     아직 레포가 없어요. 배포 작업을 만들 때 플레이북의 Git 주소를 넣으면 여기에 생겨요.
                   </td>
                 </tr>
@@ -454,6 +582,27 @@ export function Repos() {
                   <td>
                     <UsedBy items={r.usedBy} />
                   </td>
+                  {manage && (
+                    <td className="text-right">
+                      {r.kind === "git" && (
+                        <span className="inline-flex gap-1">
+                          <Button size="sm" variant="ghost" icon="key" onClick={() => openModal((c) => <RepoKeyModal repo={r} onClose={c} />)}>
+                            키 바꾸기
+                          </Button>
+                          <Button
+                            size="sm"
+                            variant="ghost"
+                            iconOnly
+                            icon="trash"
+                            aria-label={`${r.name} 레포 삭제`}
+                            title={r.usedBy.length ? "배포 작업에서 쓰고 있어 지울 수 없어요" : "레포 삭제"}
+                            disabled={r.usedBy.length > 0}
+                            onClick={() => del(r)}
+                          />
+                        </span>
+                      )}
+                    </td>
+                  )}
                 </tr>
               ))}
             </tbody>
@@ -463,6 +612,66 @@ export function Repos() {
       <Banner icon="shield" title="플레이북에 넘기는 변수는 정해져 있어요">
         <Mono>image</Mono>, <Mono>image_tag</Mono>, <Mono>image_ref</Mono>, <Mono>env_file</Mono>, <Mono>app_name</Mono>만 넘겨요. 이미지나 환경 변수가 없는 작업이면 그 변수는 빠져요. 화면에서 extra-vars나 임의 명령은 넣을 수 없어요.
       </Banner>
+    </>
+  );
+}
+
+/** Pick another SSH key or access token for a repo, e.g. after the old token was revoked on the Git host. */
+function RepoKeyModal({ repo, onClose }: { repo: Repo; onClose: () => void }) {
+  const { openModal, withSudo, refresh, toast } = useApp();
+  const ssh = /^(git@|ssh:\/\/)/.test(repo.url);
+  const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === (ssh ? "ssh" : "token"));
+  const current = repo.auth.includes(" · ") ? repo.auth.split(" · ").slice(1).join(" · ") : "";
+  const [key, setKey] = useState(current);
+  const [err, setErr] = useState("");
+
+  const save = () =>
+    withSudo("플레이북 레포 키 변경", async () => {
+      try {
+        await api.put(`/repos/${repo.id}/key`, { key });
+        refresh();
+        toast(`${repo.name}의 인증을 바꿨어요`);
+        onClose();
+      } catch (e) {
+        setErr(errMsg(e));
+      }
+    });
+
+  return (
+    <>
+      <ModalHead title="레포 키 바꾸기" sub={`${repo.url} · ${repo.branch}`} onClose={onClose} />
+      <ModalBody>
+        <Field
+          label={ssh ? "SSH 키" : "액세스 토큰"}
+          htmlFor="rKey"
+          hint={ssh ? "저장소에 읽기 권한이 있는 배포 키를 골라 주세요." : "Git 호스트에서 토큰을 새로 만들었다면 먼저 키 저장소에 넣고 골라 주세요."}
+          right={
+            <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
+              {ssh ? "키 추가" : "토큰 추가"}
+            </Button>
+          }
+        >
+          <Select id="rKey" value={key} onChange={(e) => setKey(e.target.value)}>
+            {!ssh && <option value="">공개 저장소(키 없음)</option>}
+            {ssh && !key && <option value="">키를 골라 주세요</option>}
+            {keys.map((k) => (
+              <option key={k.id} value={k.name}>
+                {k.name} · {k.type}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        <ErrorText>{err}</ErrorText>
+        <Banner icon="git" title="이 레포를 쓰는 작업 모두에 적용돼요">
+          {repo.usedBy.length ? repo.usedBy.map((u) => u.job).join(", ") : "아직 쓰는 작업이 없어요."}
+        </Banner>
+      </ModalBody>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" disabled={(ssh && !key) || key === current} onClick={save}>
+          저장
+        </Button>
+      </ModalFoot>
     </>
   );
 }
