@@ -200,6 +200,8 @@ def _fill_play_options(db: Session, plan: Plan, job: dict) -> None:
         user, password = _password_key(db, row.login_key, "접속 계정")
         if not user or user == "-":
             raise PlanError(f"비밀번호 키 {row.login_key}에 로그인 계정이 없어요.")
+        if user == "root":  # keys saved before root was refused
+            raise PlanError(f"비밀번호 키 {row.login_key}의 계정이 root예요. root로는 접속할 수 없어요. 배포용 사용자 키로 바꿔 주세요.")
         plan.login, plan.login_key_name = (user, password), row.login_key
         plan.secrets.append(password)
     if row.become_key:

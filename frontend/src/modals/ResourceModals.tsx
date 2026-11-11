@@ -46,6 +46,7 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
     e.preventDefault();
     if (mode === "password") {
       if (!LOGIN_USER_RE.test(loginUser.trim())) return setErr("로그인 계정은 영문 소문자, 숫자, _, -로 적어 주세요. 예: deploy");
+      if (loginUser.trim() === "root") return setErr("root로는 접속할 수 없어요. 권한이 제한된 배포용 사용자를 만들어 주세요.");
       if (!loginPass) return setErr("비밀번호를 넣어 주세요.");
       if (loginPass.length > 1024) return setErr("비밀번호는 1024자까지예요.");
     }
@@ -127,7 +128,7 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
           )}
           {mode === "password" && (
             <div className="flex flex-col gap-4 animate-fade">
-              <Field label="로그인 계정" htmlFor="kLoginUser">
+              <Field label="로그인 계정" htmlFor="kLoginUser" hint="root는 안 돼요.">
                 <Input id="kLoginUser" mono spellCheck={false} autoComplete="off" value={loginUser} onChange={(e) => setLoginUser(e.target.value)} />
               </Field>
               <Field

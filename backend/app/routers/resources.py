@@ -545,6 +545,8 @@ def add_key(body: KeyIn, db: Session = Depends(get_db)):
         user = body.user.strip()
         if not USER_RE.match(user):
             raise HTTPException(400, "로그인 계정을 확인해 주세요. 영문 소문자, 숫자, -, _ 예: deploy")
+        if user == "root":
+            raise HTTPException(400, "root로는 접속할 수 없어요. 권한이 제한된 배포용 사용자를 만들어 주세요.")
         if not 1 <= len(body.password) <= MAX_PASSWORD:
             raise HTTPException(400, f"비밀번호를 1~{MAX_PASSWORD}자로 넣어 주세요.")
         k.kind, k.type, k.fingerprint = "password", "비밀번호", f"{user} · 비밀번호"

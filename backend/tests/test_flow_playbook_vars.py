@@ -62,7 +62,7 @@ def test_add_a_password_key(client, login):
         assert db.get(m.Key, k["id"]).get_secret() == "pw with spaces 1!"  # stored as typed, encrypted
         assert db.scalar(select(m.Activity).where(m.Activity.action == "로그인 비밀번호 추가", m.Activity.object == "pv-login"))
 
-    bad = [{"user": "Bad User", "password": "x"}, {"user": "deploy", "password": ""}, {"user": "deploy", "password": "x" * 1025}]
+    bad = [{"user": "Bad User", "password": "x"}, {"user": "root", "password": "x"},{"user": "deploy", "password": ""}, {"user": "deploy", "password": "x" * 1025}]
     for i, b in enumerate(bad):
         r = client.post("/api/keys", json={"mode": "password", "name": f"pv-bad-{i}", **b})
         assert r.status_code == 400, b
