@@ -939,6 +939,9 @@ export function Inventory() {
 
 /* ---------- keys ---------- */
 
+/** What a key is used by: tokens by repos, passwords by deploy jobs, SSH keys by inventories. */
+const keyUser = (k: Key) => (k.kind === "token" ? "레포" : k.kind === "password" ? "배포 작업" : "인벤토리");
+
 export function Keys() {
   const { data } = useApi<Key[]>("/keys");
   const { openModal, toast, withSudo, refresh, can } = useApp();
@@ -946,7 +949,7 @@ export function Keys() {
   if (!data) return <Loading />;
 
   const del = (k: Key) => {
-    if (k.usedCount) return toast(`${k.kind === "token" ? "레포" : "인벤토리"} ${k.usedCount}곳에서 쓰고 있어 지울 수 없어요`);
+    if (k.usedCount) return toast(`${keyUser(k)} ${k.usedCount}곳에서 쓰고 있어 지울 수 없어요`);
     withSudo("SSH 키 삭제", async () => {
       await api.del(`/keys/${k.id}`);
       refresh();
@@ -956,7 +959,7 @@ export function Keys() {
 
   return (
     <>
-      <PageHeader title="키 저장소" desc="서버 접속용 SSH 키와 Git 저장소(HTTPS)용 액세스 토큰을 저장해요. 모두 암호화해 저장하고, 저장한 뒤에는 화면에 다시 보여주지 않아요.">
+      <PageHeader title="키 저장소" desc="서버 접속용 SSH 키, Git 저장소(HTTPS)용 액세스 토큰, 서버 로그인 비밀번호를 저장해요. 모두 암호화해 저장하고, 저장한 뒤에는 화면에 다시 보여주지 않아요.">
         {manage && (
           <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
             키 추가
@@ -964,7 +967,7 @@ export function Keys() {
         )}
       </PageHeader>
       <Banner icon="info" title="비공개 키와 토큰은 내려받거나 열람할 수 없어요">
-        SSH 키는 공개 키와 지문만, 토큰은 계정과 끝 4자리만 볼 수 있어요. 키를 잃어버렸다면 새로 만들고 서버의 authorized_keys를 바꾸는 쪽이 안전해요.
+        SSH 키는 공개 키와 지문만, 토큰은 계정과 끝 4자리만, 로그인 비밀번호는 계정만 볼 수 있어요. 키를 잃어버렸다면 새로 만들고 서버의 authorized_keys를 바꾸는 쪽이 안전해요.
       </Banner>
       {data.some((k) => k.sharedAcrossInventories) && (
         <Banner tone="warn" icon="alert" title="여러 인벤토리가 같은 SSH 키를 써요">
@@ -1005,7 +1008,7 @@ export function Keys() {
                         {k.sharedAcrossInventories && <SharedKeyChip />}
                       </span>
                     ) : k.usedCount ? (
-                      `${k.kind === "token" ? "레포" : "인벤토리"} ${k.usedCount}곳`
+                      `${keyUser(k)} ${k.usedCount}곳`
                     ) : (
                       <span className="text-faint">없음</span>
                     )}

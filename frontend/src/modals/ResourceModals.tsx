@@ -18,32 +18,50 @@ export function copyText(text: string, toast: (m: string) => void) {
 
 /* ---------- keys ---------- */
 
-export function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCreated?: (k: Key) => void }) {
+type KeyMode = "gen" | "paste" | "token" | "password";
+const KEY_NAME: Record<KeyMode, string> = { gen: "batch-deploy", paste: "batch-deploy", token: "gitea-readonly", password: "deploy-login" };
+/** Same rule as the server: a Linux login name. */
+const LOGIN_USER_RE = /^[a-z_][a-z0-9_-]{0,31}$/;
+
+export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClose: () => void; onCreated?: (k: Key) => void; initialMode?: KeyMode }) {
   const { refresh, toast, openModal, withSudo } = useApp();
-  const [mode, setMode] = useState<"gen" | "paste" | "token">("gen");
-  const [name, setName] = useState("batch-deploy");
+  const [mode, setMode] = useState<KeyMode>(initialMode);
+  const [name, setName] = useState(KEY_NAME[initialMode]);
   const [touched, setTouched] = useState(false);
   const [priv, setPriv] = useState("");
   const [pass, setPass] = useState("");
   const [user, setUser] = useState("deploy-bot");
   const [tok, setTok] = useState("");
+  const [loginUser, setLoginUser] = useState("deploy");
+  const [loginPass, setLoginPass] = useState("");
   const [err, setErr] = useState("");
 
   const changeMode = (m: typeof mode) => {
     setMode(m);
-    if (!touched) setName(m === "token" ? "gitea-readonly" : "batch-deploy");
+    if (!touched) setName(KEY_NAME[m]);
     setErr("");
   };
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    if (mode === "password") {
+      if (!LOGIN_USER_RE.test(loginUser.trim())) return setErr("로그인 계정은 영문 소문자, 숫자, _, -로 적어 주세요. 예: deploy");
+      if (!loginPass) return setErr("비밀번호를 넣어 주세요.");
+      if (loginPass.length > 1024) return setErr("비밀번호는 1024자까지예요.");
+    }
     withSudo("키 추가", async () => {
       try {
-        const k = await api.post<Key>("/keys", { mode, name, privateKey: priv, passphrase: pass, user, token: tok });
+        const k = await api.post<Key>(
+          "/keys",
+          mode === "password"
+            ? { mode, name, user: loginUser.trim(), password: loginPass }
+            : { mode, name, privateKey: priv, passphrase: pass, user, token: tok },
+        );
         onClose();
         refresh();
         onCreated?.(k);
         if (k.kind === "token") toast("토큰을 저장했어요. 다시 볼 수 없어요.");
+        else if (k.kind === "password") toast("비밀번호를 저장했어요. 다시 볼 수 없어요.");
         else if (onCreated) toast(`${k.name} 키를 만들었어요. 서버에 넣는 명령은 서버 준비 단계에 나와요.`);
         else openModal((close) => <PubKeyModal k={k} fresh onClose={close} />);
       } catch (e) {
@@ -55,7 +73,7 @@ export function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCre
 
   return (
     <>
-      <ModalHead title="키 추가" sub="서버 접속용 SSH 키나 Git 저장소용 액세스 토큰을 저장해요." onClose={onClose} />
+      <ModalHead title="키 추가" sub="서버 접속용 SSH 키, Git 저장소용 액세스 토큰, 서버 로그인 비밀번호를 저장해요." onClose={onClose} />
       <form id="keyForm" onSubmit={submit} className="contents">
         <ModalBody>
           <Field label="종류">
@@ -65,6 +83,7 @@ export function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCre
                   { value: "gen", label: "SSH 키 만들기" },
                   { value: "paste", label: "SSH 키 가져오기" },
                   { value: "token", label: "액세스 토큰" },
+                  { value: "password", label: "로그인 비밀번호" },
                 ]}
                 value={mode}
                 onChange={changeMode}
@@ -103,6 +122,20 @@ export function NewKeyModal({ onClose, onCreated }: { onClose: () => void; onCre
                 hint="Git 저장소를 HTTPS 주소로 읽을 때 써요. GitHub는 Contents 읽기 전용 권한의 fine-grained 토큰, Gitea는 read:repository 권한만 주세요."
               >
                 <Input id="kTok" mono type="password" placeholder="github_pat_… 또는 Gitea 토큰" autoComplete="off" value={tok} onChange={(e) => setTok(e.target.value)} />
+              </Field>
+            </div>
+          )}
+          {mode === "password" && (
+            <div className="flex flex-col gap-4 animate-fade">
+              <Field label="로그인 계정" htmlFor="kLoginUser">
+                <Input id="kLoginUser" mono spellCheck={false} autoComplete="off" value={loginUser} onChange={(e) => setLoginUser(e.target.value)} />
+              </Field>
+              <Field
+                label="비밀번호"
+                htmlFor="kLoginPass"
+                hint="Git 플레이북 작업이 SSH 키 대신 이 계정으로 접속하거나, sudo 비밀번호로 써요. 저장 후에는 다시 볼 수 없어요."
+              >
+                <Input id="kLoginPass" type="password" autoComplete="off" value={loginPass} onChange={(e) => setLoginPass(e.target.value)} />
               </Field>
             </div>
           )}

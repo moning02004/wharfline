@@ -12,7 +12,7 @@ import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./
 import { NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
 import { FileHistoryModal } from "./FileHistoryModal";
-import { Button, Check, Chip, ErrorText, Field, Hint, Input, Loading, Select, Seg, Switch, Textarea, cx } from "../components/ui";
+import { Banner, Button, Check, Chip, ErrorText, Field, Hint, Input, Loading, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /* Same rules as the server (docs/deploy-simplify.md). */
 const PATH_RE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml$/;
@@ -127,6 +127,24 @@ const SCRIPT_EXAMPLE: Omit<StepDraft, "id">[] = [
   { name: "컨테이너 교체", run: 'cd "$SERVICE_PATH"\ndocker compose up -d --remove-orphans' },
   { name: "정리", run: "docker image prune -f" },
 ];
+
+/* Playbook variables (Git playbook jobs only). Same rules as the server. */
+interface VarDraft {
+  id: number;
+  name: string;
+  value: string;
+}
+const PLAY_VAR_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+const PLAY_VAR_MAX = 50;
+const PLAY_VAL_MAX = 4096;
+/** Names Wharfline passes to the playbook itself. */
+const WHARFLINE_PLAY_VARS = new Set(["image", "image_tag", "image_ref", "env_file", "app_name", "registry_host", "registry_user", "registry_password", "env_src"]);
+/** Ansible connection and magic variables a job may not set. */
+const ANSIBLE_CONN_RE = /^ansible_(host|port|user|password|pass|ssh_\w*|private_key_file|become\w*|sudo\w*|su\w*|connection|shell_\w*|python_interpreter|remote_\w*|timeout|pipelining)$/;
+const ANSIBLE_MAGIC = new Set(["hostvars", "groups", "group_names", "inventory_hostname", "inventory_hostname_short", "play_hosts", "ansible_play_hosts", "environment", "omit"]);
+const toDrafts = (vars: [string, string][]): VarDraft[] => vars.map(([n, v]) => ({ id: ++stepSeq, name: n, value: v }));
+/** Login account of a password key: the part before " · " in its fingerprint. */
+const keyAccount = (k: Key) => k.fingerprint.split(" · ")[0];
 
 /** Same rule as the server: an absolute folder, no "..". */
 const SERVICE_PATH_RE = /^\/(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9._/-]{1,254}$/;
@@ -258,6 +276,21 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [prot, setProt] = useState(job ? job.protected : true);
   const [lock, setLock] = useState(job?.lock ?? true);
   const [rb, setRb] = useState(job?.rollback ?? true);
+  // Playbook variables and how to log in (Git playbook jobs only).
+  const canLogin = can("run_protected");
+  const [playVars, setPlayVars] = useState<VarDraft[]>(() => toDrafts(job?.playVars ?? []));
+  const savedSecrets = job?.secretVarNames ?? [];
+  // A copy can carry the source's secret values only for members who may set them.
+  const copySecrets = copying && canEnv && savedSecrets.length > 0;
+  // null: keep the saved secrets (edit) or copy them on the server (copy). A list: sent whole, replacing them.
+  const [secretVars, setSecretVars] = useState<VarDraft[] | null>(null);
+  // A Deployer's copy can't pick a login key: it starts on the inventory key.
+  const [loginKey, setLoginKey] = useState(copying && !canLogin ? "" : job?.loginKey ?? "");
+  const [becomeKey, setBecomeKey] = useState(copying && !canLogin ? "" : job?.becomeKey ?? "");
+  const passwordKeys = keys.filter((k) => k.kind === "password");
+  const secretList = secretVars ?? [];
+  /** Secret names in force: the typed list, else the saved (or copied) ones. */
+  const secretNames = secretVars ? secretVars.map((v) => v.name.trim()) : editing || copySecrets ? savedSecrets : [];
   const [edGroups, setEdGroups] = useState<string[]>(job?.editors?.groups ?? []);
   const [edMembers, setEdMembers] = useState<string[]>(job?.editors?.members ?? []);
   const [cur, setCur] = useState(0);
@@ -270,7 +303,10 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   // The 스크립트 step exists only for SSH script jobs.
   // SSH script jobs track the images their files name, so they skip 버전 추적.
-  const flow = JOB_STEPS.filter((st) => (st.id !== "script" || source === "script") && (st.id !== "image" || source !== "script"));
+  // The 플레이북 변수 step exists only for Git playbook jobs.
+  const flow = JOB_STEPS.filter(
+    (st) => (st.id !== "script" || source === "script") && (st.id !== "image" || source !== "script") && (st.id !== "vars" || source === "git"),
+  );
   const step = flow[Math.min(cur, flow.length - 1)].id;
   const last = cur >= flow.length - 1;
 
@@ -373,6 +409,33 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         if (envOn && envMode !== "existing" && !envVars.length) return "인식된 .env 변수가 없어요. 필요 없다면 '없음'을 고르세요.";
         if (envOn && envMode === "existing" && !envPick) return "저장된 환경 변수를 골라 주세요.";
         return "";
+      case "vars": {
+        if (source !== "git") return "";
+        // Names the job's extra images pass to the playbook (lower case, like runner.extra_vars).
+        const imageVars = new Set(extras.filter((x) => x.var).flatMap((x) => [`${x.var}_image`, `${x.var}_tag`, `${x.var}_image_ref`].map((n) => n.toLowerCase())));
+        const rows: [VarDraft, boolean][] = [
+          ...playVars.filter((v) => v.name.trim() || v.value).map((v): [VarDraft, boolean] => [v, false]),
+          ...secretList.map((v): [VarDraft, boolean] => [v, true]),
+        ];
+        const seen = new Set<string>(secretVars ? [] : secretNames);
+        for (const [v, secret] of rows) {
+          const n = v.name.trim();
+          if (!n) return secret ? "비밀 변수 이름을 적어 주세요." : "변수 이름을 적어 주세요.";
+          if (!PLAY_VAR_RE.test(n)) return `변수 이름 "${n}"은(는) 영문, 숫자, _로 적고 숫자로 시작할 수 없어요. 64자까지예요. 예: app_port`;
+          if (WHARFLINE_PLAY_VARS.has(n) || imageVars.has(n) || ANSIBLE_CONN_RE.test(n) || ANSIBLE_MAGIC.has(n))
+            return `변수 이름 ${n}은(는) Wharfline이나 Ansible 접속에 쓰는 이름이라 쓸 수 없어요.`;
+          if (seen.has(n)) return `변수 이름 ${n}이(가) 두 번 쓰였어요.`;
+          seen.add(n);
+          if (v.value.length > PLAY_VAL_MAX) return `${n}의 값은 ${PLAY_VAL_MAX}자까지예요.`;
+          if (secret && !v.value) return `비밀 변수 ${n}의 값을 넣어 주세요.`;
+        }
+        if (seen.size > PLAY_VAR_MAX) return `변수는 일반과 비밀을 합쳐 ${PLAY_VAR_MAX}개까지예요.`;
+        if (loginKey && !prot) return "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요. 권한과 안전장치 단계에서 켜 주세요.";
+        return "";
+      }
+      case "access":
+        if (source === "git" && loginKey && !prot) return "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요.";
+        return "";
       default:
         return "";
     }
@@ -409,7 +472,17 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   };
 
   // Optional steps (new job only): image unless the built-in playbook needs one, and env.
-  const skipLabel = mode !== "edit" ? (step === "image" && source !== "builtin" ? "추적 없이 진행" : step === "env" ? ".env 없이 진행" : null) : null;
+  const varsEmpty = !playVars.length && !secretList.length && !secretNames.length && !loginKey && !becomeKey;
+  const skipLabel =
+    mode !== "edit"
+      ? step === "image" && source !== "builtin"
+        ? "추적 없이 진행"
+        : step === "env"
+          ? ".env 없이 진행"
+          : step === "vars" && varsEmpty
+            ? "변수 없이 진행"
+            : null
+      : null;
   const skip = () => {
     if (step === "image") setTracks([]);
     if (step === "env") setEnvChoice("none");
@@ -448,6 +521,16 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     envMode: envChoice === "keep" ? "keep" : envChoice === "copy" ? "copy" : !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
     envName: envChoice === "copy" ? job?.env ?? null : envOn && envMode === "existing" ? envPick : null,
     envVars: envOn && envMode !== "existing" ? envVars : [],
+    // Playbook variables and password login: Git playbook jobs only, the server rejects them elsewhere.
+    playVars: source === "git" ? playVars.filter((v) => v.name.trim() || v.value).map((v) => [v.name.trim(), v.value]) : [],
+    // null keeps the saved secrets (edit); a list replaces them, [] removes them all.
+    secretVars:
+      source !== "git" || secretVars === null || (!secretVars.length && !(editing && savedSecrets.length))
+        ? null
+        : secretVars.map((v) => [v.name.trim(), v.value]),
+    ...(copying ? { copySecretVarsFrom: source === "git" && copySecrets && secretVars === null ? job.id : null } : {}),
+    loginKey: source === "git" ? loginKey : "",
+    becomeKey: source === "git" ? becomeKey : "",
     hook,
     hookRule,
     protected: prot,
@@ -487,7 +570,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       setBusy(false);
       if (e instanceof ApiError && e.sudoRequired) {
         // Pasting over an existing set writes a new version of its secrets: re-check the password and retry.
-        withSudo("환경 변수 덮어쓰기", async () => {
+        // Replacing saved secret playbook variables follows the same rule.
+        withSudo(secretVars && savedSecrets.length && envChoice !== "on" ? "비밀 변수 바꾸기" : "환경 변수 덮어쓰기", async () => {
           try {
             await api.put(`/jobs/${job.id}`, payload);
             done();
@@ -543,6 +627,17 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           ? envPick
           : `붙여넣은 변수 ${envVars.length}개${editing && job.env ? ` → ${job.env}의 새 버전` : ""}`;
 
+  const loginSummary = `${loginKey ? `비밀번호 · ${loginKey}` : "인벤토리 SSH 키"}${becomeKey ? ` · sudo 비밀번호 ${becomeKey}` : ""}`;
+  const secretSummary =
+    secretVars !== null
+      ? `비밀 ${secretVars.length}개${editing && savedSecrets.length ? " (새로 넣음)" : ""}`
+      : editing
+        ? `비밀 ${savedSecrets.length}개${savedSecrets.length ? " (지금 것 유지)" : ""}`
+        : copySecrets
+          ? `비밀 ${savedSecrets.length}개 (값 복사)`
+          : "비밀 0개";
+  const varsSummary = `일반 ${playVars.filter((v) => v.name.trim()).length}개 · ${secretSummary} · 접속 ${loginSummary}`;
+
   /* ---------- guide: a bubble that points at the input to fill ---------- */
 
   // Inputs of the current step in screen order.
@@ -565,9 +660,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               ? envOn && envMode !== "existing"
                 ? ["env", "env.vars"]
                 : ["env"]
-              : step === "access"
-                ? ["access.editors", "access.safety"]
-                : [];
+              : step === "vars"
+                ? ["vars.plain", "vars.secret", "vars.login"]
+                : step === "access"
+                  ? ["access.editors", "access.safety"]
+                  : [];
   // Where the guide starts on a step: the first input that still needs something.
   const firstTip = (): TipId | null => {
     if (step === "script") return "playbook.script";
@@ -1053,6 +1150,113 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         );
       }
 
+      case "vars": {
+        const keyOption = (n: string) => {
+          const k = passwordKeys.find((x) => x.name === n);
+          return (
+            <option key={n} value={n}>
+              {k ? `${k.name} · 계정 ${keyAccount(k)}` : `${n} (키 저장소에 없어요)`}
+            </option>
+          );
+        };
+        // Password keys, plus the saved one while the key list loads (or if it was removed).
+        const keyNames = (cur: string) => [...passwordKeys.map((k) => k.name), ...(cur && !passwordKeys.some((k) => k.name === cur) ? [cur] : [])];
+        return (
+          <>
+            <Field
+              label={
+                <>
+                  변수 <span className="text-muted font-normal text-[12.5px]">선택</span>
+                </>
+              }
+              hint={<>플레이북에 <span className="font-mono">-e</span>로 넘겨요. 실행 기록에 값이 그대로 보여요.</>}
+            >
+              <TipSpot id="vars.plain">
+                <VarRows items={playVars} onChange={setPlayVars} addLabel="변수 더하기" />
+              </TipSpot>
+            </Field>
+            <Field
+              label={
+                <>
+                  비밀 변수 <span className="text-muted font-normal text-[12.5px]">선택</span>
+                </>
+              }
+              hint={canEnv ? "암호화해 저장하고, 저장한 뒤에는 값을 다시 보여주지 않아요. 실행 기록에는 ••••로 보여요." : "비밀 변수는 환경 변수를 넣을 수 있는 사람만 넣거나 바꿀 수 있어요."}
+              right={
+                secretVars !== null &&
+                (editing || copySecrets) &&
+                savedSecrets.length > 0 && (
+                  <Button size="sm" variant="ghost" onClick={() => setSecretVars(null)}>
+                    {editing ? "지금 것 유지" : "값 복사로 되돌리기"}
+                  </Button>
+                )
+              }
+            >
+              <TipSpot id="vars.secret">
+                {secretVars === null && secretNames.length > 0 ? (
+                  <div className="flex items-center gap-2 flex-wrap rounded-lg bg-surface-2 border border-line px-3.5 py-2.5 text-[13px]">
+                    <Icon name="lock" className="size-4 flex-none text-faint" />
+                    <span className="flex flex-wrap gap-1.5 flex-1 min-w-0">
+                      {secretNames.map((n) => (
+                        <Chip key={n} mono>
+                          {n}
+                        </Chip>
+                      ))}
+                    </span>
+                    {canEnv && (
+                      <Button size="sm" variant="ghost" onClick={() => setSecretVars(secretNames.map((n) => ({ id: ++stepSeq, name: n, value: "" })))}>
+                        값 바꾸기
+                      </Button>
+                    )}
+                  </div>
+                ) : canEnv ? (
+                  <VarRows items={secretList} onChange={(x) => setSecretVars(x)} addLabel="비밀 변수 더하기" secret />
+                ) : (
+                  <Hint>{copying && savedSecrets.length ? "원래 작업의 비밀 변수는 복사하지 않아요." : "비밀 변수가 없어요."}</Hint>
+                )}
+              </TipSpot>
+              {secretVars !== null && editing && savedSecrets.length > 0 && <Hint>저장하면 지금 비밀 변수를 이 목록으로 바꿔요. 저장할 때 비밀번호를 다시 물어요.</Hint>}
+            </Field>
+            <Field
+              label="접속 방식"
+              hint={!canLogin ? "접속 방식은 Owner나 Admin만 바꿀 수 있어요." : undefined}
+              right={
+                canLogin && (
+                  <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal initialMode="password" onClose={c} />)}>
+                    비밀번호 추가
+                  </Button>
+                )
+              }
+            >
+              <TipSpot id="vars.login">
+                <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-3">
+                  <Field label="로그인" htmlFor="jLogin">
+                    <Select id="jLogin" value={loginKey} disabled={!canLogin} onChange={(e) => setLoginKey(e.target.value)}>
+                      <option value="">인벤토리 SSH 키 (기본)</option>
+                      {keyNames(loginKey).map(keyOption)}
+                    </Select>
+                  </Field>
+                  <Field label="sudo 비밀번호" htmlFor="jBecome">
+                    <Select id="jBecome" value={becomeKey} disabled={!canLogin} onChange={(e) => setBecomeKey(e.target.value)}>
+                      <option value="">없음</option>
+                      {keyNames(becomeKey).map(keyOption)}
+                    </Select>
+                  </Field>
+                </div>
+              </TipSpot>
+              {canLogin && !passwordKeys.length && !loginKey && !becomeKey && <Hint>키 저장소에 로그인 비밀번호가 없어요. 비밀번호 추가에서 계정과 비밀번호를 넣어요.</Hint>}
+              {loginKey && (
+                <Banner tone={prot ? "neutral" : "warn"} icon={prot ? "lock" : "alert"} title={prot ? "인벤토리 SSH 키 대신 비밀번호로 접속해요" : "운영 보호를 켜야 해요"}>
+                  {prot
+                    ? "모든 서버에 이 계정으로 로그인해요. 호스트 키 확인은 그대로 해요."
+                    : "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요. 권한과 안전장치 단계에서 켜 주세요."}
+                </Banner>
+              )}
+            </Field>
+          </>
+        );
+      }
+
       case "access":
         return (
           <>
@@ -1207,6 +1411,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             ),
           ],
           ["env", "환경 변수", envSummary],
+          ...(source === "git" ? ([["vars", "플레이북 변수", varsSummary]] as [JobStepId, string, React.ReactNode][]) : []),
           ["access", "권한과 안전장치", `${editorsSummary} · ${safetySummary}`],
         ];
         return (
@@ -1715,6 +1920,47 @@ function ExtraImagesEditor({ items, onChange, mainLocked, canRepo }: { items: Ex
       <div>
         <Button size="sm" icon="plus" onClick={() => onChange([...items, { id: ++stepSeq, image: "", var: "", auto: hasMain || items.length > 0 }])}>
           이미지 더하기
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Playbook variable rows: name and value. Secret values are typed into password inputs and never shown again. */
+function VarRows({ items, onChange, addLabel, secret }: { items: VarDraft[]; onChange: (x: VarDraft[]) => void; addLabel: string; secret?: boolean }) {
+  const set = (id: number, patch: Partial<VarDraft>) => onChange(items.map((x) => (x.id === id ? { ...x, ...patch } : x)));
+  const cols = "grid grid-cols-[minmax(0,2fr)_minmax(0,3fr)_auto] gap-2";
+  return (
+    <div className="flex flex-col gap-2">
+      {items.length > 0 && (
+        <div className={cx(cols, "text-[12px] font-medium text-muted")}>
+          <span>이름</span>
+          <span>값</span>
+          <span className="w-7" />
+        </div>
+      )}
+      {items.map((x) => (
+        <div key={x.id} className={cx(cols, "items-center")}>
+          <Input
+            mono
+            aria-label="변수 이름"
+            placeholder={secret ? "db_password" : "app_port"}
+            spellCheck={false}
+            autoComplete="off"
+            value={x.name}
+            onChange={(e) => set(x.id, { name: e.target.value })}
+          />
+          {secret ? (
+            <Input mono type="password" autoComplete="off" aria-label={`${x.name || "비밀 변수"} 값`} placeholder="값" value={x.value} onChange={(e) => set(x.id, { value: e.target.value })} />
+          ) : (
+            <Input mono aria-label={`${x.name || "변수"} 값`} placeholder="8080" spellCheck={false} autoComplete="off" value={x.value} onChange={(e) => set(x.id, { value: e.target.value })} />
+          )}
+          <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label="변수 빼기" onClick={() => onChange(items.filter((y) => y.id !== x.id))} />
+        </div>
+      ))}
+      <div>
+        <Button size="sm" icon="plus" onClick={() => onChange([...items, { id: ++stepSeq, name: "", value: "" }])}>
+          {addLabel}
         </Button>
       </div>
     </div>

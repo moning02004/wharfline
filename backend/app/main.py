@@ -33,7 +33,7 @@ def check_keys() -> None:
     """Refuse to start without a master key, or if stored data needs a key that is not loaded."""
     ring = crypto.keyring()
     with SessionLocal() as db:
-        used = set(db.scalars(union(*(select(t.kek_id).where(t.kek_id.is_not(None)) for t in (m.EnvSet, m.EnvVersion, m.Key, m.Registry, m.Member)))))
+        used = set(db.scalars(union(*(select(t.kek_id).where(t.kek_id.is_not(None)) for t in (m.EnvSet, m.EnvVersion, m.JobSecretVars, m.Key, m.Registry, m.Member)))))
         hook_secret = githooks.secret_envelope(db)
         if hook_secret:
             used.add(hook_secret.kek_id)

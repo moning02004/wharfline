@@ -514,12 +514,16 @@ def put_access_from(body: AccessFromIn, db: Session = Depends(get_db)):
 
 
 class KeyIn(BaseModel):
-    mode: str = Field(pattern="^(gen|paste|token)$")
+    mode: str = Field(pattern="^(gen|paste|token|password)$")
     name: str
     privateKey: str = ""
     passphrase: str = ""
     user: str = ""
     token: str = ""
+    password: str = ""  # mode "password": the login (and sudo) password of `user`
+
+
+MAX_PASSWORD = 1024
 
 
 @router.post("/keys", dependencies=[Depends(require("resources")), Depends(require_sudo)])
@@ -537,6 +541,15 @@ def add_key(body: KeyIn, db: Session = Depends(get_db)):
         k.kind, k.type, k.fingerprint = "token", "토큰", f"{body.user.strip() or '-'} · ••••{tok[-4:]}"
         k.set_secret(tok)
         action = "액세스 토큰 추가"
+    elif body.mode == "password":
+        user = body.user.strip()
+        if not USER_RE.match(user):
+            raise HTTPException(400, "로그인 계정을 확인해 주세요. 영문 소문자, 숫자, -, _ 예: deploy")
+        if not 1 <= len(body.password) <= MAX_PASSWORD:
+            raise HTTPException(400, f"비밀번호를 1~{MAX_PASSWORD}자로 넣어 주세요.")
+        k.kind, k.type, k.fingerprint = "password", "비밀번호", f"{user} · 비밀번호"
+        k.set_secret(body.password)  # kept as typed (spaces included); never returned
+        action = "로그인 비밀번호 추가"
     else:
         try:
             ssh = sshkeys.generate(f"{name}@wharfline") if body.mode == "gen" else sshkeys.load_private(body.privateKey, body.passphrase or None, f"{name}@wharfline")
@@ -567,7 +580,7 @@ def delete_key(key_id: str, db: Session = Depends(get_db)):
     if not k:
         raise HTTPException(404, "키를 찾을 수 없어요.")
     if k.used_count:
-        where = "레포" if k.kind == "token" else "인벤토리·레포"
+        where = "레포" if k.kind == "token" else "배포 작업" if k.kind == "password" else "인벤토리·레포"
         raise HTTPException(400, f"{where} {k.used_count}곳에서 쓰고 있어 지울 수 없어요")
     db.delete(k)
     s.log_act(db, "SSH 키 삭제", k.name, "warn")

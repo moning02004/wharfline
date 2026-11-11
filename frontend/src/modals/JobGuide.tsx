@@ -3,7 +3,7 @@ import { createContext, useContext, useEffect, useLayoutEffect, useState, type R
 import { createPortal } from "react-dom";
 import { Icon } from "../components/Icon";
 
-export type JobStepId = "name" | "playbook" | "script" | "target" | "image" | "env" | "access" | "review";
+export type JobStepId = "name" | "playbook" | "script" | "target" | "image" | "env" | "vars" | "access" | "review";
 
 export const JOB_STEPS: { id: JobStepId; label: string }[] = [
   { id: "name", label: "기본 정보" },
@@ -12,6 +12,7 @@ export const JOB_STEPS: { id: JobStepId; label: string }[] = [
   { id: "target", label: "배포 대상" },
   { id: "image", label: "버전 추적" },
   { id: "env", label: "환경 변수" },
+  { id: "vars", label: "플레이북 변수" }, // only when the deploy method is a Git playbook
   { id: "access", label: "권한과 안전장치" },
   { id: "review", label: "확인" },
 ];
@@ -30,6 +31,9 @@ export type TipId =
   | "image"
   | "env"
   | "env.vars"
+  | "vars.plain"
+  | "vars.secret"
+  | "vars.login"
   | "access.editors"
   | "access.safety"
   | "review";
@@ -70,6 +74,14 @@ export function tipFor(id: TipId, mode: Mode, opts: { builtin?: boolean } = {}):
         : { text: "앱이 읽을 .env가 있으면 넣기, 없으면 없음을 골라요." };
     case "env.vars":
       return { text: "한 줄에 하나씩 KEY=VALUE로 붙여넣어요. 값은 암호화해서 저장해요.", example: "NODE_ENV=production" };
+    case "vars.plain":
+      return { text: "플레이북에 -e로 넘길 변수예요. 값이 그대로 보여도 되는 것만 적어요.", example: "app_port = 8080" };
+    case "vars.secret":
+      return mode === "edit"
+        ? { text: "저장된 값은 보이지 않아요. 바꾸려면 값 바꾸기를 눌러 이름과 값을 다시 넣어요." }
+        : { text: "DB 비밀번호처럼 숨길 값이에요. 암호화해 저장하고 실행 기록에는 ••••로 보여요.", example: "db_password" };
+    case "vars.login":
+      return { text: "보통은 인벤토리의 SSH 키로 접속해요. 서버가 비밀번호 로그인만 받거나 sudo에 비밀번호가 필요할 때만 키 저장소의 로그인 비밀번호를 골라요." };
     case "access.editors":
       return { text: "이 작업을 고칠 그룹이나 사람을 골라요. 안 고르면 Owner, Admin, 만든 사람만 고칠 수 있어요." };
     case "access.safety":

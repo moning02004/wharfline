@@ -103,6 +103,14 @@ class Plan:
     repo: dict[str, Any] = field(default_factory=dict)
     book: str = ""
     extra_vars: dict[str, Any] = field(default_factory=dict)
+    # playbook jobs from a repo (not the built-in playbook, never script jobs): the job's own -e variables
+    # and an optional password login / sudo password, each from a "password" key.
+    play_vars: dict[str, str] = field(default_factory=dict)
+    secret_vars: dict[str, str] = field(default_factory=dict)
+    login: tuple[str, str] | None = None  # (account, password)
+    login_key_name: str = ""
+    become_password: str | None = None
+    become_key_name: str = ""
     # script jobs
     script: list[dict[str, str]] = field(default_factory=list)
     files: list[dict[str, str]] = field(default_factory=list)
@@ -170,15 +178,48 @@ def build_plan(db: Session, job: dict, groups: list[str], no: int, tag: str, hea
     return plan
 
 
+def _password_key(db: Session, name: str, what: str) -> tuple[str, str]:
+    """(account, password) of a "password" key; marks it used."""
+    k = db.scalar(select(m.Key).where(m.Key.name == name, m.Key.kind == "password"))
+    if not k or not k.has_secret:
+        raise PlanError(f"작업의 {what}에 쓰는 비밀번호 키 {name}를 찾을 수 없어요.")
+    k.last_used = time.strftime("%Y-%m-%d %H:%M")
+    return (k.fingerprint or "").split(" · ")[0].strip(), k.get_secret() or ""
+
+
+def _fill_play_options(db: Session, plan: Plan, job: dict) -> None:
+    """Variables, secret variables, password login and sudo password of a playbook job from a repo."""
+    row = db.get(m.Job, job["id"])
+    if row is None:
+        return
+    plan.play_vars = {str(k): str(v) for k, v in row.play_vars or []}
+    sv = db.get(m.JobSecretVars, job["id"])
+    plan.secret_vars = {str(k): str(v) for k, v in (sv.get_vars() if sv else [])}
+    plan.secrets += list(plan.secret_vars.values())
+    if row.login_key:
+        user, password = _password_key(db, row.login_key, "접속 계정")
+        if not user or user == "-":
+            raise PlanError(f"비밀번호 키 {row.login_key}에 로그인 계정이 없어요.")
+        plan.login, plan.login_key_name = (user, password), row.login_key
+        plan.secrets.append(password)
+    if row.become_key:
+        _, password = _password_key(db, row.become_key, "sudo 비밀번호")
+        plan.become_password, plan.become_key_name = password, row.become_key
+        plan.secrets.append(password)
+
+
 def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runner) -> None:
     inv = db.scalar(select(m.Inventory).where(m.Inventory.name == job["inventory"]))
     if not inv:
         raise PlanError(f"인벤토리 {job['inventory']}을(를) 찾을 수 없어요.")
-    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
-    if not key or not key.has_secret:
-        raise PlanError(f"인벤토리 {inv.name}의 SSH 키 {inv.key}를 찾을 수 없어요.")
-    plan.ssh_key, plan.key_name = key.get_secret() or "", key.name
-    key.last_used = time.strftime("%Y-%m-%d %H:%M")
+    if plan.kind == "playbook" and (job.get("playbook") or {}).get("kind") != "builtin":
+        _fill_play_options(db, plan, job)
+    if plan.login is None:  # a password login doesn't need the inventory's SSH key
+        key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
+        if not key or not key.has_secret:
+            raise PlanError(f"인벤토리 {inv.name}의 SSH 키 {inv.key}를 찾을 수 없어요.")
+        plan.ssh_key, plan.key_name = key.get_secret() or "", key.name
+        key.last_used = time.strftime("%Y-%m-%d %H:%M")
     for h in inv.hosts:
         if groups and h.grp not in groups:
             continue
@@ -186,7 +227,8 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         if reason:
             plan.skipped.append((h.name, reason))
         else:
-            plan.targets.append(Target(h.id, h.name, h.ip, h.port, h.ssh_user, h.grp, h.host_fingerprint))
+            user = plan.login[0] if plan.login else h.ssh_user
+            plan.targets.append(Target(h.id, h.name, h.ip, h.port, user, h.grp, h.host_fingerprint))
     if not plan.targets:
         raise PlanError("배포할 수 있는 서버가 없어요.")
 
@@ -238,6 +280,7 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         xv.update(registry_host=main.host, registry_user=main.user, registry_password=main.password)
     plan.extra_vars = xv
     plan.env_path = xv.get("env_file", "")
+    plan.head += access_lines(plan)
 
 
 # ---------- small pure helpers (unit tested) ----------
@@ -324,6 +367,52 @@ def inventory(targets: list[Target]) -> dict[str, Any]:
         hosts = groups.setdefault(t.group, {"hosts": {}})["hosts"]
         hosts[inventory_name(t.name)] = {"ansible_host": t.ip, "ansible_port": t.port, "ansible_user": t.user}
     return {"all": {"children": groups}}
+
+
+def playbook_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Everything ansible-playbook gets with -e @vars.json, in order of who wins.
+
+    The job's variables, then its secret variables, then Wharfline's own (image, env_src, registry…),
+    then the login and sudo passwords.
+    """
+    out: dict[str, Any] = {**plan.play_vars, **plan.secret_vars, **(plan.extra_vars if wharfline is None else wharfline)}
+    if plan.login:
+        out["ansible_password"] = plan.login[1]
+    if plan.become_password is not None:
+        out["ansible_become_password"] = plan.become_password
+    return out
+
+
+HIDDEN_VARS = ("registry_password", "env_src", "ansible_password", "ansible_become_password")
+
+
+def shown_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> str:
+    """The -e list written to the log: secret variables masked, passwords and file paths left out."""
+    xv = plan.extra_vars if wharfline is None else wharfline
+    parts = [f"-e {k}={v}" for k, v in plan.play_vars.items() if k not in xv and k not in plan.secret_vars]
+    parts += [f"-e {k}={MASK}" for k in plan.secret_vars if k not in xv]
+    parts += [f"-e {k}={v}" for k, v in xv.items() if k not in HIDDEN_VARS]
+    return " ".join(parts)
+
+
+def ssh_args(known_hosts: str | Path, password_login: bool) -> str:
+    """ANSIBLE_SSH_ARGS. The host key stays pinned either way; a password login turns off keys and batch mode."""
+    auth = ("-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no " if password_login
+            else "-o IdentitiesOnly=yes -o BatchMode=yes ")
+    return f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes {auth}-o ControlMaster=auto -o ControlPersist=60s"
+
+
+def access_lines(plan: Plan) -> list[Line]:
+    """How a playbook run logs in, and which variables it adds (names only for secrets)."""
+    if plan.login:
+        lines: list[Line] = [("", f"접속: 비밀번호 · 계정 {plan.login[0]} (키 {plan.login_key_name})")]
+    else:
+        lines = [("", f"접속: SSH 키 {plan.key_name}")]
+    if plan.become_password is not None:
+        lines.append(("", f"sudo 비밀번호: 키 {plan.become_key_name}"))
+    if plan.play_vars or plan.secret_vars:
+        lines.append(("", f"플레이북 변수: 일반 {len(plan.play_vars)}개 · 비밀 {len(plan.secret_vars)}개"))
+    return lines
 
 
 def known_hosts_line(ip: str, port: int, key: asyncssh.SSHKey) -> str:
@@ -602,6 +691,10 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         out.line("r", "✘ 실행기에 git이 없어요.")
         out.end("플레이북 가져오기", False)
         return False
+    if plan.login and shutil.which("sshpass", path=env.get("PATH")) is None:
+        out.line("r", "✘ 실행기에 sshpass가 없어요. 비밀번호로 접속하려면 backend 이미지에 sshpass를 설치해 주세요.")
+        out.end("플레이북 가져오기", False)
+        return False
     src = await _fetch(plan, out, tmp, env)
     out.end("플레이북 가져오기", src is not None)
     if src is None:
@@ -616,7 +709,7 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         return False
 
     out.start("플레이북 실행")
-    key = _write_secret(tmp / "ssh_key", plan.ssh_key)
+    key = None if plan.login else _write_secret(tmp / "ssh_key", plan.ssh_key)
     kh = tmp / "known_hosts"
     kh.write_text("".join(known_hosts_line(t.ip, t.port, k) + "\n" for t, k in alive))
     inv = tmp / "inventory.yml"
@@ -632,25 +725,26 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
             out.end("플레이북 실행", False)
             return False
         xv["env_src"] = str(_write_secret(tmp / "app.env", text))
-    vars_file = _write_secret(tmp / "vars.json", json.dumps(xv, ensure_ascii=False))
+    # Passwords and secret variables reach ansible only through this 0600 file, never argv or the environment.
+    vars_file = _write_secret(tmp / "vars.json", json.dumps(playbook_vars(plan, xv), ensure_ascii=False))
     (tmp / "cp").mkdir(mode=0o700)
     limit = ",".join(inventory_name(t.name) for t, _ in alive)
     env.update(
         ANSIBLE_HOST_KEY_CHECKING="True",
-        ANSIBLE_SSH_ARGS=(f"-o UserKnownHostsFile={kh} -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o BatchMode=yes "
-                          "-o ControlMaster=auto -o ControlPersist=60s"),
+        ANSIBLE_SSH_ARGS=ssh_args(kh, plan.login is not None),
         ANSIBLE_SSH_CONTROL_PATH_DIR=str(tmp / "cp"),
         ANSIBLE_LOCAL_TEMP=str(tmp / "ansible-local"),
         ANSIBLE_NOCOLOR="1",
         ANSIBLE_FORCE_COLOR="0",
         ANSIBLE_RETRY_FILES_ENABLED="0",
         ANSIBLE_STDOUT_CALLBACK="default",
-        ANSIBLE_PRIVATE_KEY_FILE=str(key),
     )
-    shown = " ".join(f"-e {k}={v}" for k, v in xv.items() if k not in ("registry_password", "env_src"))
-    out.line("", f"$ ansible-playbook {plan.book} -i <임시 인벤토리> --limit {limit} {shown}")
-    rc = await _stream(["ansible-playbook", plan.book, "-i", str(inv), "--limit", limit, "-e", f"@{vars_file}",
-                        "--private-key", str(key)], out, src, env)
+    argv = ["ansible-playbook", plan.book, "-i", str(inv), "--limit", limit, "-e", f"@{vars_file}"]
+    if key is not None:
+        env["ANSIBLE_PRIVATE_KEY_FILE"] = str(key)
+        argv += ["--private-key", str(key)]
+    out.line("", f"$ ansible-playbook {plan.book} -i <임시 인벤토리> --limit {limit} {shown_vars(plan, xv)}")
+    rc = await _stream(argv, out, src, env)
     out.end("플레이북 실행", rc == 0)
 
     out.start("마무리")

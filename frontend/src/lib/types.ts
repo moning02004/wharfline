@@ -117,6 +117,14 @@ export interface Job {
   createdBy: string | null;
   /** Whether the shown member may edit this job */
   canEdit: boolean;
+  /** Git playbook jobs: plain playbook variables as [name, value] (empty otherwise). */
+  playVars: [string, string][];
+  /** Git playbook jobs: names of the secret playbook variables (values are never sent). */
+  secretVarNames: string[];
+  /** Git playbook jobs: password key to log in with instead of the inventory SSH key. */
+  loginKey: string | null;
+  /** Git playbook jobs: password key used as the sudo (become) password. */
+  becomeKey: string | null;
 }
 
 export type GitProvider = "gitea" | "github" | "gitlab";
@@ -247,7 +255,7 @@ export interface Repo {
 
 export interface Key {
   id: string;
-  kind: "ssh" | "token";
+  kind: "ssh" | "token" | "password";
   name: string;
   type: string;
   fingerprint: string;

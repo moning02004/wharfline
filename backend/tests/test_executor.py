@@ -74,6 +74,62 @@ def test_step_names_follow_the_job():
     assert executor.script_steps(job, True, False) == ["준비", "서버 연결", "파일 올리기", ".env 전송", "올리기", "확인", "마무리"]
 
 
+# ---------- playbook variables and password login ----------
+
+def _play_plan(**kw) -> executor.Plan:
+    return executor.Plan(no=990100, kind="playbook", job_name="t", steps=list(executor.PLAYBOOK_STEPS), key_name="deploy-key",
+                         extra_vars={"app_name": "shop", "registry_password": "reg-token-1"}, **kw)
+
+
+def test_playbook_vars_order_wharfline_wins_and_passwords_last():
+    plan = _play_plan(play_vars={"region": "kr", "app_name": "mine"}, secret_vars={"db_pass": "s3cret-db"},
+                      login=("ops", "login-pw-1"), login_key_name="ops-pw", become_password="sudo-pw-1", become_key_name="sudo")
+    xv = executor.playbook_vars(plan, {**plan.extra_vars, "env_src": "/tmp/x/app.env"})
+    assert xv == {"region": "kr", "app_name": "shop", "db_pass": "s3cret-db", "registry_password": "reg-token-1",
+                  "env_src": "/tmp/x/app.env", "ansible_password": "login-pw-1", "ansible_become_password": "sudo-pw-1"}
+    assert list(xv)[-2:] == ["ansible_password", "ansible_become_password"]
+
+
+def test_playbook_vars_without_options_is_wharfline_only():
+    plan = _play_plan()
+    assert executor.playbook_vars(plan) == plan.extra_vars
+    assert "ansible_password" not in executor.playbook_vars(plan)
+
+
+def test_shown_vars_masks_secrets_and_hides_passwords():
+    plan = _play_plan(play_vars={"region": "kr"}, secret_vars={"db_pass": "s3cret-db"},
+                      login=("ops", "login-pw-1"), login_key_name="ops-pw", become_password="sudo-pw-1", become_key_name="sudo")
+    shown = executor.shown_vars(plan, {**plan.extra_vars, "env_src": "/tmp/x/app.env"})
+    assert shown == f"-e region=kr -e db_pass={executor.MASK} -e app_name=shop"
+    for secret in ("s3cret-db", "login-pw-1", "sudo-pw-1", "reg-token-1", "ansible_password", "ansible_become_password", "env_src"):
+        assert secret not in shown
+
+
+def test_ssh_args_keep_the_host_key_pinned():
+    key = executor.ssh_args("/tmp/r/known_hosts", False)
+    assert key == ("-o UserKnownHostsFile=/tmp/r/known_hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o BatchMode=yes "
+                   "-o ControlMaster=auto -o ControlPersist=60s")
+    pw = executor.ssh_args("/tmp/r/known_hosts", True)
+    assert "-o UserKnownHostsFile=/tmp/r/known_hosts -o StrictHostKeyChecking=yes" in pw
+    assert "-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no" in pw
+    assert "BatchMode" not in pw and "IdentitiesOnly" not in pw
+
+
+def test_access_lines_name_keys_not_secrets():
+    assert executor.access_lines(_play_plan()) == [("", "접속: SSH 키 deploy-key")]
+    plan = _play_plan(play_vars={"region": "kr"}, secret_vars={"db_pass": "s3cret-db"},
+                      login=("ops", "login-pw-1"), login_key_name="ops-pw", become_password="sudo-pw-1", become_key_name="sudo")
+    lines = executor.access_lines(plan)
+    assert lines == [("", "접속: 비밀번호 · 계정 ops (키 ops-pw)"), ("", "sudo 비밀번호: 키 sudo"),
+                     ("", "플레이북 변수: 일반 1개 · 비밀 1개")]
+    assert not any(x in text for _, text in lines for x in ("login-pw-1", "sudo-pw-1", "s3cret-db"))
+
+
+def test_password_login_user_goes_into_the_inventory():
+    t = executor.Target(1, "web-1", "10.0.0.5", 22, "ops", "web", None)
+    assert executor.inventory([t])["all"]["children"]["web"]["hosts"]["web-1"]["ansible_user"] == "ops"
+
+
 # ---------- an SSH script run against a real (local) SSH server ----------
 
 def _server(authorized_line: str, commands: list[str]):

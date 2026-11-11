@@ -70,12 +70,15 @@ class EncryptedSecret:
 
 
 class Key(EncryptedSecret, Base):
-    """SSH private key or access token. The secret is envelope-encrypted and never returned by the API."""
+    """SSH private key, access token or login password. The secret is envelope-encrypted and never returned by the API.
+
+    A password key's fingerprint is "<login user> · 비밀번호"; the user is read back with fingerprint.split(" · ")[0].
+    """
 
     __tablename__ = "keys"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
-    kind: Mapped[str] = mapped_column(String(16))  # ssh | token
+    kind: Mapped[str] = mapped_column(String(16))  # ssh | token | password
     name: Mapped[str] = mapped_column(String(128), unique=True)
     type: Mapped[str] = mapped_column(String(32))
     fingerprint: Mapped[str] = mapped_column(String(256))
@@ -280,6 +283,11 @@ class Job(Base):
     editors: Mapped[dict[str, list[str]]] = mapped_column(
         JSONB, default=lambda: {"groups": [], "members": []}, server_default=text("""'{"groups": [], "members": []}'::jsonb"""))
     created_by: Mapped[str | None] = mapped_column(String(255))  # member email
+    # Git playbook jobs only (None otherwise): plain playbook variables [[name, value], ...];
+    # secret ones live encrypted in JobSecretVars.
+    play_vars: Mapped[list[list[str]] | None] = mapped_column(JSONB)
+    login_key: Mapped[str | None] = mapped_column(String(128))  # Key.name (kind password): log in with this user/password
+    become_key: Mapped[str | None] = mapped_column(String(128))  # Key.name (kind password): the sudo password
     playbook_repo: Mapped[Repo | None] = relationship(primaryjoin="foreign(Job.repo) == Repo.name", viewonly=True)
 
     def to_dict(self) -> dict[str, Any]:
@@ -300,6 +308,16 @@ class Job(Base):
                 "editors": {"groups": list((self.editors or {}).get("groups", [])),
                             "members": list((self.editors or {}).get("members", []))},
                 "createdBy": self.created_by}
+
+
+class JobSecretVars(EncryptedVars, Base):
+    """Secret playbook variables of a Git playbook job. Only the names are readable; values never leave the server."""
+
+    __tablename__ = "job_secret_vars"
+    job_id: Mapped[str] = mapped_column(String(32), ForeignKey("jobs.id", ondelete="CASCADE"), primary_key=True)
+
+    def crypto_context(self) -> str:
+        return f"job-vars:{self.job_id}"
 
 
 # Run numbers continue after the sample history (#179–#184).

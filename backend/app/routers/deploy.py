@@ -44,6 +44,11 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None, who: m.Member | No
         "imageSourceRepo": db.get(m.Image, j["image"]).source_repo if has_image and db.get(m.Image, j["image"]) else None,
         "extraImages": [extra_view(db, x, scope) for x in job.extra_images or []],
         "canEdit": s.can_edit(who, job),
+        # Playbook variables: plain ones with values, secret ones by name only (values never leave the server).
+        "playVars": [list(x) for x in job.play_vars or []],
+        "secretVarNames": list(secret.var_names) if (secret := db.get(m.JobSecretVars, job.id)) else [],
+        "loginKey": job.login_key,
+        "becomeKey": job.become_key,
     }
 
 
@@ -152,6 +157,12 @@ class JobIn(BaseModel):
     protected: bool = True
     lock: bool = True
     rollback: bool = True
+    # Git playbook jobs only (playbook.source == "git"):
+    playVars: list[list[str]] = []  # plain playbook variables [[name, value], ...]
+    secretVars: list[list[str]] | None = None  # secret ones; None: none on create, keep the saved ones on edit
+    copySecretVarsFrom: str | None = None  # create only (복제): copy the secret variables of this job id
+    loginKey: str = ""  # password key to log in with instead of the inventory's SSH key; "" = not used
+    becomeKey: str = ""  # password key used as the sudo password; "" = not used
 
 
 class JobUpdate(JobIn):
@@ -163,7 +174,8 @@ NO_EDIT = "이 작업을 고칠 권한이 없어요."
 
 # Activity log labels for PUT, in form order.
 FIELD_LABELS = {
-    "name": "이름", "playbook": "배포 방법", "files": "파일", "images": "추가 이미지", "target": "배포 대상", "image": "이미지", "env": "환경 변수",
+    "name": "이름", "playbook": "배포 방법", "files": "파일", "images": "추가 이미지", "vars": "플레이북 변수", "login": "접속 방식",
+    "target": "배포 대상", "image": "이미지", "env": "환경 변수",
     "editors": "편집 권한", "hook": "자동 배포", "protected": "운영 보호", "lock": "동시 실행 잠금", "rollback": "실패 시 되돌리기",
 }
 
@@ -397,6 +409,131 @@ def new_env_set(db: Session, job_name: str, vars_: list[list[str]]) -> str:
     return env_name
 
 
+# ---------- playbook variables and password login (Git playbook jobs only) ----------
+
+NOT_GIT_PLAY = "플레이북 변수와 비밀번호 접속은 Git 플레이북 작업에서만 쓸 수 있어요."
+PLAY_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
+MAX_PLAY_VARS, MAX_PLAY_VALUE = 50, 4096
+# Variables Wharfline passes to every playbook (runner.extra_vars); extra images add <var>_image, <var>_tag, <var>_image_ref.
+WHARFLINE_PLAY_VARS = {"image", "image_tag", "image_ref", "env_file", "app_name", "registry_host", "registry_user",
+                       "registry_password", "env_src"}
+# Connection settings and magic variables a playbook variable must never override.
+ANSIBLE_CONN_RE = re.compile(r"^ansible_(host|port|user|password|pass|ssh_\w*|private_key_file|become\w*|sudo\w*|su\w*|connection"
+                             r"|shell_\w*|python_interpreter|remote_\w*|timeout|pipelining)$")
+ANSIBLE_SPECIAL = {"hostvars", "groups", "group_names", "inventory_hostname", "inventory_hostname_short", "play_hosts",
+                   "ansible_play_hosts", "environment", "omit"}
+
+
+def reserved_play_var(name: str, extra_images: list[dict] | None) -> bool:
+    if name in WHARFLINE_PLAY_VARS or name in ANSIBLE_SPECIAL or ANSIBLE_CONN_RE.match(name):
+        return True
+    image_vars = runner.extra_image_vars({"extraImages": extra_images or []})
+    return name in {k.lower() for k in image_vars}
+
+
+def clean_play_vars(pairs: list[list[str]]) -> list[list[str]]:
+    """[[name, value], ...] with names trimmed; each name and value checked on its own."""
+    out = []
+    for pair in pairs:
+        if len(pair) != 2:
+            raise HTTPException(400, "변수는 [이름, 값] 형식이어야 해요.")
+        name, value = pair[0].strip(), pair[1]
+        if not PLAY_VAR_RE.match(name):
+            raise HTTPException(400, f'"{name or "(빈 이름)"}"은(는) 변수 이름으로 쓸 수 없어요. 영문, 숫자, _로 적고 숫자로 시작하지 않게 해 주세요.')
+        if len(value) > MAX_PLAY_VALUE:
+            raise HTTPException(400, f"{name} 값이 너무 길어요 (최대 {MAX_PLAY_VALUE}자).")
+        out.append([name, value])
+    return out
+
+
+def check_play_var_names(names: list[str], extra_images: list[dict] | None) -> None:
+    """Plain and secret names together: at most MAX_PLAY_VARS, no repeats, none Wharfline or Ansible uses."""
+    if len(names) > MAX_PLAY_VARS:
+        raise HTTPException(400, f"플레이북 변수는 일반과 비밀을 합쳐 {MAX_PLAY_VARS}개까지 넣을 수 있어요.")
+    seen: set[str] = set()
+    for name in names:
+        if reserved_play_var(name, extra_images):
+            raise HTTPException(400, f"변수 이름 {name}은(는) Wharfline이나 Ansible 접속에 쓰는 이름이라 쓸 수 없어요.")
+        if name in seen:
+            raise HTTPException(400, f"변수 이름 {name}이(가) 두 번 들어 있어요.")
+        seen.add(name)
+
+
+def resolve_play_vars(db: Session, me: m.Member | None, body: JobIn, job: m.Job | None,
+                      extra_images: list[dict] | None) -> tuple[list[list[str]] | None, list[list[str]], list[list[str]]]:
+    """Validate the playbook variables. Returns (play_vars to store, secret vars to store, the job's current secret vars).
+
+    Writing secret values (new ones, a copy, or changing/removing saved ones) needs the "env" permission;
+    changing saved ones also needs a recent password check, like pasting over a .env.
+    """
+    git = body.playbook.source == "git"
+    copy_from = (body.copySecretVarsFrom or "").strip() if job is None else ""  # create only
+    if not git and (body.playVars or body.secretVars or copy_from or body.loginKey.strip() or body.becomeKey.strip()):
+        raise HTTPException(400, NOT_GIT_PLAY)
+    row = db.get(m.JobSecretVars, job.id) if job else None
+    current = row.get_vars() if row else []
+    if not git:
+        plain, secret = None, []
+    else:
+        plain = clean_play_vars(body.playVars)
+        if body.secretVars is not None:
+            secret = clean_play_vars(body.secretVars)
+        elif copy_from:
+            src = db.get(m.Job, copy_from)
+            if not src:
+                raise HTTPException(400, "복제할 작업을 찾을 수 없어요.")
+            src_row = db.get(m.JobSecretVars, src.id)
+            secret = src_row.get_vars() if src_row else []
+        else:
+            secret = current  # edit without new values: keep the saved ones
+        check_play_var_names([k for k, _ in plain] + [k for k, _ in secret], extra_images)
+    if secret != current:
+        if not s.can(me, "env"):
+            raise HTTPException(403, s.NO_PERM)
+        if current and not s.sudo_active(db):
+            raise HTTPException(403, "sudo_required")
+    return plain, secret, current
+
+
+def resolve_login_keys(db: Session, me: m.Member | None, body: JobIn, job: m.Job | None) -> tuple[str | None, str | None]:
+    """The password keys for login and sudo. Only Owner/Admin set or change them; password login needs 운영 보호."""
+    git = body.playbook.source == "git"
+    login = (body.loginKey.strip() or None) if git else None
+    become = (body.becomeKey.strip() or None) if git else None
+    old = (job.login_key, job.become_key) if job else (None, None)
+    if (login, become) != old and not s.can(me, "run_protected"):
+        raise HTTPException(403, s.NO_PERM)
+    for name in (login, become):
+        if name and not db.scalar(select(m.Key).where(m.Key.name == name, m.Key.kind == "password")):
+            raise HTTPException(400, f"비밀번호 키 {name}을(를) 찾을 수 없어요. 키 저장소에 로그인 비밀번호로 추가해 주세요.")
+    if login and not body.protected:
+        raise HTTPException(400, "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요.")
+    return login, become
+
+
+def move_key_use(db: Session, old: str | None, new: str | None) -> None:
+    """Keep keys.used_count right when a job stops or starts using a password key."""
+    if old == new:
+        return
+    if old and (k := db.scalar(select(m.Key).where(m.Key.name == old))) and k.used_count:
+        k.used_count -= 1
+    if new and (k := db.scalar(select(m.Key).where(m.Key.name == new))):
+        k.used_count += 1
+
+
+def save_secret_vars(db: Session, job_id: str, vars_: list[list[str]]) -> None:
+    """Replace the job's secret variables; an empty list removes them."""
+    row = db.get(m.JobSecretVars, job_id)
+    if not vars_:
+        if row:
+            db.delete(row)
+        return
+    if not row:
+        row = m.JobSecretVars(job_id=job_id)
+        db.add(row)
+    row.set_vars(vars_)
+
+
 # ---------- endpoints ----------
 
 @router.post("/jobs", dependencies=[Depends(require("job_create"))])
@@ -430,15 +567,21 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         tag = "latest"
     else:
         extras = check_extra_images(db, body.extraImages, None)
+    play_vars, secret_vars, _ = resolve_play_vars(db, me, body, None, extras)
+    login_key, become_key = resolve_login_keys(db, me, body, None)
     job = m.Job(
         id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script, service_path=service_path,
         files=files,
         extra_images=extras,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, hook_rule=check_hook_rule(body.hookRule), protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
+        play_vars=play_vars, login_key=login_key, become_key=become_key,
     )
     db.add(job)
     db.flush()
+    save_secret_vars(db, job.id, secret_vars)
+    move_key_use(db, None, login_key)
+    move_key_use(db, None, become_key)
     save_file_version(db, job, None, job.files)
     s.log_act(db, "배포 작업 생성", f"{name} · " + (f"{repo.name}/{path}" if repo else f"SSH 스크립트 {len(script or [])}단계"))
     db.commit()
@@ -476,6 +619,8 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
         tag = "latest"
     else:
         extra_images = check_extra_images(db, body.extraImages, job.extra_images)
+    play_vars, secret_vars, current_secret = resolve_play_vars(db, me, body, job, extra_images)
+    login_key, become_key = resolve_login_keys(db, me, body, job)
 
     changed: list[str] = []
     env_name = job.env
@@ -496,12 +641,14 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
         "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in extra_images], "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": (body.hook, check_hook_rule(body.hookRule)), "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
+        "vars": (play_vars or [], secret_vars), "login": (login_key, become_key),  # secret values are compared, never logged
     }
     old = {
         "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "files": job.files,
         "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": (job.hook, job.hook_rule), "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
+        "vars": ([list(x) for x in job.play_vars or []], current_secret), "login": (job.login_key, job.become_key),
     }
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
@@ -513,6 +660,11 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     job.env, job.editors = env_name, editors
     job.hook, job.protected, job.lock, job.rollback = body.hook, body.protected, body.lock, body.rollback
     job.hook_rule = check_hook_rule(body.hookRule)
+    if secret_vars != current_secret:
+        save_secret_vars(db, job.id, secret_vars)
+    move_key_use(db, job.login_key, login_key)
+    move_key_use(db, job.become_key, become_key)
+    job.play_vars, job.login_key, job.become_key = play_vars, login_key, become_key
 
     if changed:
         labels = ", ".join(FIELD_LABELS[k] for k in FIELD_LABELS if k in changed)
@@ -538,7 +690,9 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
     if busy:
         raise HTTPException(400, f"#{busy} 실행이 진행 중이거나 승인을 기다리고 있어 지울 수 없어요. 끝나거나 취소된 뒤에 지워 주세요.")
     s.log_act(db, "배포 작업 삭제", job.name, "warn")
-    db.delete(job)  # file versions go with it (ON DELETE CASCADE)
+    move_key_use(db, job.login_key, None)
+    move_key_use(db, job.become_key, None)
+    db.delete(job)  # file versions and secret playbook variables go with it (ON DELETE CASCADE)
     db.commit()
     return {"ok": True}
 
