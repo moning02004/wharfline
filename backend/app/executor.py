@@ -242,6 +242,53 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
 
 # ---------- small pure helpers (unit tested) ----------
 
+def git_host(url: str) -> tuple[str, int]:
+    """(host, port) of a git URL: https://h[:p]/…, ssh://[u@]h[:p]/…, or u@h:path."""
+    m_ = re.match(r"^[a-z+]+://(?:[^@/]+@)?(\[[^\]]+\]|[^:/]+)(?::(\d+))?", url)
+    if m_:
+        default = 443 if url.startswith("https") else 80 if url.startswith("http:") else 22
+        return m_.group(1), int(m_.group(2) or default)
+    m_ = re.match(r"^(?:[^@]+@)?([^:/]+):", url)
+    return (m_.group(1), 22) if m_ else (url, 0)
+
+
+GIT_FAILURES: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"Could not resolve host|Name or service not known|Temporary failure in name resolution|nodename nor servname", re.I),
+     "{host} 주소를 찾지 못했어요(DNS). 토큰이나 키 문제가 아니에요. backend 컨테이너에서 이 이름이 풀리는지 확인해 주세요: "
+     "docker compose exec backend getent hosts {host}"),
+    (re.compile(r"Failed to connect|Could not connect to server|Connection refused|Connection timed out|Operation timed out|"
+                r"No route to host|Network is unreachable|connect to host .* port \d+", re.I),
+     "{host}:{port}에 연결하지 못했어요. 토큰이나 키 문제가 아니라 네트워크 문제예요. Git 서버가 Wharfline과 같은 서버나 내부망에 있으면 "
+     "컨테이너가 공인 주소로 되돌아 들어가지 못하는 경우가 많아요. backend 서비스에 extra_hosts: [\"{host}:host-gateway\"] "
+     "(또는 Git 서버의 내부 IP)를 넣어 보세요."),
+    (re.compile(r"SSL certificate problem|server certificate verification failed|certificate verify failed|unable to get local issuer", re.I),
+     "{host}의 HTTPS 인증서를 믿을 수 없어요. 인증서가 만료됐거나 사설 인증서인지 확인해 주세요."),
+    (re.compile(r"Host key verification failed", re.I),
+     "{host}의 SSH 호스트 키를 확인하지 못했어요."),
+    (re.compile(r"Remote branch .* not found|couldn't find remote ref|Could not find remote branch", re.I),
+     "브랜치 {branch}가 저장소에 없어요. 브랜치 이름을 확인해 주세요."),
+    (re.compile(r"Authentication failed|could not read Username|could not read Password|terminal prompts disabled|"
+                r"HTTP Basic: Access denied|The requested URL returned error: 40[13]|Permission denied \(publickey|"
+                r"Invalid username or (password|token)", re.I),
+     "{host}에 로그인하지 못했어요 ({auth}). 토큰이나 키가 맞는지, 만료되거나 지워지지 않았는지 확인해 주세요. "
+     "바꾸려면 플레이북 레포 화면에서 '키 바꾸기'를 쓰세요."),
+    (re.compile(r"Repository not found|repository .* not found|does not appear to be a git repository|"
+                r"The requested URL returned error: 404", re.I),
+     "저장소를 찾지 못했어요. 주소가 맞는지, 토큰이나 키에 이 저장소 읽기 권한이 있는지 확인해 주세요 "
+     "(권한이 없으면 저장소가 없다고 나오기도 해요)."),
+]
+
+
+def git_clone_hint(lines: list[str], url: str, branch: str, auth: str) -> str:
+    """What to check after a failed git clone, read from git's own output."""
+    host, port = git_host(url)
+    text = "\n".join(lines)
+    for pattern, hint in GIT_FAILURES:
+        if pattern.search(text):
+            return hint.format(host=host, port=port, branch=branch, auth=auth)
+    return "주소, 브랜치, 키/토큰 권한을 확인해 주세요."
+
+
 def mask(text: str, secrets: list[str]) -> str:
     for x in secrets:
         if x in text:
@@ -370,8 +417,12 @@ def _write_secret(path: Path, text: str) -> Path:
     return path
 
 
-async def _stream(argv: list[str], out: Out, cwd: Path, env: dict[str, str], colour=classify, prefix: str = "") -> int:
-    """Run a process, stream stdout+stderr into the log, return its exit code. Killed if the run is cancelled."""
+async def _stream(argv: list[str], out: Out, cwd: Path, env: dict[str, str], colour=classify, prefix: str = "",
+                  seen: list[str] | None = None) -> int:
+    """Run a process, stream stdout+stderr into the log, return its exit code. Killed if the run is cancelled.
+
+    `seen` collects the lines too, so a failure can be explained from what the process said.
+    """
     kw: dict[str, Any] = {"start_new_session": True} if os.name == "posix" else {}
     proc = await asyncio.create_subprocess_exec(*argv, cwd=str(cwd), env=env, stdin=asyncio.subprocess.DEVNULL,
                                                 stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
@@ -382,6 +433,8 @@ async def _stream(argv: list[str], out: Out, cwd: Path, env: dict[str, str], col
             text = raw.decode(errors="replace").rstrip("\r\n")
             if text.strip():
                 out.line(colour(text), prefix + text)
+                if seen is not None:
+                    seen.append(text)
         return await proc.wait()
     finally:
         if proc.returncode is None:
@@ -516,10 +569,11 @@ async def _fetch(plan: Plan, out: Out, tmp: Path, env: dict[str, str]) -> Path |
             plan.secrets.append(basic)
             genv.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader", GIT_CONFIG_VALUE_0=f"Authorization: Basic {basic}")
         out.line("", f"$ git clone --depth 1 --branch {repo['branch']} {repo['url']}   # {repo['auth']}")
+        said: list[str] = []
         rc = await _stream(["git", "clone", "--depth", "1", "--single-branch", "--branch", repo["branch"], "--", repo["url"], str(dest)],
-                           out, tmp, genv, colour=lambda t: "r" if t.startswith(("fatal:", "error:")) else "")
+                           out, tmp, genv, colour=lambda t: "r" if t.startswith(("fatal:", "error:")) else "", seen=said)
         if rc != 0:
-            out.line("r", f"✘ 저장소를 받지 못했어요 (git 종료 코드 {rc}). 주소, 브랜치, 키/토큰 권한을 확인해 주세요.")
+            out.line("r", f"✘ 저장소를 받지 못했어요 (git 종료 코드 {rc}). {git_clone_hint(said, repo['url'], repo['branch'], repo['auth'])}")
             return None
         _, head = await _capture(["git", "rev-parse", "--short", "HEAD"], dest, env)
         if head:

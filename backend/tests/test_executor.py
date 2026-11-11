@@ -226,3 +226,27 @@ def test_a_changed_host_key_skips_the_server(tmp_path, monkeypatch):
     assert not ok
     assert saved == [{"host_key": "changed"}]
     assert any("호스트 키가 바뀌었어요" in t for t in texts)
+
+
+@pytest.mark.parametrize("url,expected", [
+    ("https://git.ermore.ai/ermore/infra", ("git.ermore.ai", 443)),
+    ("https://git.example.com:8443/o/r.git", ("git.example.com", 8443)),
+    ("git@github.com:org/ansible.git", ("github.com", 22)),
+    ("ssh://git@git.example.com:2222/o/r.git", ("git.example.com", 2222)),
+])
+def test_git_host(url, expected):
+    assert executor.git_host(url) == expected
+
+
+@pytest.mark.parametrize("line,says", [
+    ("fatal: unable to access 'https://git.ermore.ai/ermore/infra/': Failed to connect to git.ermore.ai port 443 after 2 ms: "
+     "Could not connect to server", "git.ermore.ai:443에 연결하지 못했어요"),
+    ("fatal: unable to access 'https://git.ermore.ai/x/': Could not resolve host: git.ermore.ai", "주소를 찾지 못했어요(DNS)"),
+    ("fatal: Authentication failed for 'https://git.ermore.ai/ermore/infra/'", "로그인하지 못했어요 (토큰 · ops-read)"),
+    ("remote: Repository not found.", "저장소를 찾지 못했어요"),
+    ("warning: Could not find remote branch prod to clone.", "브랜치 main가 저장소에 없어요"),
+    ("fatal: unable to access 'https://x/': SSL certificate problem: certificate has expired", "인증서를 믿을 수 없어요"),
+    ("something else", "주소, 브랜치, 키/토큰 권한을 확인해 주세요."),
+])
+def test_git_clone_hint_names_the_cause(line, says):
+    assert says in executor.git_clone_hint([line], "https://git.ermore.ai/ermore/infra", "main", "토큰 · ops-read")
