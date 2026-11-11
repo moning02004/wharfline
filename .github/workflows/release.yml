@@ -30,6 +30,7 @@ jobs:
   release:
     needs: test
     runs-on: ubuntu-latest
+    timeout-minutes: 30  # a stuck build must not hold the queue for hours
     steps:
       - uses: actions/checkout@v4
         with:
