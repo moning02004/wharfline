@@ -121,10 +121,10 @@ export interface Job {
   playVars: [string, string][];
   /** Git playbook jobs: names of the secret playbook variables (values are never sent). */
   secretVarNames: string[];
-  /** Git playbook jobs: password key to log in with instead of the inventory SSH key. */
-  loginKey: string | null;
-  /** Git playbook jobs: password key used as the sudo (become) password. */
-  becomeKey: string | null;
+  /** A Docker Compose app: Wharfline writes the script. */
+  compose: boolean;
+  /** Compose apps from a repo: the file inside it; null when the file was pasted. */
+  composePath: string | null;
 }
 
 export type GitProvider = "gitea" | "github" | "gitlab";
@@ -255,7 +255,7 @@ export interface Repo {
 
 export interface Key {
   id: string;
-  kind: "ssh" | "token" | "password";
+  kind: "ssh" | "token";
   name: string;
   type: string;
   fingerprint: string;

@@ -104,17 +104,14 @@ class Plan:
     book: str = ""
     extra_vars: dict[str, Any] = field(default_factory=dict)
     # playbook jobs from a repo (not the built-in playbook, never script jobs): the job's own -e variables
-    # and an optional password login / sudo password, each from a "password" key.
     play_vars: dict[str, str] = field(default_factory=dict)
     secret_vars: dict[str, str] = field(default_factory=dict)
-    login: tuple[str, str] | None = None  # (account, password)
-    login_key_name: str = ""
-    become_password: str | None = None
-    become_key_name: str = ""
     # script jobs
     script: list[dict[str, str]] = field(default_factory=list)
     files: list[dict[str, str]] = field(default_factory=list)
     service_path: str = ""
+    compose_path: str = ""  # Compose jobs from a repo: the file to fetch when the run starts
+    compose_tag: str = ""
     variables: dict[str, str] = field(default_factory=dict)
     # both
     env_label: str = ""
@@ -178,17 +175,8 @@ def build_plan(db: Session, job: dict, groups: list[str], no: int, tag: str, hea
     return plan
 
 
-def _password_key(db: Session, name: str, what: str) -> tuple[str, str]:
-    """(account, password) of a "password" key; marks it used."""
-    k = db.scalar(select(m.Key).where(m.Key.name == name, m.Key.kind == "password"))
-    if not k or not k.has_secret:
-        raise PlanError(f"작업의 {what}에 쓰는 비밀번호 키 {name}를 찾을 수 없어요.")
-    k.last_used = time.strftime("%Y-%m-%d %H:%M")
-    return (k.fingerprint or "").split(" · ")[0].strip(), k.get_secret() or ""
-
-
 def _fill_play_options(db: Session, plan: Plan, job: dict) -> None:
-    """Variables, secret variables, password login and sudo password of a playbook job from a repo."""
+    """Variables and secret variables of a playbook job from a repo."""
     row = db.get(m.Job, job["id"])
     if row is None:
         return
@@ -196,18 +184,33 @@ def _fill_play_options(db: Session, plan: Plan, job: dict) -> None:
     sv = db.get(m.JobSecretVars, job["id"])
     plan.secret_vars = {str(k): str(v) for k, v in (sv.get_vars() if sv else [])}
     plan.secrets += list(plan.secret_vars.values())
-    if row.login_key:
-        user, password = _password_key(db, row.login_key, "접속 계정")
-        if not user or user == "-":
-            raise PlanError(f"비밀번호 키 {row.login_key}에 로그인 계정이 없어요.")
-        if user == "root":  # keys saved before root was refused
-            raise PlanError(f"비밀번호 키 {row.login_key}의 계정이 root예요. root로는 접속할 수 없어요. 배포용 사용자 키로 바꿔 주세요.")
-        plan.login, plan.login_key_name = (user, password), row.login_key
-        plan.secrets.append(password)
-    if row.become_key:
-        _, password = _password_key(db, row.become_key, "sudo 비밀번호")
-        plan.become_password, plan.become_key_name = password, row.become_key
-        plan.secrets.append(password)
+
+
+def git_access(name: str, url: str, branch: str, auth: str, key: m.Key | None) -> dict[str, Any]:
+    """What git needs to reach a repo; `key` is its SSH key or access token, if any."""
+    out: dict[str, Any] = {"name": name, "kind": "git", "url": url, "branch": branch, "auth": auth}
+    if key:
+        secret = key.get_secret() or ""
+        if key.kind == "ssh":
+            out["ssh_key"] = secret
+        else:
+            user = key.fingerprint.split(" · ")[0].strip()
+            out["token"], out["token_user"] = secret, (user if user and user != "-" else "git")
+    return out
+
+
+def _plan_repo(db: Session, plan: Plan, repo: m.Repo) -> None:
+    """Read the repo a run fetches from, with its key; the token goes on the mask list."""
+    if repo.kind != "git":
+        plan.repo = {"name": repo.name, "kind": repo.kind, "url": repo.url, "branch": repo.branch, "auth": repo.auth}
+        return
+    key_name = repo.auth.split(" · ", 1)[1] if " · " in repo.auth else ""
+    key = db.scalar(select(m.Key).where(m.Key.name == key_name)) if key_name else None
+    if key_name and (not key or not key.has_secret):
+        raise PlanError(f"레포 {repo.name}에 쓰는 키 {key_name}를 찾을 수 없어요.")
+    plan.repo = git_access(repo.name, repo.url, repo.branch, repo.auth, key)
+    if plan.repo.get("token"):
+        plan.secrets.append(plan.repo["token"])
 
 
 def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runner) -> None:
@@ -216,12 +219,11 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         raise PlanError(f"인벤토리 {job['inventory']}을(를) 찾을 수 없어요.")
     if plan.kind == "playbook" and (job.get("playbook") or {}).get("kind") != "builtin":
         _fill_play_options(db, plan, job)
-    if plan.login is None:  # a password login doesn't need the inventory's SSH key
-        key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
-        if not key or not key.has_secret:
-            raise PlanError(f"인벤토리 {inv.name}의 SSH 키 {inv.key}를 찾을 수 없어요.")
-        plan.ssh_key, plan.key_name = key.get_secret() or "", key.name
-        key.last_used = time.strftime("%Y-%m-%d %H:%M")
+    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
+    if not key or not key.has_secret:
+        raise PlanError(f"인벤토리 {inv.name}의 SSH 키 {inv.key}를 찾을 수 없어요.")
+    plan.ssh_key, plan.key_name = key.get_secret() or "", key.name
+    key.last_used = time.strftime("%Y-%m-%d %H:%M")
     for h in inv.hosts:
         if groups and h.grp not in groups:
             continue
@@ -229,8 +231,7 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         if reason:
             plan.skipped.append((h.name, reason))
         else:
-            user = plan.login[0] if plan.login else h.ssh_user
-            plan.targets.append(Target(h.id, h.name, h.ip, h.port, user, h.grp, h.host_fingerprint))
+            plan.targets.append(Target(h.id, h.name, h.ip, h.port, h.ssh_user, h.grp, h.host_fingerprint))
     if not plan.targets:
         raise PlanError("배포할 수 있는 서버가 없어요.")
 
@@ -253,6 +254,12 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         plan.variables = runner.script_env(job, tag, bool(env))
         plan.service_path = plan.variables["SERVICE_PATH"]
         plan.env_path = plan.variables.get("ENV_FILE", "")
+        if row and row.compose and row.repo:
+            repo = db.scalar(select(m.Repo).where(m.Repo.name == row.repo))
+            if not repo:
+                raise PlanError(f"compose 파일이 있는 레포 {row.repo}을(를) 찾을 수 없어요.")
+            _plan_repo(db, plan, repo)
+            plan.compose_path, plan.compose_tag = row.book or "", compose_ref_tag(job, tag)
         return
 
     pb = job["playbook"]
@@ -262,20 +269,7 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
     if not s.PLAYBOOK_PATH_RE.match(pb["path"] or ""):
         raise PlanError(f"플레이북 경로를 확인해 주세요: {pb['path']}")
     plan.book = pb["path"]
-    plan.repo = {"name": repo.name, "kind": repo.kind, "url": repo.url, "branch": repo.branch, "auth": repo.auth}
-    if repo.kind == "git":
-        key_name = repo.auth.split(" · ", 1)[1] if " · " in repo.auth else ""
-        if key_name:
-            k = db.scalar(select(m.Key).where(m.Key.name == key_name))
-            if not k or not k.has_secret:
-                raise PlanError(f"레포 {repo.name}에 쓰는 키 {key_name}를 찾을 수 없어요.")
-            secret = k.get_secret() or ""
-            if k.kind == "ssh":
-                plan.repo["ssh_key"] = secret
-            else:
-                user = k.fingerprint.split(" · ")[0].strip()
-                plan.repo["token"], plan.repo["token_user"] = secret, (user if user and user != "-" else "git")
-                plan.secrets.append(secret)
+    _plan_repo(db, plan, repo)
     xv: dict[str, Any] = runner.extra_vars(job, tag, bool(env))
     if plan.registries:
         main = next((r for r in plan.registries if job.get("image") and job["image"].startswith(r.host + "/")), plan.registries[0])
@@ -374,18 +368,12 @@ def inventory(targets: list[Target]) -> dict[str, Any]:
 def playbook_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> dict[str, Any]:
     """Everything ansible-playbook gets with -e @vars.json, in order of who wins.
 
-    The job's variables, then its secret variables, then Wharfline's own (image, env_src, registry…),
-    then the login and sudo passwords.
+    The job's variables, then its secret variables, then Wharfline's own (image, env_src, registry…).
     """
-    out: dict[str, Any] = {**plan.play_vars, **plan.secret_vars, **(plan.extra_vars if wharfline is None else wharfline)}
-    if plan.login:
-        out["ansible_password"] = plan.login[1]
-    if plan.become_password is not None:
-        out["ansible_become_password"] = plan.become_password
-    return out
+    return {**plan.play_vars, **plan.secret_vars, **(plan.extra_vars if wharfline is None else wharfline)}
 
 
-HIDDEN_VARS = ("registry_password", "env_src", "ansible_password", "ansible_become_password")
+HIDDEN_VARS = ("registry_password", "env_src")
 
 
 def shown_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> str:
@@ -397,21 +385,14 @@ def shown_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> str:
     return " ".join(parts)
 
 
-def ssh_args(known_hosts: str | Path, password_login: bool) -> str:
-    """ANSIBLE_SSH_ARGS. The host key stays pinned either way; a password login turns off keys and batch mode."""
-    auth = ("-o PreferredAuthentications=password,keyboard-interactive -o PubkeyAuthentication=no " if password_login
-            else "-o IdentitiesOnly=yes -o BatchMode=yes ")
-    return f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes {auth}-o ControlMaster=auto -o ControlPersist=60s"
+def ssh_args(known_hosts: str | Path) -> str:
+    """ANSIBLE_SSH_ARGS: the host key stays pinned, only the job's key is offered."""
+    return f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o BatchMode=yes -o ControlMaster=auto -o ControlPersist=60s"
 
 
 def access_lines(plan: Plan) -> list[Line]:
     """How a playbook run logs in, and which variables it adds (names only for secrets)."""
-    if plan.login:
-        lines: list[Line] = [("", f"접속: 비밀번호 · 계정 {plan.login[0]} (키 {plan.login_key_name})")]
-    else:
-        lines = [("", f"접속: SSH 키 {plan.key_name}")]
-    if plan.become_password is not None:
-        lines.append(("", f"sudo 비밀번호: 키 {plan.become_key_name}"))
+    lines: list[Line] = [("", f"접속: SSH 키 {plan.key_name}")]
     if plan.play_vars or plan.secret_vars:
         lines.append(("", f"플레이북 변수: 일반 {len(plan.play_vars)}개 · 비밀 {len(plan.secret_vars)}개"))
     return lines
@@ -635,6 +616,68 @@ async def execute(plan: Plan) -> None:
             runner._finish(plan.no, status)
 
 
+# ---------- git ----------
+
+def _git_env(repo: dict[str, Any], env: dict[str, str], tmp: Path) -> tuple[dict[str, str], str | None]:
+    """git's environment for a private repo, and the token header value (to mask it in logs)."""
+    genv, basic = dict(env), None
+    if repo.get("ssh_key"):
+        key = _write_secret(tmp / "git_key", repo["ssh_key"])
+        genv["GIT_SSH_COMMAND"] = (f"ssh -i {shlex.quote(str(key))} -o IdentitiesOnly=yes -o BatchMode=yes "
+                                   f"-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(tmp / 'git_known_hosts'))}")
+    if repo.get("token"):
+        basic = base64.b64encode(f"{repo['token_user']}:{repo['token']}".encode()).decode()
+        genv.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader", GIT_CONFIG_VALUE_0=f"Authorization: Basic {basic}")
+    return genv, basic
+
+
+class RepoFileError(Exception):
+    """A file could not be read from a repo. The message says what to check."""
+
+
+class RefNotFound(RepoFileError):
+    """The repo has no such branch or tag."""
+
+
+GIT_MISSING_REF = re.compile(r"Remote branch .* not found|couldn't find remote ref|Could not find remote branch", re.I)
+MAX_REPO_FILE = 512 * 1024
+GIT_READ_TIMEOUT = 120.0
+
+
+async def read_repo_file(repo: dict[str, Any], ref: str, path: str) -> tuple[str, str]:
+    """(content, short commit) of one text file at a branch or tag. Nothing is kept afterwards."""
+    with tempfile.TemporaryDirectory(prefix="wharfline-repo-") as d:
+        tmp = Path(d)
+        env = _base_env(tmp)
+        genv, _ = _git_env(repo, env, tmp)
+        dest = tmp / "src"
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth", "1", "--single-branch", "--branch", ref, "--", repo["url"], str(dest),
+            cwd=str(tmp), env=genv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        try:
+            said, _ = await asyncio.wait_for(proc.communicate(), GIT_READ_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RepoFileError(f"{GIT_READ_TIMEOUT:.0f}초 안에 저장소를 받지 못했어요.") from None
+        lines = said.decode(errors="replace").splitlines()
+        if proc.returncode != 0:
+            if GIT_MISSING_REF.search("\n".join(lines)):
+                raise RefNotFound(f"저장소에 {ref}가 없어요. 브랜치 이름을 확인해 주세요.")
+            raise RepoFileError(git_clone_hint(lines, repo["url"], ref, repo["auth"]))
+        file = dest / path
+        if not file.is_file() or not file.resolve().is_relative_to(dest.resolve()):
+            raise RepoFileError(f"저장소의 {ref}에 {path} 파일이 없어요.")
+        if file.stat().st_size > MAX_REPO_FILE:
+            raise RepoFileError(f"{path}이(가) 512KB를 넘어요.")
+        try:
+            content = file.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise RepoFileError(f"{path}은(는) 텍스트 파일이 아니에요.") from None
+        _, head = await _capture(["git", "rev-parse", "--short", "HEAD"], dest, env)
+        return content, head
+
+
 # ---------- playbook jobs ----------
 
 async def _fetch(plan: Plan, out: Out, tmp: Path, env: dict[str, str]) -> Path | None:
@@ -650,15 +693,9 @@ async def _fetch(plan: Plan, out: Out, tmp: Path, env: dict[str, str]) -> Path |
         out.line("", f"로컬 경로: {repo['url']} → 작업 폴더로 복사 (실행 후 삭제)")
         shutil.copytree(repo["url"], dest, symlinks=True)
     else:
-        genv = dict(env)
-        if repo.get("ssh_key"):
-            key = _write_secret(tmp / "git_key", repo["ssh_key"])
-            genv["GIT_SSH_COMMAND"] = (f"ssh -i {shlex.quote(str(key))} -o IdentitiesOnly=yes -o BatchMode=yes "
-                                       f"-o StrictHostKeyChecking=accept-new -o UserKnownHostsFile={shlex.quote(str(tmp / 'git_known_hosts'))}")
-        if repo.get("token"):
-            basic = base64.b64encode(f"{repo['token_user']}:{repo['token']}".encode()).decode()
+        genv, basic = _git_env(repo, env, tmp)
+        if basic:
             plan.secrets.append(basic)
-            genv.update(GIT_CONFIG_COUNT="1", GIT_CONFIG_KEY_0="http.extraHeader", GIT_CONFIG_VALUE_0=f"Authorization: Basic {basic}")
         out.line("", f"$ git clone --depth 1 --branch {repo['branch']} {repo['url']}   # {repo['auth']}")
         said: list[str] = []
         rc = await _stream(["git", "clone", "--depth", "1", "--single-branch", "--branch", repo["branch"], "--", repo["url"], str(dest)],
@@ -693,10 +730,6 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         out.line("r", "✘ 실행기에 git이 없어요.")
         out.end("플레이북 가져오기", False)
         return False
-    if plan.login and shutil.which("sshpass", path=env.get("PATH")) is None:
-        out.line("r", "✘ 실행기에 sshpass가 없어요. 비밀번호로 접속하려면 backend 이미지에 sshpass를 설치해 주세요.")
-        out.end("플레이북 가져오기", False)
-        return False
     src = await _fetch(plan, out, tmp, env)
     out.end("플레이북 가져오기", src is not None)
     if src is None:
@@ -711,7 +744,7 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         return False
 
     out.start("플레이북 실행")
-    key = None if plan.login else _write_secret(tmp / "ssh_key", plan.ssh_key)
+    key = _write_secret(tmp / "ssh_key", plan.ssh_key)
     kh = tmp / "known_hosts"
     kh.write_text("".join(known_hosts_line(t.ip, t.port, k) + "\n" for t, k in alive))
     inv = tmp / "inventory.yml"
@@ -727,13 +760,13 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
             out.end("플레이북 실행", False)
             return False
         xv["env_src"] = str(_write_secret(tmp / "app.env", text))
-    # Passwords and secret variables reach ansible only through this 0600 file, never argv or the environment.
+    # Secret variables reach ansible only through this 0600 file, never argv or the environment.
     vars_file = _write_secret(tmp / "vars.json", json.dumps(playbook_vars(plan, xv), ensure_ascii=False))
     (tmp / "cp").mkdir(mode=0o700)
     limit = ",".join(inventory_name(t.name) for t, _ in alive)
     env.update(
         ANSIBLE_HOST_KEY_CHECKING="True",
-        ANSIBLE_SSH_ARGS=ssh_args(kh, plan.login is not None),
+        ANSIBLE_SSH_ARGS=ssh_args(kh),
         ANSIBLE_SSH_CONTROL_PATH_DIR=str(tmp / "cp"),
         ANSIBLE_LOCAL_TEMP=str(tmp / "ansible-local"),
         ANSIBLE_NOCOLOR="1",
@@ -742,9 +775,8 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         ANSIBLE_STDOUT_CALLBACK="default",
     )
     argv = ["ansible-playbook", plan.book, "-i", str(inv), "--limit", limit, "-e", f"@{vars_file}"]
-    if key is not None:
-        env["ANSIBLE_PRIVATE_KEY_FILE"] = str(key)
-        argv += ["--private-key", str(key)]
+    env["ANSIBLE_PRIVATE_KEY_FILE"] = str(key)
+    argv += ["--private-key", str(key)]
     out.line("", f"$ ansible-playbook {plan.book} -i <임시 인벤토리> --limit {limit} {shown_vars(plan, xv)}")
     rc = await _stream(argv, out, src, env)
     out.end("플레이북 실행", rc == 0)
@@ -817,6 +849,37 @@ async def _upload(conn: asyncssh.SSHClientConnection, path: str, content: str, m
 SHELL = "sh -c 'if command -v bash >/dev/null 2>&1; then exec bash -s; else exec sh -s; fi'"
 
 
+COMPOSE_FILE = "docker-compose.yml"
+
+
+def compose_ref_tag(job: dict, tag: str) -> str:
+    """The tag whose compose file a run should use: the main image's, else the first tracked image's. "" when none is pinned."""
+    tags = job.get("extraTags") or {}
+    pinned = [tag] + [tags.get(x["var"]) or x.get("defaultTag") or "" for x in job.get("extraImages") or [] if x.get("var")]
+    return next((t for t in pinned if t and t not in ("latest", "-")), "")
+
+
+async def refresh_compose(plan: Plan, out: Out) -> bool:
+    """Replace the job's saved compose file with the repo's, at the deployed version when the repo has that tag."""
+    repo, path = plan.repo, plan.compose_path
+    for ref in ([plan.compose_tag] if plan.compose_tag else []) + [repo["branch"]]:
+        try:
+            content, commit = await read_repo_file(repo, ref, path)
+        except RefNotFound as e:
+            if ref != repo["branch"]:
+                out.line("y", f"저장소에 태그 {ref}가 없어 브랜치 {repo['branch']}의 compose 파일을 써요.")
+                continue
+            out.line("r", f"✘ {e}")
+            return False
+        except RepoFileError as e:
+            out.line("r", f"✘ {repo['url']}의 {path}를 받지 못했어요. {e}")
+            return False
+        plan.files = [{"path": COMPOSE_FILE, "content": content}]
+        out.line("g", f"✓ {path} @ {ref}" + (f" ({commit})" if commit else ""))
+        return True
+    return False
+
+
 async def _run_script(plan: Plan, out: Out) -> bool:
     tally: dict[str, dict[str, int]] = {}
     conns: dict[str, asyncssh.SSHClientConnection] = {}
@@ -864,6 +927,12 @@ async def _run_script(plan: Plan, out: Out) -> bool:
 
     try:
         out.start("서버 연결")
+        if plan.compose_path and not await refresh_compose(plan, out):  # before any server is touched
+            out.end("서버 연결", False)
+            out.start("마무리")
+            out.line("r", "✘ 배포 실패 · compose 파일을 받지 못했어요")
+            out.end("마무리", False)
+            return False
         out.line("h", "TASK [SSH 연결] " + "*" * 30)
         for t, hk in await verify_hosts(plan, out):
             try:

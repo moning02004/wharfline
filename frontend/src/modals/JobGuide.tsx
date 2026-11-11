@@ -3,9 +3,10 @@ import { createContext, useContext, useEffect, useLayoutEffect, useState, type R
 import { createPortal } from "react-dom";
 import { Icon } from "../components/Icon";
 
-export type JobStepId = "name" | "playbook" | "script" | "target" | "image" | "env" | "vars" | "access" | "review";
+export type JobStepId = "compose" | "name" | "playbook" | "script" | "target" | "image" | "env" | "vars" | "access" | "review";
 
 export const JOB_STEPS: { id: JobStepId; label: string }[] = [
+  { id: "compose", label: "Compose 파일" }, // only for a Compose app; it also holds the name
   { id: "name", label: "기본 정보" },
   { id: "playbook", label: "배포 방법" },
   { id: "script", label: "스크립트" }, // only when the deploy method is an SSH script
@@ -33,7 +34,6 @@ export type TipId =
   | "env.vars"
   | "vars.plain"
   | "vars.secret"
-  | "vars.login"
   | "access.editors"
   | "access.safety"
   | "review";
@@ -80,8 +80,6 @@ export function tipFor(id: TipId, mode: Mode, opts: { builtin?: boolean } = {}):
       return mode === "edit"
         ? { text: "저장된 값은 보이지 않아요. 바꾸려면 값 바꾸기를 눌러 이름과 값을 다시 넣어요." }
         : { text: "DB 비밀번호처럼 숨길 값이에요. 암호화해 저장하고 실행 기록에는 ••••로 보여요.", example: "db_password" };
-    case "vars.login":
-      return { text: "보통은 인벤토리의 SSH 키로 접속해요. 서버가 비밀번호 로그인만 받거나 sudo에 비밀번호가 필요할 때만 키 저장소의 로그인 비밀번호를 골라요." };
     case "access.editors":
       return { text: "이 작업을 고칠 그룹이나 사람을 골라요. 안 고르면 Owner, Admin, 만든 사람만 고칠 수 있어요." };
     case "access.safety":

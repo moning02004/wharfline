@@ -78,7 +78,7 @@ class Key(EncryptedSecret, Base):
     __tablename__ = "keys"
     id: Mapped[str] = mapped_column(String(32), primary_key=True)
     ord: Mapped[int] = mapped_column(Integer, Identity())
-    kind: Mapped[str] = mapped_column(String(16))  # ssh | token | password
+    kind: Mapped[str] = mapped_column(String(16))  # ssh | token
     name: Mapped[str] = mapped_column(String(128), unique=True)
     type: Mapped[str] = mapped_column(String(32))
     fingerprint: Mapped[str] = mapped_column(String(256))
@@ -286,19 +286,21 @@ class Job(Base):
     # Git playbook jobs only (None otherwise): plain playbook variables [[name, value], ...];
     # secret ones live encrypted in JobSecretVars.
     play_vars: Mapped[list[list[str]] | None] = mapped_column(JSONB)
-    login_key: Mapped[str | None] = mapped_column(String(128))  # Key.name (kind password): log in with this user/password
-    become_key: Mapped[str | None] = mapped_column(String(128))  # Key.name (kind password): the sudo password
+    # A Docker Compose app: an SSH script job with fixed steps and one file. repo/book: where the file comes from (None when pasted).
+    compose: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
     playbook_repo: Mapped[Repo | None] = relationship(primaryjoin="foreign(Job.repo) == Repo.name", viewonly=True)
 
     def to_dict(self) -> dict[str, Any]:
         r = self.playbook_repo
         if self.script is not None:
-            playbook = {"repo": "", "kind": "script", "url": "", "branch": "", "path": f"SSH 스크립트 · {len(self.script)}단계"}
+            playbook = {"repo": self.repo or "", "kind": "script", "url": r.url if r else "", "branch": r.branch if r else "",
+                        "path": "Docker Compose" if self.compose else f"SSH 스크립트 · {len(self.script)}단계"}
         else:
             playbook = {"repo": self.repo, "kind": r.kind if r else "git", "url": r.url if r else "",
                         "branch": r.branch if r else "-", "path": self.book}
         return {"id": self.id, "name": self.name, "image": self.image, "tagNow": self.tag_now, "defaultTag": self.default_tag,
                 "playbook": playbook, "script": self.script, "servicePath": self.service_path,
+                "compose": self.compose, "composePath": self.book if self.compose else None,
                 "files": [{"path": f["path"], "size": len(f["content"].encode())} for f in self.files or []],
                 "filesVer": self.files_ver, "hookRule": self.hook_rule,
                 "extraImages": [dict(x) for x in self.extra_images or []],

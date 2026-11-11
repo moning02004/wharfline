@@ -403,14 +403,9 @@ function ConfirmRun({
           items={[
             ["배포 방법", <PlaybookLine job={job} />],
             ["환경 변수", job.env ? <EnvLink name={job.env} /> : "없음"],
-            // Git playbook jobs only: how the run logs in, and the playbook variables it passes.
+            // Git playbook jobs only: the playbook variables it passes.
             ...(job.playbook.kind === "git" || job.playbook.kind === "local"
               ? ([
-                  [
-                    "접속 방식",
-                    `${job.loginKey ? `비밀번호 · ${job.loginKey}` : "인벤토리 SSH 키"}${job.becomeKey ? ` · sudo 비밀번호 ${job.becomeKey}` : ""}`,
-                    job.loginKey ? undefined : "text-muted",
-                  ],
                   ...((job.playVars?.length ?? 0) + (job.secretVarNames?.length ?? 0)
                     ? [["플레이북 변수", `일반 ${job.playVars?.length ?? 0}개 · 비밀 ${job.secretVarNames?.length ?? 0}개`, "text-muted"]]
                     : []),

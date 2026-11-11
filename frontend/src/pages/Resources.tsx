@@ -939,8 +939,8 @@ export function Inventory() {
 
 /* ---------- keys ---------- */
 
-/** What a key is used by: tokens by repos, passwords by deploy jobs, SSH keys by inventories. */
-const keyUser = (k: Key) => (k.kind === "token" ? "레포" : k.kind === "password" ? "배포 작업" : "인벤토리");
+/** What a key is used by: tokens by repos, SSH keys by inventories. */
+const keyUser = (k: Key) => (k.kind === "token" ? "레포" : "인벤토리");
 
 export function Keys() {
   const { data } = useApi<Key[]>("/keys");

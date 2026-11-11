@@ -38,7 +38,16 @@ function parseImage(text: string): { ref: string; tag: string } | { error: strin
 const isSsh = (url: string) => /^(git@|ssh:\/\/)/.test(url.trim());
 
 type Mode = "new" | "edit" | "copy";
-type Source = "git" | "builtin" | "script";
+type Source = "git" | "builtin" | "script" | "compose";
+/** Where a Compose app's file comes from. */
+type ComposeFrom = "git" | "text";
+const COMPOSE_FILE = "docker-compose.yml";
+
+/** A starting name for a Compose app: the repo's name, or the `name:` in the file. */
+function composeName(from: ComposeFrom, url: string, content: string): string {
+  if (from === "git") return url.trim().replace(/\.git$/, "").split(/[/:]/).pop() ?? "";
+  return content.match(/^name:\s*["']?([\w.-]+)/m)?.[1] ?? "";
+}
 interface StepDraft {
   id: number;
   name: string;
@@ -143,8 +152,6 @@ const WHARFLINE_PLAY_VARS = new Set(["image", "image_tag", "image_ref", "env_fil
 const ANSIBLE_CONN_RE = /^ansible_(host|port|user|password|pass|ssh_\w*|private_key_file|become\w*|sudo\w*|su\w*|connection|shell_\w*|python_interpreter|remote_\w*|timeout|pipelining)$/;
 const ANSIBLE_MAGIC = new Set(["hostvars", "groups", "group_names", "inventory_hostname", "inventory_hostname_short", "play_hosts", "ansible_play_hosts", "environment", "omit"]);
 const toDrafts = (vars: [string, string][]): VarDraft[] => vars.map(([n, v]) => ({ id: ++stepSeq, name: n, value: v }));
-/** Login account of a password key: the part before " · " in its fingerprint. */
-const keyAccount = (k: Key) => k.fingerprint.split(" · ")[0];
 
 /** Same rule as the server: an absolute folder, no "..". */
 const SERVICE_PATH_RE = /^\/(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9._/-]{1,254}$/;
@@ -215,11 +222,17 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   const pb = job?.playbook;
   const [name, setName] = useState(copying ? `${job.name} 복사본` : job?.name ?? "");
-  const [source, setSource] = useState<Source>(pb?.kind === "builtin" ? "builtin" : pb?.kind === "script" ? "script" : "git");
+  const [source, setSource] = useState<Source>(pb?.kind === "builtin" ? "builtin" : job?.compose ? "compose" : pb?.kind === "script" ? "script" : job ? "git" : "compose");
+  const scriptLike = source === "script" || source === "compose";
+  const [composeFrom, setComposeFrom] = useState<ComposeFrom>(job?.compose && !job.composePath ? "text" : "git");
+  const [composeBusy, setComposeBusy] = useState(false);
+  const [nameTouched, setNameTouched] = useState(!!job);
+  const [advanced, setAdvanced] = useState(mode === "edit"); // Compose apps: the 권한과 안전장치 step
   const isRepo = pb && (pb.kind === "git" || pb.kind === "local");
-  const [url, setUrl] = useState(isRepo ? pb.url : "");
-  const [branch, setBranch] = useState(isRepo ? pb.branch : "main");
-  const [path, setPath] = useState(isRepo ? pb.path : "");
+  const repoCompose = !!job?.compose && !!job.composePath;
+  const [url, setUrl] = useState(isRepo || repoCompose ? pb!.url : "");
+  const [branch, setBranch] = useState(isRepo || repoCompose ? pb!.branch : "main");
+  const [path, setPath] = useState(isRepo ? pb.path : repoCompose ? job!.composePath! : "");
   const [steps, setSteps] = useState<StepDraft[]>(() => (job?.script ?? []).map((st) => ({ ...st, id: ++stepSeq })));
   const [servicePath, setServicePath] = useState(job?.servicePath ?? "");
   const [files, setFiles] = useState<BundleFile[]>(() => (job?.files ?? []).map((f) => ({ ...f })));
@@ -276,18 +289,13 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [prot, setProt] = useState(job ? job.protected : true);
   const [lock, setLock] = useState(job?.lock ?? true);
   const [rb, setRb] = useState(job?.rollback ?? true);
-  // Playbook variables and how to log in (Git playbook jobs only).
-  const canLogin = can("run_protected");
+  // Playbook variables (Git playbook jobs only).
   const [playVars, setPlayVars] = useState<VarDraft[]>(() => toDrafts(job?.playVars ?? []));
   const savedSecrets = job?.secretVarNames ?? [];
   // A copy can carry the source's secret values only for members who may set them.
   const copySecrets = copying && canEnv && savedSecrets.length > 0;
   // null: keep the saved secrets (edit) or copy them on the server (copy). A list: sent whole, replacing them.
   const [secretVars, setSecretVars] = useState<VarDraft[] | null>(null);
-  // A Deployer's copy can't pick a login key: it starts on the inventory key.
-  const [loginKey, setLoginKey] = useState(copying && !canLogin ? "" : job?.loginKey ?? "");
-  const [becomeKey, setBecomeKey] = useState(copying && !canLogin ? "" : job?.becomeKey ?? "");
-  const passwordKeys = keys.filter((k) => k.kind === "password");
   const secretList = secretVars ?? [];
   /** Secret names in force: the typed list, else the saved (or copied) ones. */
   const secretNames = secretVars ? secretVars.map((v) => v.name.trim()) : editing || copySecrets ? savedSecrets : [];
@@ -304,9 +312,13 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   // The 스크립트 step exists only for SSH script jobs.
   // SSH script jobs track the images their files name, so they skip 버전 추적.
   // The 플레이북 변수 step exists only for Git playbook jobs.
-  const flow = JOB_STEPS.filter(
-    (st) => (st.id !== "script" || source === "script") && (st.id !== "image" || source !== "script") && (st.id !== "vars" || source === "git"),
-  );
+  // A Compose app asks three things; 권한과 안전장치 only when asked for, the rest Wharfline fills in.
+  const flow =
+    source === "compose"
+      ? JOB_STEPS.filter((st) => st.id === "compose" || st.id === "target" || st.id === "env" || (st.id === "access" && advanced))
+      : JOB_STEPS.filter(
+          (st) => st.id !== "compose" && (st.id !== "script" || source === "script") && (st.id !== "image" || source !== "script") && (st.id !== "vars" || source === "git"),
+        );
   const step = flow[Math.min(cur, flow.length - 1)].id;
   const last = cur >= flow.length - 1;
 
@@ -344,17 +356,61 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   // Variables the script and files use: Wharfline's own (자동) and the ones the env step should have.
   const autoVars = [
     ...BUILTIN_VARS,
-    ...(source === "script" ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.var) : extras.map((x) => x.var))
+    ...(scriptLike ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.var) : extras.map((x) => x.var))
       .filter(Boolean)
       .flatMap((v) => [`${v}_IMAGE`, `${v}_TAG`, `${v}_IMAGE_REF`]),
-    ...(source === "script" ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.tagVar) : []),
+    ...(scriptLike ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.tagVar) : []),
   ];
   const scriptVars =
-    source === "script" ? usedVars([...steps.map((st) => st.run), ...files.map((f) => f.content ?? "")]).filter((v) => !SHELL_VARS.has(v)) : [];
+    scriptLike ? usedVars([...(source === "script" ? steps.map((st) => st.run) : []), ...files.map((f) => f.content ?? "")]).filter((v) => !SHELL_VARS.has(v)) : [];
   const neededVars = scriptVars.filter((v) => !autoVars.includes(v));
 
   // `image:` lines in the job's files: variables can be tracked; a fixed tag can be turned into a variable.
-  const fileImages = source === "script" ? findFileImages(files) : [];
+  const fileImages = scriptLike ? findFileImages(files) : [];
+
+  /* ---------- Compose app ---------- */
+
+  const composeText = files[0]?.content ?? "";
+  const composePath = path.trim() || COMPOSE_FILE;
+  const setComposeText = (t: string) => {
+    setFiles(t ? [{ path: COMPOSE_FILE, size: t.length, content: t }] : []);
+    setFilesTouched(true);
+  };
+  const registries = useApi<{ registries: { host: string }[] }>(canResources ? "/registries" : null).data?.registries;
+  // Hosts of the file's images with no registry saved: a private image there would fail to pull.
+  const noRegistry = !canResources || !registries ? [] : [...new Set(fileImages.map((fi) => fi.ref.split("/")[0]))].filter((h) => h.includes(".") && h !== "docker.io" && !registries.some((r) => r.host === h));
+  const repoError = (): string => {
+    if (!reused && !/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim())) return "저장소 주소를 확인해 주세요. 예: https://github.com/org/app.git";
+    if (!PATH_RE.test(composePath)) return "compose 파일 경로는 레포 안의 .yml 파일이에요. 예: docker-compose.yml";
+    if (ssh && !reused && !key) return "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요.";
+    return "";
+  };
+  const loadCompose = async () => {
+    const bad = repoError();
+    if (bad) return fail(bad);
+    setComposeBusy(true);
+    try {
+      const r = await api.post<{ content: string; commit: string }>("/compose/fetch", { url: url.trim(), branch: branch.trim() || "main", path: composePath, key: reused ? NO_KEY : key });
+      setComposeText(r.content);
+      toast(`${composePath}을(를) 불러왔어요`);
+    } catch (e) {
+      fail(errMsg(e));
+    } finally {
+      setComposeBusy(false);
+    }
+  };
+  useEffect(() => {
+    if (source !== "compose" || nameTouched) return;
+    setName(composeName(composeFrom, url, composeText));
+  }, [source, nameTouched, composeFrom, url, composeText]);
+  // Editing: the form holds file names only, a Compose app shows its file.
+  useEffect(() => {
+    if (!editing || !job.compose || !job.files.length) return;
+    api.get<BundleFile[]>(`/jobs/${job.id}/files`).then(
+      (fs) => setFiles(fs.map((f) => ({ ...f, size: f.size ?? (f.content ?? "").length }))),
+      () => undefined,
+    );
+  }, [editing, job?.id]);
   const trackFixed = (fi: FileImage) => {
     const tagVar = `${fi.var}_TAG`;
     setFiles((prev) =>
@@ -371,6 +427,14 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   /** Client-side check of one step; the server validates everything again. */
   const validateStep = (id: JobStepId): string => {
     switch (id) {
+      case "compose": {
+        if (composeFrom === "git") {
+          const bad = repoError();
+          if (bad) return bad;
+        }
+        if ((!editing || filesTouched) && !composeText.trim()) return composeFrom === "git" ? "불러오기를 눌러 compose 파일을 가져와 주세요." : "compose 파일 내용을 넣어 주세요.";
+        return name.trim() ? "" : "이름을 넣어 주세요.";
+      }
       case "name":
         return name.trim() ? "" : "이름을 넣어 주세요.";
       case "playbook":
@@ -430,12 +494,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           if (secret && !v.value) return `비밀 변수 ${n}의 값을 넣어 주세요.`;
         }
         if (seen.size > PLAY_VAR_MAX) return `변수는 일반과 비밀을 합쳐 ${PLAY_VAR_MAX}개까지예요.`;
-        if (loginKey && !prot) return "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요. 권한과 안전장치 단계에서 켜 주세요.";
         return "";
       }
-      case "access":
-        if (source === "git" && loginKey && !prot) return "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요.";
-        return "";
       default:
         return "";
     }
@@ -472,9 +532,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   };
 
   // Optional steps (new job only): image unless the built-in playbook needs one, and env.
-  const varsEmpty = !playVars.length && !secretList.length && !secretNames.length && !loginKey && !becomeKey;
+  const varsEmpty = !playVars.length && !secretList.length && !secretNames.length;
   const skipLabel =
-    mode !== "edit"
+    mode !== "edit" && source !== "compose"
       ? step === "image" && source !== "builtin"
         ? "추적 없이 진행"
         : step === "env"
@@ -508,20 +568,22 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     playbook:
       source === "git"
         ? { source: "git", url: url.trim(), branch: branch.trim() || "main", path: path.trim(), key: reused ? NO_KEY : key }
-        : { source },
+        : { source: source === "compose" ? "script" : source },
+    // A Compose app: the server writes the steps from this.
+    compose: source === "compose" ? { url: composeFrom === "git" ? url.trim() : "", branch: branch.trim() || "main", path: composeFrom === "git" ? composePath : "", key: composeFrom === "git" && !reused ? key : NO_KEY } : null,
     script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
-    servicePath: source === "script" ? servicePath.trim() : "",
-    files: source !== "script" ? [] : mode !== "edit" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
+    servicePath: scriptLike ? servicePath.trim() : "",
+    files: !scriptLike ? [] : mode !== "edit" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
     // SSH script jobs: the server reads the tracked images from the files.
-    extraImages: source === "script" ? [] : extras.map((x) => ({ image: x.image.trim(), var: x.var, sourceRepo: canResources ? (x.repo ?? "").trim() : null })),
-    imageSourceRepo: source === "script" || !canResources ? null : (tracks.find((t) => t.var === "")?.repo ?? "").trim(),
+    extraImages: scriptLike ? [] : extras.map((x) => ({ image: x.image.trim(), var: x.var, sourceRepo: canResources ? (x.repo ?? "").trim() : null })),
+    imageSourceRepo: scriptLike || !canResources ? null : (tracks.find((t) => t.var === "")?.repo ?? "").trim(),
     inventory: inv,
     targets,
-    image: source === "script" ? "" : image.trim(),
+    image: scriptLike ? "" : image.trim(),
     envMode: envChoice === "keep" ? "keep" : envChoice === "copy" ? "copy" : !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
     envName: envChoice === "copy" ? job?.env ?? null : envOn && envMode === "existing" ? envPick : null,
     envVars: envOn && envMode !== "existing" ? envVars : [],
-    // Playbook variables and password login: Git playbook jobs only, the server rejects them elsewhere.
+    // Playbook variables: Git playbook jobs only, the server rejects them elsewhere.
     playVars: source === "git" ? playVars.filter((v) => v.name.trim() || v.value).map((v) => [v.name.trim(), v.value]) : [],
     // null keeps the saved secrets (edit); a list replaces them, [] removes them all.
     secretVars:
@@ -529,8 +591,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         ? null
         : secretVars.map((v) => [v.name.trim(), v.value]),
     ...(copying ? { copySecretVarsFrom: source === "git" && copySecrets && secretVars === null ? job.id : null } : {}),
-    loginKey: source === "git" ? loginKey : "",
-    becomeKey: source === "git" ? becomeKey : "",
     hook,
     hookRule,
     protected: prot,
@@ -627,7 +687,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           ? envPick
           : `붙여넣은 변수 ${envVars.length}개${editing && job.env ? ` → ${job.env}의 새 버전` : ""}`;
 
-  const loginSummary = `${loginKey ? `비밀번호 · ${loginKey}` : "인벤토리 SSH 키"}${becomeKey ? ` · sudo 비밀번호 ${becomeKey}` : ""}`;
   const secretSummary =
     secretVars !== null
       ? `비밀 ${secretVars.length}개${editing && savedSecrets.length ? " (새로 넣음)" : ""}`
@@ -636,7 +695,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         : copySecrets
           ? `비밀 ${savedSecrets.length}개 (값 복사)`
           : "비밀 0개";
-  const varsSummary = `일반 ${playVars.filter((v) => v.name.trim()).length}개 · ${secretSummary} · 접속 ${loginSummary}`;
+  const varsSummary = `일반 ${playVars.filter((v) => v.name.trim()).length}개 · ${secretSummary}`;
 
   /* ---------- guide: a bubble that points at the input to fill ---------- */
 
@@ -661,7 +720,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 ? ["env", "env.vars"]
                 : ["env"]
               : step === "vars"
-                ? ["vars.plain", "vars.secret", "vars.login"]
+                ? ["vars.plain", "vars.secret"]
                 : step === "access"
                   ? ["access.editors", "access.safety"]
                   : [];
@@ -730,36 +789,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   /* ---------- steps ---------- */
 
-  const renderStep = () => {
-    switch (step) {
-      case "name":
-        return (
-          <Field label="이름" htmlFor="jName">
-            <TipSpot id="name">
-              <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" autoFocus={!editing} />
-            </TipSpot>
-          </Field>
-        );
-
-      case "playbook":
-        return (
-          <Field label="배포 방법">
-            <TipSpot id="playbook.source">
-              <div>
-              <Seg
-                options={[
-                  { value: "git", label: "Git 레포" },
-                  { value: "script", label: "SSH 스크립트" },
-                  { value: "builtin", label: "기본 플레이북" },
-                ]}
-                value={source}
-                onChange={(s) => {
-                  setSource(s);
-                }}
-              />
-              </div>
-            </TipSpot>
-            {source === "git" ? (
+  const gitFields = (pathLabel: string, pathHolder: string, urlHolder: string) => (
               <div key="git" className="flex flex-col gap-3 animate-fade">
                 {repos.length > 0 && (
                   <div className="flex flex-col gap-1.5">
@@ -799,7 +829,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                     mono
                     value={url}
                     onChange={(e) => setUrl(e.target.value)}
-                    placeholder="git@github.com:org/ansible.git"
+                    placeholder={urlHolder}
                     autoComplete="off"
                     spellCheck={false}
                   />
@@ -811,9 +841,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                       <Input id="jBranch" mono value={branch} onChange={(e) => setBranch(e.target.value)} placeholder="main" autoComplete="off" spellCheck={false} />
                     </TipSpot>
                   </Field>
-                  <Field label="플레이북 경로" htmlFor="jPath">
+                  <Field label={pathLabel} htmlFor="jPath">
                     <TipSpot id="playbook.path">
-                      <Input id="jPath" mono value={path} onChange={(e) => setPath(e.target.value)} placeholder="deploy/app.yml" autoComplete="off" spellCheck={false} />
+                      <Input id="jPath" mono value={path} onChange={(e) => setPath(e.target.value)} placeholder={pathHolder} autoComplete="off" spellCheck={false} />
                     </TipSpot>
                   </Field>
                 </div>
@@ -844,6 +874,158 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   </TipSpot>
                 </Field>
               </div>
+  );
+
+  const renderStep = () => {
+    switch (step) {
+      case "compose":
+        return (
+          <>
+            <Field label="compose 파일">
+              <div>
+                <Seg
+                  options={[
+                    { value: "git", label: "Git 저장소에서" },
+                    { value: "text", label: "직접 넣기" },
+                  ]}
+                  value={composeFrom}
+                  onChange={setComposeFrom}
+                />
+              </div>
+              {composeFrom === "git" ? (
+                <>
+                  {gitFields("compose 파일 경로", COMPOSE_FILE, "https://github.com/org/app.git")}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Button icon="refresh" disabled={composeBusy} onClick={loadCompose}>
+                      {composeBusy ? "불러오는 중…" : composeText ? "다시 불러오기" : "불러오기"}
+                    </Button>
+                    <Hint>배포할 때마다 그 버전 태그의 파일을 저장소에서 받아요. 태그가 없으면 이 브랜치의 파일을 써요.</Hint>
+                  </div>
+                  {composeText && <pre className="m-0 max-h-[180px] overflow-auto scroll-soft rounded-lg bg-surface-2 border border-line p-3 font-mono text-[12px]">{composeText}</pre>}
+                </>
+              ) : (
+                <>
+                  <Textarea
+                    className="font-mono text-[12.5px]"
+                    rows={10}
+                    aria-label="compose 파일 내용"
+                    spellCheck={false}
+                    placeholder={"services:\n  app:\n    image: ghcr.io/acme/app:${APP_VERSION}"}
+                    value={composeText}
+                    onChange={(e) => setComposeText(e.target.value)}
+                  />
+                  <label className="text-[12.5px] text-muted">
+                    또는 파일 열기{" "}
+                    <input
+                      type="file"
+                      accept=".yml,.yaml"
+                      onChange={async (e) => {
+                        const f = e.target.files?.[0];
+                        if (f) setComposeText(await f.text());
+                      }}
+                    />
+                  </label>
+                </>
+              )}
+            </Field>
+            {fileImages.length > 0 && (
+              <Field label="배포할 이미지" hint="${변수}로 적은 태그는 실행할 때 버전을 고를 수 있어요.">
+                <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
+                  {fileImages.map((fi) => (
+                    <div key={`${fi.path}:${fi.value}`} className="flex items-center gap-2 px-3 py-2 text-[12.5px] min-w-0 flex-wrap">
+                      <span className="font-mono truncate min-w-0 flex-1">{fi.ref}</span>
+                      {fi.fixed ? (
+                        <>
+                          <span className="text-muted font-mono">:{fi.tag ?? "latest"}</span>
+                          {composeFrom === "text" && (
+                            <Button size="sm" variant="ghost" onClick={() => trackFixed(fi)}>
+                              변수로 바꾸기
+                            </Button>
+                          )}
+                        </>
+                      ) : (
+                        <Chip mono tone="ok">{"$" + (fi.tagVar || "IMAGE_TAG")}</Chip>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </Field>
+            )}
+            {noRegistry.length > 0 && (
+              <Banner tone="warn" icon="alert" title={`${noRegistry.join(", ")} 레지스트리가 없어요`}>
+                공개 이미지면 그대로 두세요. 비공개 이미지면 받을 수 있게 토큰을 등록해 주세요.{" "}
+                <Button size="sm" variant="ghost" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
+                  레지스트리 추가
+                </Button>
+              </Banner>
+            )}
+            <Field label="이름" htmlFor="jName">
+              <Input
+                id="jName"
+                value={name}
+                onChange={(e) => {
+                  setName(e.target.value);
+                  setNameTouched(true);
+                }}
+                placeholder="api-server"
+              />
+            </Field>
+            <details className="text-[13px]">
+              <summary className="cursor-pointer select-none text-muted">더 보기</summary>
+              <div className="flex flex-col gap-3 mt-3">
+                <Field label="서버의 배포 폴더" htmlFor="jServicePath">
+                  <Input id="jServicePath" mono spellCheck={false} placeholder={`/srv/${slug(name) || "app"}`} value={servicePath} onChange={(e) => setServicePath(e.target.value)} />
+                </Field>
+                {!editing && (
+                  <div>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => {
+                        setSource("script");
+                        setCur(1);
+                      }}
+                    >
+                      다른 방법으로 배포하기 (SSH 스크립트 · 플레이북)
+                    </Button>
+                  </div>
+                )}
+              </div>
+            </details>
+          </>
+        );
+
+      case "name":
+        return (
+          <Field label="이름" htmlFor="jName">
+            <TipSpot id="name">
+              <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" autoFocus={!editing} />
+            </TipSpot>
+          </Field>
+        );
+
+      case "playbook":
+        return (
+          <Field label="배포 방법">
+            <TipSpot id="playbook.source">
+              <div>
+              <Seg
+                options={[
+                  { value: "git", label: "Git 레포" },
+                  { value: "script", label: "SSH 스크립트" },
+                  { value: "builtin", label: "기본 플레이북" },
+                  { value: "compose", label: "Compose 앱" },
+                ]}
+                value={source}
+                onChange={(s) => {
+                  setSource(s);
+                  if (s === "compose") setCur(0);
+                }}
+              />
+              </div>
+            </TipSpot>
+            {source === "git" ? (
+              gitFields("플레이북 경로", "deploy/app.yml", "git@github.com:org/ansible.git")
             ) : source === "script" ? (
               <div key="script" className="flex flex-col gap-3 animate-fade">
                 <Field label="서비스 경로" htmlFor="jServicePath" hint={<>스크립트에서 <span className="font-mono">$SERVICE_PATH</span>로 써요.</>}>
@@ -1151,16 +1333,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       }
 
       case "vars": {
-        const keyOption = (n: string) => {
-          const k = passwordKeys.find((x) => x.name === n);
-          return (
-            <option key={n} value={n}>
-              {k ? `${k.name} · 계정 ${keyAccount(k)}` : `${n} (키 저장소에 없어요)`}
-            </option>
-          );
-        };
-        // Password keys, plus the saved one while the key list loads (or if it was removed).
-        const keyNames = (cur: string) => [...passwordKeys.map((k) => k.name), ...(cur && !passwordKeys.some((k) => k.name === cur) ? [cur] : [])];
         return (
           <>
             <Field
@@ -1216,42 +1388,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 )}
               </TipSpot>
               {secretVars !== null && editing && savedSecrets.length > 0 && <Hint>저장하면 지금 비밀 변수를 이 목록으로 바꿔요. 저장할 때 비밀번호를 다시 물어요.</Hint>}
-            </Field>
-            <Field
-              label="접속 방식"
-              hint={!canLogin ? "접속 방식은 Owner나 Admin만 바꿀 수 있어요." : undefined}
-              right={
-                canLogin && (
-                  <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal initialMode="password" onClose={c} />)}>
-                    비밀번호 추가
-                  </Button>
-                )
-              }
-            >
-              <TipSpot id="vars.login">
-                <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-3">
-                  <Field label="로그인" htmlFor="jLogin">
-                    <Select id="jLogin" value={loginKey} disabled={!canLogin} onChange={(e) => setLoginKey(e.target.value)}>
-                      <option value="">인벤토리 SSH 키 (기본)</option>
-                      {keyNames(loginKey).map(keyOption)}
-                    </Select>
-                  </Field>
-                  <Field label="sudo 비밀번호" htmlFor="jBecome">
-                    <Select id="jBecome" value={becomeKey} disabled={!canLogin} onChange={(e) => setBecomeKey(e.target.value)}>
-                      <option value="">없음</option>
-                      {keyNames(becomeKey).map(keyOption)}
-                    </Select>
-                  </Field>
-                </div>
-              </TipSpot>
-              {canLogin && !passwordKeys.length && !loginKey && !becomeKey && <Hint>키 저장소에 로그인 비밀번호가 없어요. 비밀번호 추가에서 계정과 비밀번호를 넣어요.</Hint>}
-              {loginKey && (
-                <Banner tone={prot ? "neutral" : "warn"} icon={prot ? "lock" : "alert"} title={prot ? "인벤토리 SSH 키 대신 비밀번호로 접속해요" : "운영 보호를 켜야 해요"}>
-                  {prot
-                    ? "모든 서버에 이 계정으로 로그인해요. 호스트 키 확인은 그대로 해요."
-                    : "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요. 권한과 안전장치 단계에서 켜 주세요."}
-                </Banner>
-              )}
             </Field>
           </>
         );
@@ -1488,6 +1624,19 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               {skipLabel && (
                 <Button variant="ghost" icon="skip" onClick={skip}>
                   {skipLabel}
+                </Button>
+              )}
+              {source === "compose" && last && !advanced && (
+                <Button
+                  variant="ghost"
+                  onClick={() => {
+                    const v = validateStep(step);
+                    if (v) return fail(v);
+                    setAdvanced(true);
+                    goto(cur + 1);
+                  }}
+                >
+                  권한과 안전장치
                 </Button>
               )}
               <Button variant="primary" type="submit" form="jobForm" disabled={busy}>

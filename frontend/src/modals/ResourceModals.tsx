@@ -3,7 +3,8 @@ import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Host, Image, Inventory, Key, PublicKeyInfo, Registry } from "../lib/types";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
+import { Banner, Button, Check, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
+import { Icon } from "../components/Icon";
 
 export function copyText(text: string, toast: (m: string) => void) {
   try {
@@ -18,8 +19,8 @@ export function copyText(text: string, toast: (m: string) => void) {
 
 /* ---------- keys ---------- */
 
-type KeyMode = "gen" | "paste" | "token" | "password";
-const KEY_NAME: Record<KeyMode, string> = { gen: "batch-deploy", paste: "batch-deploy", token: "gitea-readonly", password: "deploy-login" };
+type KeyMode = "gen" | "paste" | "token";
+const KEY_NAME: Record<KeyMode, string> = { gen: "batch-deploy", paste: "batch-deploy", token: "gitea-readonly" };
 /** Same rule as the server: a Linux login name. */
 const LOGIN_USER_RE = /^[a-z_][a-z0-9_-]{0,31}$/;
 
@@ -32,8 +33,6 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
   const [pass, setPass] = useState("");
   const [user, setUser] = useState("deploy-bot");
   const [tok, setTok] = useState("");
-  const [loginUser, setLoginUser] = useState("deploy");
-  const [loginPass, setLoginPass] = useState("");
   const [err, setErr] = useState("");
 
   const changeMode = (m: typeof mode) => {
@@ -44,25 +43,13 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (mode === "password") {
-      if (!LOGIN_USER_RE.test(loginUser.trim())) return setErr("로그인 계정은 영문 소문자, 숫자, _, -로 적어 주세요. 예: deploy");
-      if (loginUser.trim() === "root") return setErr("root로는 접속할 수 없어요. 권한이 제한된 배포용 사용자를 만들어 주세요.");
-      if (!loginPass) return setErr("비밀번호를 넣어 주세요.");
-      if (loginPass.length > 1024) return setErr("비밀번호는 1024자까지예요.");
-    }
     withSudo("키 추가", async () => {
       try {
-        const k = await api.post<Key>(
-          "/keys",
-          mode === "password"
-            ? { mode, name, user: loginUser.trim(), password: loginPass }
-            : { mode, name, privateKey: priv, passphrase: pass, user, token: tok },
-        );
+        const k = await api.post<Key>("/keys", { mode, name, privateKey: priv, passphrase: pass, user, token: tok });
         onClose();
         refresh();
         onCreated?.(k);
         if (k.kind === "token") toast("토큰을 저장했어요. 다시 볼 수 없어요.");
-        else if (k.kind === "password") toast("비밀번호를 저장했어요. 다시 볼 수 없어요.");
         else if (onCreated) toast(`${k.name} 키를 만들었어요. 서버에 넣는 명령은 서버 준비 단계에 나와요.`);
         else openModal((close) => <PubKeyModal k={k} fresh onClose={close} />);
       } catch (e) {
@@ -74,7 +61,7 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
 
   return (
     <>
-      <ModalHead title="키 추가" sub="서버 접속용 SSH 키, Git 저장소용 액세스 토큰, 서버 로그인 비밀번호를 저장해요." onClose={onClose} />
+      <ModalHead title="키 추가" sub="서버 접속용 SSH 키나 Git 저장소용 액세스 토큰을 넣어요." onClose={onClose} />
       <form id="keyForm" onSubmit={submit} className="contents">
         <ModalBody>
           <Field label="종류">
@@ -84,7 +71,6 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
                   { value: "gen", label: "SSH 키 만들기" },
                   { value: "paste", label: "SSH 키 가져오기" },
                   { value: "token", label: "액세스 토큰" },
-                  { value: "password", label: "로그인 비밀번호" },
                 ]}
                 value={mode}
                 onChange={changeMode}
@@ -123,20 +109,6 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
                 hint="Git 저장소를 HTTPS 주소로 읽을 때 써요. GitHub는 Contents 읽기 전용 권한의 fine-grained 토큰, Gitea는 read:repository 권한만 주세요."
               >
                 <Input id="kTok" mono type="password" placeholder="github_pat_… 또는 Gitea 토큰" autoComplete="off" value={tok} onChange={(e) => setTok(e.target.value)} />
-              </Field>
-            </div>
-          )}
-          {mode === "password" && (
-            <div className="flex flex-col gap-4 animate-fade">
-              <Field label="로그인 계정" htmlFor="kLoginUser" hint="root는 안 돼요.">
-                <Input id="kLoginUser" mono spellCheck={false} autoComplete="off" value={loginUser} onChange={(e) => setLoginUser(e.target.value)} />
-              </Field>
-              <Field
-                label="비밀번호"
-                htmlFor="kLoginPass"
-                hint="Git 플레이북 작업이 SSH 키 대신 이 계정으로 접속하거나, sudo 비밀번호로 써요. 저장 후에는 다시 볼 수 없어요."
-              >
-                <Input id="kLoginPass" type="password" autoComplete="off" value={loginPass} onChange={(e) => setLoginPass(e.target.value)} />
               </Field>
             </div>
           )}
@@ -532,22 +504,21 @@ export function NewImageModal({ registries, onClose }: { registries: Registry[];
 /* ---------- hosts ---------- */
 
 /** A server list (inventory) with the SSH key used to reach its servers. */
-/** Make an inventory: its name, deploy user and key, then the first server, prepared and checked before anything is saved. */
+const NEW_KEY = "\u0000new";
+
+/** Make an inventory: its name, deploy user and SSH key (made here when there is none). Its servers are added next. */
 export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void; onCreated?: (inv: Inventory) => void }) {
-  const { openModal, refresh, toast } = useApp();
-  const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
+  const { openModal, refresh, toast, withSudo } = useApp();
+  const keysRes = useApi<Key[]>("/keys");
+  const keys = (keysRes.data ?? []).filter((k) => k.kind === "ssh");
   const all = useApi<Inventory[]>("/inventory").data ?? [];
-  const [step, setStep] = useState<"basic" | "server" | "prep">("basic");
   const [name, setName] = useState("");
   const [user, setUser] = useState("deploy");
   const [key, setKey] = useState("");
-  const [srv, setSrv] = useState({ name: "", group: "", ip: "", port: "22" });
-  const [result, setResult] = useState<ConnCheck | null>(null);
   const [busy, setBusy] = useState(false);
-  const keyObj = keys.find((k) => k.name === key);
   useEffect(() => {
-    if (!key && keys[0]) setKey(keys[0].name);
-  }, [keys, key]);
+    if (!key && keysRes.data) setKey(keys[0]?.name ?? NEW_KEY);
+  }, [keysRes.data, key]);
 
   const basicError = (): string => {
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name.trim())) return "인벤토리 이름은 production처럼 영문 소문자, 숫자, -, _ 로 넣어 주세요.";
@@ -555,106 +526,74 @@ export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void;
     return userError(user) || (key ? "" : "서버 접속에 쓸 SSH 키를 골라 주세요.");
   };
 
-  const next = (e: React.FormEvent) => {
-    e.preventDefault();
-    const bad = step === "basic" ? basicError() : serverError(srv, []);
-    if (bad) return toast(bad, "error");
-    setResult(null);
-    setStep(step === "basic" ? "server" : "prep");
-  };
-
   const create = async () => {
     setBusy(true);
     try {
-      const inv = await api.post<Inventory>("/inventory", {
-        name: name.trim(),
-        key,
-        user: user.trim(),
-        host: { name: srv.name.trim(), ip: srv.ip.trim(), port: srv.port.trim(), group: srv.group.trim(), fingerprint: result?.fingerprint ?? "" },
-      });
+      let keyName = key;
+      if (key === NEW_KEY) {
+        keyName = `${name.trim()}-deploy`;
+        await api.post<Key>("/keys", { mode: "gen", name: keyName });
+        setKey(keyName); // a retry uses the key just made
+      }
+      const inv = await api.post<Inventory>("/inventory", { name: name.trim(), key: keyName, user: user.trim() });
       refresh();
-      toast("인벤토리를 만들었어요");
       onCreated?.(inv);
       onClose();
+      toast("인벤토리를 만들었어요. 이제 서버를 추가해요.");
+      openModal((c) => <NewHostModal inventory={inv} onClose={c} />);
     } catch (e) {
+      if ((e as { sudoRequired?: boolean }).sudoRequired) throw e;
       toast(errMsg(e), "error");
+    } finally {
       setBusy(false);
     }
   };
 
-  const sub = { basic: "1/3 · 이름과 배포 사용자", server: "2/3 · 첫 서버", prep: "3/3 · 서버 준비와 연결 확인" }[step];
-
-  if (step === "prep")
-    return (
-      <>
-        <ModalHead title="인벤토리 추가" sub={sub} onClose={onClose} />
-        <ModalBody>
-          <PrepAndCheck user={user.trim()} keyObj={keyObj} ip={srv.ip.trim()} port={srv.port.trim()} result={result} setResult={setResult} />
-        </ModalBody>
-        <ModalFoot between>
-          <Button variant="ghost" onClick={() => setStep("server")}>
-            이전
-          </Button>
-          <div className="flex gap-2">
-            <Button onClick={onClose}>취소</Button>
-            <Button variant="primary" disabled={!result?.login || busy} onClick={create} title={result?.login ? undefined : "연결 확인이 성공해야 만들 수 있어요"}>
-              지문이 같아요, 만들기
-            </Button>
-          </div>
-        </ModalFoot>
-      </>
-    );
+  const submit = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    const bad = basicError();
+    if (bad) return toast(bad, "error");
+    if (key === NEW_KEY) withSudo("SSH 키 만들기", create);
+    else create();
+  };
 
   return (
     <>
-      <ModalHead title="인벤토리 추가" sub={sub} onClose={onClose} />
-      <form id="invForm" onSubmit={next} className="contents">
+      <ModalHead title="인벤토리 추가" sub="함께 배포하는 서버 묶음이에요. 만든 뒤 바로 서버를 추가해요." onClose={onClose} />
+      <form id="invForm" onSubmit={submit} className="contents">
         <ModalBody>
-          {step === "basic" ? (
-            <>
-              <Field label="이름" htmlFor="iName" hint="영문 소문자, 숫자, -, _">
-                <Input id="iName" mono autoFocus placeholder="staging" value={name} onChange={(e) => setName(e.target.value)} />
-              </Field>
-              <Field label="배포 사용자" htmlFor="iUser" hint="서버에 이 사용자로 접속해서 배포해요. root는 안 돼요.">
-                <Input id="iUser" mono value={user} onChange={(e) => setUser(e.target.value)} />
-              </Field>
-              <Field
-                label="SSH 키"
-                htmlFor="iKey"
-                right={
-                  <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
-                    키 추가
-                  </Button>
-                }
-              >
-                <Select id="iKey" value={key} onChange={(e) => setKey(e.target.value)} placeholder="SSH 키를 추가해 주세요">
-                  {keys.map((k) => (
-                    <option key={k.id} value={k.name}>
-                      {k.name}
-                    </option>
-                  ))}
-                </Select>
-              </Field>
-            </>
-          ) : (
-            <ServerFields value={srv} onChange={setSrv} groups={[]} />
-          )}
+          <Field label="이름" htmlFor="iName" hint="영문 소문자, 숫자, -, _">
+            <Input id="iName" mono autoFocus placeholder="production" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="배포 사용자" htmlFor="iUser" hint="서버에 이 사용자로 접속해서 배포해요. 없으면 초기화할 때 만들어요. root는 안 돼요.">
+            <Input id="iUser" mono value={user} onChange={(e) => setUser(e.target.value)} />
+          </Field>
+          <Field
+            label="SSH 키"
+            htmlFor="iKey"
+            right={
+              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
+                키 추가
+              </Button>
+            }
+          >
+            <Select id="iKey" value={key} onChange={(e) => setKey(e.target.value)}>
+              {keys.map((k) => (
+                <option key={k.id} value={k.name}>
+                  {k.name}
+                </option>
+              ))}
+              <option value={NEW_KEY}>새로 만들기</option>
+            </Select>
+          </Field>
         </ModalBody>
       </form>
-      <ModalFoot between>
-        {step === "server" ? (
-          <Button variant="ghost" onClick={() => setStep("basic")}>
-            이전
-          </Button>
-        ) : (
-          <span />
-        )}
-        <div className="flex gap-2">
-          <Button onClick={onClose}>취소</Button>
-          <Button variant="primary" type="submit" form="invForm">
-            다음
-          </Button>
-        </div>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" type="submit" form="invForm" disabled={busy}>
+          {busy ? "만드는 중…" : "만들기"}
+        </Button>
       </ModalFoot>
     </>
   );
@@ -787,22 +726,55 @@ interface ConnCheck {
   keyFingerprint: string;
 }
 
-/** Add a server to an inventory: its address, then what to run on it. It deploys as the inventory's user with its key; the check is optional. */
+interface InitStep {
+  name: string;
+  status: "ok" | "fail" | "skip";
+}
+interface InitResult {
+  ok: boolean;
+  steps: InitStep[];
+  log: string[];
+  error: string | null;
+}
+
+/** Add a server to an inventory. A new one is set up once with its first account and password; one that is ready is just added. */
 export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory; onClose: () => void }) {
-  const { runAction, toast } = useApp();
+  const { runAction, toast, withSudo, refresh } = useApp();
   const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
-  const [step, setStep] = useState<"info" | "prep">("info");
+  const [how, setHow] = useState<"init" | "ready">("init");
+  const [step, setStep] = useState<"info" | "prep" | "confirm" | "running" | "done">("info");
   const [srv, setSrv] = useState<ServerDraft>({ name: "", group: "", ip: "", port: "22" });
   const [result, setResult] = useState<ConnCheck | null>(null);
+  const [account, setAccount] = useState("");
+  const [password, setPassword] = useState("");
+  const [fullSudo, setFullSudo] = useState(false);
+  const [hostKey, setHostKey] = useState<{ type: string; fingerprint: string } | null>(null);
+  const [outcome, setOutcome] = useState<InitResult | null>(null);
+  const [busy, setBusy] = useState(false);
   const keyObj = keys.find((k) => k.name === inv.key);
   const user = inv.user || "deploy";
 
-  const next = (e: React.FormEvent) => {
+  const next = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (busy) return;
     const bad = serverError(srv, inv.hosts.map((h) => h.name));
     if (bad) return toast(bad, "error");
-    setResult(null);
-    setStep("prep");
+    if (how === "ready") {
+      setResult(null);
+      setStep("prep");
+      return;
+    }
+    if (!LOGIN_USER_RE.test(account.trim())) return toast("서버에 이미 있는 계정 이름을 넣어 주세요. 예: ubuntu", "error");
+    if (!password) return toast("비밀번호를 넣어 주세요.", "error");
+    setBusy(true);
+    try {
+      setHostKey(await api.post<{ type: string; fingerprint: string }>("/inventory/fingerprint", { ip: srv.ip.trim(), port: +srv.port }));
+      setStep("confirm");
+    } catch (err) {
+      toast(errMsg(err), "error");
+    } finally {
+      setBusy(false);
+    }
   };
 
   const save = async () => {
@@ -812,6 +784,33 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
     );
     if (ok) onClose();
   };
+
+  const init = () =>
+    withSudo("서버 초기화", async () => {
+      setStep("running");
+      try {
+        const r = await api.post<InitResult>(`/inventory/${inv.id}/hosts/init`, {
+          name: srv.name.trim(),
+          ip: srv.ip.trim(),
+          port: srv.port.trim(),
+          group: srv.group.trim(),
+          fingerprint: hostKey?.fingerprint ?? "",
+          account: account.trim(),
+          password,
+          fullSudo,
+        });
+        setOutcome(r);
+        setStep("done");
+        if (r.ok) {
+          setPassword("");
+          refresh();
+        }
+      } catch (e) {
+        setStep("confirm");
+        if ((e as { sudoRequired?: boolean }).sudoRequired) throw e;
+        toast(errMsg(e), "error");
+      }
+    });
 
   const sub = `${inv.name} · ${user} · 키 ${inv.key}`;
   if (step === "prep")
@@ -835,18 +834,120 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
       </>
     );
 
+  if (step === "confirm" && hostKey)
+    return (
+      <>
+        <ModalHead title="서버 확인" sub={`${srv.ip.trim()}:${srv.port.trim()}`} onClose={onClose} />
+        <ModalBody>
+          <Field label={`호스트 키 지문 · ${hostKey.type}`} hint="이 서버가 맞는지 확인하는 값이에요. 맞다고 확인해야 비밀번호를 보내요.">
+            <div className="rounded-lg bg-surface-2 border border-line px-3.5 py-2.5 font-mono text-[12.5px] break-all">{hostKey.fingerprint}</div>
+          </Field>
+          <Hint>
+            서버 콘솔에서 비교할 수 있어요: <span className="font-mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>
+          </Hint>
+          <Banner tone="neutral" icon="server" title="이 일을 해요">
+            <span className="font-mono">{user}</span> 사용자를 만들고 공개 키를 넣은 뒤 Docker와 docker rollout을 설치해요. 몇 분 걸릴 수 있고, 다시 실행해도 괜찮아요. 비밀번호는 저장하지 않아요.
+          </Banner>
+        </ModalBody>
+        <ModalFoot between>
+          <Button variant="ghost" onClick={() => setStep("info")}>
+            이전
+          </Button>
+          <div className="flex gap-2">
+            <Button onClick={onClose}>취소</Button>
+            <Button variant="primary" onClick={init}>
+              지문이 맞아요, 초기화
+            </Button>
+          </div>
+        </ModalFoot>
+      </>
+    );
+
+  if (step === "running")
+    return (
+      <>
+        <ModalHead title="서버 초기화" sub={`${srv.ip.trim()}:${srv.port.trim()}`} onClose={onClose} />
+        <ModalBody>
+          <p className="m-0 text-[13px] text-muted">서버를 설정하고 있어요. Docker를 새로 설치하면 몇 분 걸려요. 창을 닫지 말아 주세요.</p>
+        </ModalBody>
+      </>
+    );
+
+  if (step === "done" && outcome)
+    return (
+      <>
+        <ModalHead title={outcome.ok ? "서버를 준비했어요" : "초기화하지 못했어요"} sub={`${srv.ip.trim()}:${srv.port.trim()}`} onClose={onClose} />
+        <ModalBody>
+          {outcome.error && <ErrorText>{outcome.error}</ErrorText>}
+          <ol className="m-0 p-0 list-none flex flex-col rounded-lg border border-line divide-y divide-line">
+            {outcome.steps.map((st) => (
+              <li key={st.name} className="flex items-center gap-2 px-3.5 py-2 text-[13px]">
+                <Icon name={st.status === "ok" ? "check" : st.status === "fail" ? "x" : "skip"} className={`size-4 flex-none ${st.status === "ok" ? "text-accent" : st.status === "fail" ? "text-bad" : "text-faint"}`} />
+                <span className={st.status === "skip" ? "text-muted" : undefined}>{st.name}</span>
+              </li>
+            ))}
+          </ol>
+          {!outcome.ok && outcome.log.length > 0 && (
+            <pre className="m-0 max-h-[220px] overflow-auto scroll-soft rounded-lg bg-surface-2 border border-line p-3 font-mono text-[12px] whitespace-pre-wrap break-all">{outcome.log.join("\n")}</pre>
+          )}
+        </ModalBody>
+        <ModalFoot>
+          {outcome.ok ? (
+            <Button variant="primary" onClick={onClose}>
+              닫기
+            </Button>
+          ) : (
+            <>
+              <Button onClick={onClose}>닫기</Button>
+              <Button variant="primary" onClick={() => setStep("info")}>
+                다시 시도
+              </Button>
+            </>
+          )}
+        </ModalFoot>
+      </>
+    );
+
   return (
     <>
       <ModalHead title="서버 추가" sub={sub} onClose={onClose} />
       <form id="hostForm" onSubmit={next} className="contents">
         <ModalBody>
+          <Field label="서버 상태">
+            <div>
+              <Seg
+                options={[
+                  { value: "init", label: "새 서버 초기화" },
+                  { value: "ready", label: "이미 준비된 서버" },
+                ]}
+                value={how}
+                onChange={setHow}
+              />
+            </div>
+          </Field>
           <ServerFields value={srv} onChange={setSrv} groups={[...new Set(inv.hosts.map((h) => h.group))]} />
+          {how === "init" && (
+            <>
+              <Field label="서버의 기존 계정" htmlFor="hAccount" hint="서버를 받을 때 있던 계정이에요. root여도 돼요. 초기화에 한 번만 써요.">
+                <Input id="hAccount" mono spellCheck={false} autoComplete="off" placeholder="ubuntu" value={account} onChange={(e) => setAccount(e.target.value)} />
+              </Field>
+              <Field label="비밀번호" htmlFor="hPassword" hint="저장하지 않아요. sudo가 비밀번호를 물으면 이 값을 써요.">
+                <Input id="hPassword" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
+              </Field>
+              <Check
+                checked={fullSudo}
+                onChange={setFullSudo}
+                title={<>배포 사용자에게 sudo 전체 권한 주기</>}
+                desc="become: true를 쓰는 Git 플레이북을 돌릴 때만 켜요. Compose 배포에는 필요 없어요."
+              />
+            </>
+          )}
         </ModalBody>
       </form>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
-        <Button variant="primary" type="submit" form="hostForm">
-          다음
+        <Button variant="primary" type="submit" form="hostForm" disabled={busy}>
+          {busy ? "확인하는 중…" : "다음"}
         </Button>
       </ModalFoot>
     </>

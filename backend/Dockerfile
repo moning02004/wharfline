@@ -5,9 +5,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1
 
 # The deploy runner clones playbook repos (git) and runs ansible-playbook, which logs in with OpenSSH
-# (sshpass: playbook jobs that log in with a password).
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends git openssh-client sshpass \
+    && apt-get install -y --no-install-recommends git openssh-client \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

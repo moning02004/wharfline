@@ -8,7 +8,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import models as m
-from .. import sshaccess, sshcheck, sshkeys
+from .. import serverinit, sshaccess, sshcheck, sshkeys
 from .. import store as s
 from ..db import get_db
 from ..deps import require, require_login, require_sudo
@@ -399,6 +399,47 @@ def add_host(inv_id: str, body: HostIn, db: Session = Depends(get_db)):
     return h.to_dict()
 
 
+class InitHostIn(BaseModel):
+    name: str = ""
+    ip: str
+    port: str = "22"
+    group: str = ""
+    fingerprint: str  # the host key the person confirmed; the password is sent only to this server
+    account: str  # an account the server already has; root is fine here, it is used once and not kept
+    password: str
+    fullSudo: bool = False  # for playbooks with become: true
+
+
+MAX_INIT_PASSWORD = 1024
+
+
+@router.post("/inventory/{inv_id}/hosts/init", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+async def init_host(inv_id: str, body: InitHostIn, db: Session = Depends(get_db)):
+    """Set up a new server with its first account and password, then add it. The password is never stored."""
+    inv = db.get(m.Inventory, inv_id)
+    if not inv:
+        raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
+    h = new_host(inv, body.name, body.ip, body.port, inv.ssh_user, body.group, body.fingerprint)  # also checks the fingerprint's format
+    if not h.host_fingerprint:
+        raise HTTPException(400, "서버의 호스트 키 지문을 먼저 확인해 주세요.")
+    account = body.account.strip()
+    if not USER_RE.match(account):
+        raise HTTPException(400, "서버에 이미 있는 계정 이름을 넣어 주세요. 예: ubuntu")
+    if not 1 <= len(body.password) <= MAX_INIT_PASSWORD:
+        raise HTTPException(400, f"비밀번호를 1~{MAX_INIT_PASSWORD}자로 넣어 주세요.")
+    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
+    if not key or not key.public_key:
+        raise HTTPException(400, f"인벤토리의 SSH 키 {inv.key}를 찾을 수 없어요.")
+    line = sshaccess.authorized_keys_line(key.public_key, sshaccess.get_addresses(db))
+    r = await serverinit.init_server(h.ip, h.port, h.host_fingerprint, account, body.password, inv.ssh_user, line,
+                                     key.get_secret() or "", body.fullSudo)
+    if r["ok"]:
+        inv.hosts.append(h)
+    s.log_act(db, "서버 초기화", f"{inv.name} · {h.name} ({h.ip}) · 계정 {account}", "ok" if r["ok"] else "warn")
+    db.commit()
+    return {**r, "host": h.to_dict() if r["ok"] else None}
+
+
 @router.post("/inventory/{inv_id}/ping", dependencies=[Depends(require("resources"))])
 async def ping(inv_id: str, db: Session = Depends(get_db)):
     """Connect to every server with the inventory's key: answering servers are on, others off (deploys skip them).
@@ -514,16 +555,12 @@ def put_access_from(body: AccessFromIn, db: Session = Depends(get_db)):
 
 
 class KeyIn(BaseModel):
-    mode: str = Field(pattern="^(gen|paste|token|password)$")
+    mode: str = Field(pattern="^(gen|paste|token)$")
     name: str
     privateKey: str = ""
     passphrase: str = ""
     user: str = ""
     token: str = ""
-    password: str = ""  # mode "password": the login (and sudo) password of `user`
-
-
-MAX_PASSWORD = 1024
 
 
 @router.post("/keys", dependencies=[Depends(require("resources")), Depends(require_sudo)])
@@ -541,17 +578,6 @@ def add_key(body: KeyIn, db: Session = Depends(get_db)):
         k.kind, k.type, k.fingerprint = "token", "토큰", f"{body.user.strip() or '-'} · ••••{tok[-4:]}"
         k.set_secret(tok)
         action = "액세스 토큰 추가"
-    elif body.mode == "password":
-        user = body.user.strip()
-        if not USER_RE.match(user):
-            raise HTTPException(400, "로그인 계정을 확인해 주세요. 영문 소문자, 숫자, -, _ 예: deploy")
-        if user == "root":
-            raise HTTPException(400, "root로는 접속할 수 없어요. 권한이 제한된 배포용 사용자를 만들어 주세요.")
-        if not 1 <= len(body.password) <= MAX_PASSWORD:
-            raise HTTPException(400, f"비밀번호를 1~{MAX_PASSWORD}자로 넣어 주세요.")
-        k.kind, k.type, k.fingerprint = "password", "비밀번호", f"{user} · 비밀번호"
-        k.set_secret(body.password)  # kept as typed (spaces included); never returned
-        action = "로그인 비밀번호 추가"
     else:
         try:
             ssh = sshkeys.generate(f"{name}@wharfline") if body.mode == "gen" else sshkeys.load_private(body.privateKey, body.passphrase or None, f"{name}@wharfline")
@@ -582,7 +608,7 @@ def delete_key(key_id: str, db: Session = Depends(get_db)):
     if not k:
         raise HTTPException(404, "키를 찾을 수 없어요.")
     if k.used_count:
-        where = "레포" if k.kind == "token" else "배포 작업" if k.kind == "password" else "인벤토리·레포"
+        where = "레포" if k.kind == "token" else "인벤토리·레포"
         raise HTTPException(400, f"{where} {k.used_count}곳에서 쓰고 있어 지울 수 없어요")
     db.delete(k)
     s.log_act(db, "SSH 키 삭제", k.name, "warn")

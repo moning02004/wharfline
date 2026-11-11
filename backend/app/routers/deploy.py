@@ -13,6 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import bundles
+from .. import executor
 from .. import githooks
 from .. import models as m
 from .. import runner
@@ -47,8 +48,6 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None, who: m.Member | No
         # Playbook variables: plain ones with values, secret ones by name only (values never leave the server).
         "playVars": [list(x) for x in job.play_vars or []],
         "secretVarNames": list(secret.var_names) if (secret := db.get(m.JobSecretVars, job.id)) else [],
-        "loginKey": job.login_key,
-        "becomeKey": job.become_key,
     }
 
 
@@ -114,6 +113,14 @@ class PlaybookIn(BaseModel):
     key: str = ""
 
 
+class ComposeIn(BaseModel):
+    """A Docker Compose app. url: where its compose file lives; empty when the file was pasted in."""
+    url: str = ""
+    branch: str = "main"
+    path: str = ""
+    key: str = ""
+
+
 class EditorsIn(BaseModel):
     groups: list[str] = []  # group ids
     members: list[str] = []  # member emails
@@ -161,8 +168,7 @@ class JobIn(BaseModel):
     playVars: list[list[str]] = []  # plain playbook variables [[name, value], ...]
     secretVars: list[list[str]] | None = None  # secret ones; None: none on create, keep the saved ones on edit
     copySecretVarsFrom: str | None = None  # create only (복제): copy the secret variables of this job id
-    loginKey: str = ""  # password key to log in with instead of the inventory's SSH key; "" = not used
-    becomeKey: str = ""  # password key used as the sudo password; "" = not used
+    compose: ComposeIn | None = None  # a Docker Compose app: Wharfline writes the script (playbook.source must be "script")
 
 
 class JobUpdate(JobIn):
@@ -174,7 +180,7 @@ NO_EDIT = "이 작업을 고칠 권한이 없어요."
 
 # Activity log labels for PUT, in form order.
 FIELD_LABELS = {
-    "name": "이름", "playbook": "배포 방법", "files": "파일", "images": "추가 이미지", "vars": "플레이북 변수", "login": "접속 방식",
+    "name": "이름", "playbook": "배포 방법", "files": "파일", "images": "추가 이미지", "vars": "플레이북 변수",
     "target": "배포 대상", "image": "이미지", "env": "환경 변수",
     "editors": "편집 권한", "hook": "자동 배포", "protected": "운영 보호", "lock": "동시 실행 잠금", "rollback": "실패 시 되돌리기",
 }
@@ -364,6 +370,21 @@ def save_file_version(db: Session, job: m.Job, old: list[dict] | None, new: list
     return True
 
 
+BAD_COMPOSE_PATH = "compose 파일 경로는 레포 안의 .yml 파일이에요. 예: docker-compose.yml"
+COMPOSE_STEPS = [
+    {"name": "이미지 받기", "run": 'cd "$SERVICE_PATH"\ndocker compose pull'},
+    {"name": "컨테이너 교체", "run": 'cd "$SERVICE_PATH"\ndocker compose up -d --remove-orphans'},
+    {"name": "정리", "run": "docker image prune -f"},
+]
+
+
+def compose_files(files: list[dict] | None) -> list[dict]:
+    """A Compose job has exactly one file, always saved under the name docker compose looks for."""
+    if not files or len(files) != 1 or not files[0]["content"].strip():
+        raise HTTPException(400, "compose 파일을 넣어 주세요.")
+    return [{"path": executor.COMPOSE_FILE, "content": files[0]["content"]}]
+
+
 def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | None, str | None, str, list[dict[str, str]] | None, str | None]:
     """Validate the deploy method + image; reuse or create the repo and register the image.
 
@@ -373,10 +394,19 @@ def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | Non
     image_text = body.image.strip()
     ref, tag = s.parse_image(image_text) if image_text else (None, "latest")
     script = service_path = None
+    if body.compose is not None:
+        if pb.source != "script":
+            raise HTTPException(400, "Compose 배포는 SSH로 실행해요. 배포 방법을 확인해 주세요.")
+        body.script = [ScriptStep(**st) for st in COMPOSE_STEPS]
     if pb.source == "script":
         script = check_script(body.script)
         service_path = check_service_path(body.servicePath, body.name)
         repo, path = None, None
+        if body.compose is not None and body.compose.url.strip():
+            path = body.compose.path.strip()
+            if not s.PLAYBOOK_PATH_RE.match(path):
+                raise HTTPException(400, BAD_COMPOSE_PATH)
+            repo = s.ensure_git_repo(db, body.compose.url, body.compose.branch, body.compose.key.strip())
     elif pb.source == "builtin":
         if not ref:
             raise HTTPException(400, "기본 플레이북은 띄울 이미지가 있어야 해요.")
@@ -409,9 +439,9 @@ def new_env_set(db: Session, job_name: str, vars_: list[list[str]]) -> str:
     return env_name
 
 
-# ---------- playbook variables and password login (Git playbook jobs only) ----------
+# ---------- playbook variables (Git playbook jobs only) ----------
 
-NOT_GIT_PLAY = "플레이북 변수와 비밀번호 접속은 Git 플레이북 작업에서만 쓸 수 있어요."
+NOT_GIT_PLAY = "플레이북 변수는 Git 플레이북 작업에서만 쓸 수 있어요."
 PLAY_VAR_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,63}$")
 MAX_PLAY_VARS, MAX_PLAY_VALUE = 50, 4096
 # Variables Wharfline passes to every playbook (runner.extra_vars); extra images add <var>_image, <var>_tag, <var>_image_ref.
@@ -468,7 +498,7 @@ def resolve_play_vars(db: Session, me: m.Member | None, body: JobIn, job: m.Job 
     """
     git = body.playbook.source == "git"
     copy_from = (body.copySecretVarsFrom or "").strip() if job is None else ""  # create only
-    if not git and (body.playVars or body.secretVars or copy_from or body.loginKey.strip() or body.becomeKey.strip()):
+    if not git and (body.playVars or body.secretVars or copy_from):
         raise HTTPException(400, NOT_GIT_PLAY)
     row = db.get(m.JobSecretVars, job.id) if job else None
     current = row.get_vars() if row else []
@@ -493,32 +523,6 @@ def resolve_play_vars(db: Session, me: m.Member | None, body: JobIn, job: m.Job 
         if current and not s.sudo_active(db):
             raise HTTPException(403, "sudo_required")
     return plain, secret, current
-
-
-def resolve_login_keys(db: Session, me: m.Member | None, body: JobIn, job: m.Job | None) -> tuple[str | None, str | None]:
-    """The password keys for login and sudo. Only Owner/Admin set or change them; password login needs 운영 보호."""
-    git = body.playbook.source == "git"
-    login = (body.loginKey.strip() or None) if git else None
-    become = (body.becomeKey.strip() or None) if git else None
-    old = (job.login_key, job.become_key) if job else (None, None)
-    if (login, become) != old and not s.can(me, "run_protected"):
-        raise HTTPException(403, s.NO_PERM)
-    for name in (login, become):
-        if name and not db.scalar(select(m.Key).where(m.Key.name == name, m.Key.kind == "password")):
-            raise HTTPException(400, f"비밀번호 키 {name}을(를) 찾을 수 없어요. 키 저장소에 로그인 비밀번호로 추가해 주세요.")
-    if login and not body.protected:
-        raise HTTPException(400, "비밀번호로 접속하는 작업은 운영 보호를 켜야 해요.")
-    return login, become
-
-
-def move_key_use(db: Session, old: str | None, new: str | None) -> None:
-    """Keep keys.used_count right when a job stops or starts using a password key."""
-    if old == new:
-        return
-    if old and (k := db.scalar(select(m.Key).where(m.Key.name == old))) and k.used_count:
-        k.used_count -= 1
-    if new and (k := db.scalar(select(m.Key).where(m.Key.name == new))):
-        k.used_count += 1
 
 
 def save_secret_vars(db: Session, job_id: str, vars_: list[list[str]]) -> None:
@@ -562,26 +566,25 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         env_name = new_env_set(db, name, body.envVars)
 
     files = bundles.check_files([f.model_dump() for f in body.files or []]) if script is not None else None
+    if body.compose is not None:
+        files = compose_files(files)
     if script is not None:  # SSH script: tracked images come from the files
         ref, extras = derived_images(db, files, None)
         tag = "latest"
     else:
         extras = check_extra_images(db, body.extraImages, None)
     play_vars, secret_vars, _ = resolve_play_vars(db, me, body, None, extras)
-    login_key, become_key = resolve_login_keys(db, me, body, None)
     job = m.Job(
         id=s.new_id("j"), name=name, image=ref, default_tag=tag, repo=repo.name if repo else None, book=path, script=script, service_path=service_path,
         files=files,
         extra_images=extras,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, hook_rule=check_hook_rule(body.hookRule), protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
-        play_vars=play_vars, login_key=login_key, become_key=become_key,
+        play_vars=play_vars, compose=body.compose is not None,
     )
     db.add(job)
     db.flush()
     save_secret_vars(db, job.id, secret_vars)
-    move_key_use(db, None, login_key)
-    move_key_use(db, None, become_key)
     save_file_version(db, job, None, job.files)
     s.log_act(db, "배포 작업 생성", f"{name} · " + (f"{repo.name}/{path}" if repo else f"SSH 스크립트 {len(script or [])}단계"))
     db.commit()
@@ -614,13 +617,14 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     db.flush()
     set_source_repo(db, ref, body.imageSourceRepo)
     files = None if script is None else job.files if body.files is None else bundles.check_files([f.model_dump() for f in body.files])
+    if body.compose is not None:
+        files = compose_files(files)
     if script is not None:  # SSH script: tracked images come from the files
         ref, extra_images = derived_images(db, files, job.extra_images)
         tag = "latest"
     else:
         extra_images = check_extra_images(db, body.extraImages, job.extra_images)
     play_vars, secret_vars, current_secret = resolve_play_vars(db, me, body, job, extra_images)
-    login_key, become_key = resolve_login_keys(db, me, body, job)
 
     changed: list[str] = []
     env_name = job.env
@@ -638,21 +642,22 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
             env_name = new_env_set(db, name, body.envVars)
 
     new = {
-        "name": name, "playbook": (repo.name if repo else None, path, script, service_path), "files": files, "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in extra_images], "target": (body.inventory, list(body.targets)),
+        "name": name, "playbook": (repo.name if repo else None, path, script, service_path, body.compose is not None), "files": files, "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in extra_images], "target": (body.inventory, list(body.targets)),
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": (body.hook, check_hook_rule(body.hookRule)), "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
-        "vars": (play_vars or [], secret_vars), "login": (login_key, become_key),  # secret values are compared, never logged
+        "vars": (play_vars or [], secret_vars),  # secret values are compared, never logged
     }
     old = {
-        "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path), "files": job.files,
+        "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path, job.compose), "files": job.files,
         "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in job.extra_images or []], "target": (job.inventory, list(job.targets or [])),
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": (job.hook, job.hook_rule), "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
-        "vars": ([list(x) for x in job.play_vars or []], current_secret), "login": (job.login_key, job.become_key),
+        "vars": ([list(x) for x in job.play_vars or []], current_secret),
     }
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
     job.name, job.repo, job.book, job.script, job.service_path = name, repo.name if repo else None, path, script, service_path
+    job.compose = body.compose is not None
     save_file_version(db, job, job.files, files)
     job.files, job.extra_images = files, extra_images
     job.inventory, job.targets = body.inventory, list(body.targets)
@@ -662,9 +667,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     job.hook_rule = check_hook_rule(body.hookRule)
     if secret_vars != current_secret:
         save_secret_vars(db, job.id, secret_vars)
-    move_key_use(db, job.login_key, login_key)
-    move_key_use(db, job.become_key, become_key)
-    job.play_vars, job.login_key, job.become_key = play_vars, login_key, become_key
+    job.play_vars = play_vars
 
     if changed:
         labels = ", ".join(FIELD_LABELS[k] for k in FIELD_LABELS if k in changed)
@@ -690,11 +693,38 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
     if busy:
         raise HTTPException(400, f"#{busy} 실행이 진행 중이거나 승인을 기다리고 있어 지울 수 없어요. 끝나거나 취소된 뒤에 지워 주세요.")
     s.log_act(db, "배포 작업 삭제", job.name, "warn")
-    move_key_use(db, job.login_key, None)
-    move_key_use(db, job.become_key, None)
     db.delete(job)  # file versions and secret playbook variables go with it (ON DELETE CASCADE)
     db.commit()
     return {"ok": True}
+
+
+class ComposeFetchIn(BaseModel):
+    url: str
+    branch: str = "main"
+    path: str
+    key: str = ""
+
+
+@router.post("/compose/fetch")
+async def fetch_compose(body: ComposeFetchIn, db: Session = Depends(get_db)):
+    """Read a compose file from a repo for the job form: the same access the job will use when it runs."""
+    me = s.current_member(db)
+    if not s.can(me, "job_create") and not s.can(me, "job_edit"):
+        raise HTTPException(403, s.NO_PERM)
+    url, branch, path = body.url.strip(), body.branch.strip() or "main", body.path.strip()
+    if not s.GIT_URL_RE.match(url):
+        raise HTTPException(400, "저장소 주소를 확인해 주세요. 예: https://github.com/org/app.git")
+    if not s.BRANCH_RE.match(branch):
+        raise HTTPException(400, "브랜치 이름을 확인해 주세요. 예: main")
+    if not s.PLAYBOOK_PATH_RE.match(path):
+        raise HTTPException(400, BAD_COMPOSE_PATH)
+    existing = db.scalar(select(m.Repo).where(m.Repo.url == url, m.Repo.branch == branch))
+    key, auth = (s.repo_key(db, existing), existing.auth) if existing else s.repo_key_for(db, url, body.key.strip())
+    try:
+        content, commit = await executor.read_repo_file(executor.git_access("", url, branch, auth, key), branch, path)
+    except executor.RepoFileError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"content": content, "commit": commit}
 
 
 class HookIn(BaseModel):
