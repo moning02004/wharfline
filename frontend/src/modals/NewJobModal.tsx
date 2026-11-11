@@ -82,6 +82,15 @@ function usedVars(texts: string[]): string[] {
   return [...out];
 }
 
+/** Variables every use of which has a default (${V:-x} or ${V-x}): fine without a value. */
+function defaultedVars(texts: string[]): Set<string> {
+  const withDefault = new Set<string>();
+  const without = new Set<string>();
+  for (const t of texts)
+    for (const m of t.matchAll(/\$(\{)?([A-Z_][A-Z0-9_]*)(:?-)?/g)) (m[1] && m[3] ? withDefault : without).add(m[2]);
+  return new Set([...withDefault].filter((v) => !without.has(v)));
+}
+
 interface FileImage {
   path: string;
   value: string; // as written after image:
@@ -361,9 +370,20 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       .flatMap((v) => [`${v}_IMAGE`, `${v}_TAG`, `${v}_IMAGE_REF`]),
     ...(scriptLike ? findFileImages(files).filter((fi) => !fi.fixed && fi.var).map((fi) => fi.tagVar) : []),
   ];
-  const scriptVars =
-    scriptLike ? usedVars([...(source === "script" ? steps.map((st) => st.run) : []), ...files.map((f) => f.content ?? "")]).filter((v) => !SHELL_VARS.has(v)) : [];
-  const neededVars = scriptVars.filter((v) => !autoVars.includes(v));
+  const varTexts = scriptLike ? [...(source === "script" ? steps.map((st) => st.run) : []), ...files.map((f) => f.content ?? "")] : [];
+  const scriptVars = usedVars(varTexts).filter((v) => !SHELL_VARS.has(v));
+  const defaulted = defaultedVars(varTexts);
+  const neededVars = scriptVars.filter((v) => !autoVars.includes(v) && !defaulted.has(v));
+  // Names the env step will provide: typed or uploaded values, or the saved set it uses.
+  const savedNames = (name: string | null | undefined) => new Set((envs.find((e) => e.name === name)?.vars ?? []).map((x) => x.key));
+  const envHas: Set<string> =
+    envChoice === "keep"
+      ? savedNames(job?.env)
+      : !envOn
+        ? new Set()
+        : envMode === "existing"
+          ? savedNames(envPick)
+          : new Set(envVars.filter(([, val]) => val !== "").map(([k]) => k));
 
   // `image:` lines in the job's files: variables can be tracked; a fixed tag can be turned into a variable.
   const fileImages = scriptLike ? findFileImages(files) : [];
@@ -403,9 +423,10 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     if (source !== "compose" || nameTouched) return;
     setName(composeName(composeFrom, url, composeText));
   }, [source, nameTouched, composeFrom, url, composeText]);
-  // Editing: the form holds file names only, a Compose app shows its file.
+  // Editing: the job comes with file names only; load the contents so a Compose app shows its file and
+  // the variables the files use (the env step's list) and their images are seen.
   useEffect(() => {
-    if (!editing || !job.compose || !job.files.length) return;
+    if (!editing || !(job.compose || job.playbook.kind === "script") || !job.files.length) return;
     api.get<BundleFile[]>(`/jobs/${job.id}/files`).then(
       (fs) => setFiles(fs.map((f) => ({ ...f, size: f.size ?? (f.content ?? "").length }))),
       () => undefined,
@@ -1318,10 +1339,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 <div className="flex flex-wrap gap-1.5">
                   {scriptVars.map((v) => {
                     const auto = autoVars.includes(v);
-                    const set = envOn && envMode === "paste" && envVars.some(([k, val]) => k === v && val !== "");
+                    const set = envHas.has(v);
+                    const dflt = defaulted.has(v);
                     return (
-                      <Chip key={v} mono tone={auto || set ? "neutral" : "warn"}>
-                        {v} <span className="font-sans text-faint">{auto ? "자동" : set ? "넣음" : "값 필요"}</span>
+                      <Chip key={v} mono tone={auto || set || dflt ? "neutral" : "warn"}>
+                        {v} <span className="font-sans text-faint">{auto ? "자동" : set ? "넣음" : dflt ? "기본값" : "값 필요"}</span>
                       </Chip>
                     );
                   })}
