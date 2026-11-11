@@ -165,6 +165,7 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
           <thead>
             <tr>
               <th>이미지</th>
+              <th>받는 곳</th>
               <th>최신 태그</th>
               <th>빌드 레포</th>
               <th>쓰는 작업</th>
@@ -174,7 +175,7 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
           <tbody>
             {!images.length && (
               <tr>
-                <td colSpan={5} className="text-center text-muted py-6">
+                <td colSpan={6} className="text-center text-muted py-6">
                   아직 이미지가 없어요. 배포 작업에 이미지를 적거나 이미지 추가로 넣어 보세요.
                 </td>
               </tr>
@@ -183,23 +184,20 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
               const t = i.tags[0];
               return (
                 <tr key={i.ref}>
+                  <td className="font-mono">{i.ref}</td>
                   <td>
-                    <div className="font-mono">{i.ref}</div>
-                    <div className="text-[12px] text-muted">
-                      {(() => {
-                        const r = registries.find((x) => x.id === i.registry);
-                        return r ? (
-                          <>
-                            <span className="font-mono">
-                              {r.host}/{r.namespace}
-                            </span>{" "}
-                            {r.hasSecret ? "토큰으로 받아요" : "레지스트리(토큰 없음)"}
-                          </>
-                        ) : (
-                          "공개 이미지로 받아요"
-                        );
-                      })()}
-                    </div>
+                    {(() => {
+                      const r = registries.find((x) => x.id === i.registry);
+                      if (!r) return <span className="text-faint">공개 · 로그인 없이</span>;
+                      return (
+                        <span title={r.hasSecret ? "이 레지스트리의 토큰으로 로그인해서 받아요" : "토큰이 없어 로그인 없이 받아요"}>
+                          <span className="font-mono text-[12.5px]">
+                            {r.host}/{r.namespace}
+                          </span>
+                          {!r.hasSecret && <span className="text-faint text-[12px]"> · 토큰 없음</span>}
+                        </span>
+                      );
+                    })()}
                   </td>
                   <td>
                     <span className="font-mono">{t?.name ?? "-"}</span> <span className="text-faint text-[12px]">{t?.pushed}</span>

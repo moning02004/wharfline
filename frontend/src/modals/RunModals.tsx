@@ -50,7 +50,7 @@ export function useRun() {
   );
 
   const confirm = useCallback(
-    (job: Job, opt: { tag?: string } = {}) =>
+    (job: Job, opt: { tag?: string; rollback?: boolean } = {}) =>
       app.openModal(
         (close) => (
           <ConfirmRun
@@ -137,7 +137,7 @@ function ConfirmRun({
   onRequested,
 }: {
   job: Job;
-  opt: { tag?: string };
+  opt: { tag?: string; rollback?: boolean };
   onClose: () => void;
   onStarted: (no: number) => void;
   onRequested: () => void;
@@ -192,7 +192,7 @@ function ConfirmRun({
   const go = async (useTag = tag, useExtra = extraTags) => {
     setBusy(true);
     try {
-      const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel, extraTags: useExtra });
+      const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: useTag, groups: sel, extraTags: useExtra, rollback: !!opt.rollback && useTag === opt.tag });
       if (r.status === "approval") onRequested();
       else onStarted(r.no);
     } catch (e) {
@@ -229,7 +229,7 @@ function ConfirmRun({
   return (
     <>
       <ModalHead
-        title="배포하시겠습니까?"
+        title={opt.rollback ? "이전 버전으로 되돌릴까요?" : "배포하시겠습니까?"}
         sub={job.name}
         onClose={onClose}
       />

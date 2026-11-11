@@ -143,7 +143,7 @@ class JobIn(BaseModel):
     inventory: str
     targets: list[str] = []
     image: str = ""
-    envMode: str = Field(default="paste", pattern="^(paste|existing|none)$")
+    envMode: str = Field(default="paste", pattern="^(paste|existing|none|copy)$")  # copy: a new set with envName's values
     envName: str | None = None
     envVars: list[list[str]] = []
     editors: EditorsIn = Field(default_factory=EditorsIn)
@@ -418,6 +418,9 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         env_name = ""  # no .env for this job; one can be attached later
     elif body.envMode == "existing":
         env_name = existing_env(db, body.envName)
+    elif body.envMode == "copy":  # 복제: the values of another set, in a set of its own (never shown to the member)
+        src = db.scalar(select(m.EnvSet).where(m.EnvSet.name == existing_env(db, body.envName)))
+        env_name = new_env_set(db, name, src.get_vars())
     else:
         env_name = new_env_set(db, name, body.envVars)
 
@@ -538,6 +541,29 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
     db.delete(job)  # file versions go with it (ON DELETE CASCADE)
     db.commit()
     return {"ok": True}
+
+
+class HookIn(BaseModel):
+    on: bool
+
+
+@router.put("/jobs/{job_id}/hook", dependencies=[Depends(require("job_edit"))])
+def set_hook(job_id: str, body: HookIn, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
+             who: m.Member | None = Depends(viewer)):
+    """Turn 자동 배포 on or off without opening the job form (e.g. during maintenance)."""
+    job = db.get(m.Job, job_id)
+    if not job:
+        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    me = s.current_member(db)
+    if not s.can_edit(me, job) or not s.can(me, "run_protected"):  # Deployers can't change 자동 배포
+        raise HTTPException(403, NO_EDIT)
+    if body.on and not job.image and not job.extra_images:
+        raise HTTPException(400, "추적하는 이미지가 없어서 자동 배포를 켤 수 없어요.")
+    if job.hook != body.on:
+        job.hook = body.on
+        s.log_act(db, "자동 배포 " + ("켜기" if body.on else "끄기"), job.name, "ok" if body.on else "warn")
+        db.commit()
+    return job_view(db, job, scope, who)
 
 
 class RunIn(BaseModel):

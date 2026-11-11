@@ -103,6 +103,13 @@ const P = {
     </>
   ),
   menu: <path d="M4 6h16M4 12h16M4 18h16" />,
+  dots: (
+    <>
+      <circle cx="12" cy="5" r="1.4" fill="currentColor" />
+      <circle cx="12" cy="12" r="1.4" fill="currentColor" />
+      <circle cx="12" cy="19" r="1.4" fill="currentColor" />
+    </>
+  ),
   sun: (
     <>
       <circle cx="12" cy="12" r="4" />

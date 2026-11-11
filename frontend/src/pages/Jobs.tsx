@@ -1,13 +1,15 @@
 import { Fragment, useEffect, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
 import type { Job, Run } from "../lib/types";
-import { EditJobModal, NewJobModal } from "../modals/NewJobModal";
+import { CopyJobModal, EditJobModal, NewJobModal } from "../modals/NewJobModal";
+import { MoreMenu, type MenuItem } from "../components/Menu";
 import { ApprovalButtons, PlaybookLine, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Icon } from "../components/Icon";
 import { EnvLink } from "../modals/EnvModals";
 import { FileHistoryModal } from "../modals/FileHistoryModal";
-import { api } from "../lib/api";
+import { api, errMsg } from "../lib/api";
 import { ConfirmDelete } from "./Resources";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
 
@@ -20,6 +22,40 @@ export function Jobs() {
   }, [data]);
   const { openModal, can, withSudo, refresh, toast } = useApp();
   const { confirm } = useRun();
+  const nav = useNavigate();
+  const toggleHook = async (j: Job) => {
+    try {
+      await api.put(`/jobs/${j.id}/hook`, { on: !j.hook });
+      refresh();
+      toast(j.hook ? `${j.name}의 자동 배포를 껐어요` : `${j.name}의 자동 배포를 켰어요`);
+    } catch (e) {
+      toast(errMsg(e), "error");
+    }
+  };
+  const tracksImage = (j: Job) => !!j.image || (j.extraImages ?? []).length > 0;
+  const menuItems = (j: Job): MenuItem[] => [
+    ...(j.canEdit ? [{ label: "편집", icon: "edit" as const, onClick: () => openModal((c) => <EditJobModal job={j} onClose={c} />, "md") }] : []),
+    ...(can("run") && j.prevTag && j.prevTag !== j.tagNow
+      ? [{ label: `이전 버전으로 되돌리기 (${j.prevTag})`, icon: "undo" as const, onClick: () => confirm(j, { tag: j.prevTag!, rollback: true }) }]
+      : []),
+    ...(j.canEdit && can("run_protected") && tracksImage(j)
+      ? [{ label: j.hook ? "자동 배포 끄기" : "자동 배포 켜기", icon: "refresh" as const, onClick: () => toggleHook(j) }]
+      : []),
+    { label: "실행 기록", icon: "history" as const, onClick: () => nav(`/runs?job=${encodeURIComponent(j.id)}`) },
+    ...(can("job_create") ? [{ label: "복제", icon: "copy" as const, onClick: () => openModal((c) => <CopyJobModal job={j} onClose={c} />, "md") }] : []),
+    ...(j.canEdit && (!j.protected || can("run_protected"))
+      ? [
+          {
+            label: "삭제",
+            icon: "trash" as const,
+            danger: true,
+            disabled: j.last.status === "run",
+            title: j.last.status === "run" ? "실행 중에는 지울 수 없어요" : undefined,
+            onClick: () => del(j),
+          },
+        ]
+      : []),
+  ];
   const del = (j: Job) =>
     openModal((c) => (
       <ConfirmDelete
@@ -132,28 +168,12 @@ export function Jobs() {
                       </td>
                       <td className="text-right" onClick={(e) => e.stopPropagation()}>
                         <span className="inline-flex gap-1">
-                          {j.canEdit && (
-                            <Button size="sm" variant="ghost" icon="edit" onClick={() => openModal((c) => <EditJobModal job={j} onClose={c} />, "md")}>
-                              편집
-                            </Button>
-                          )}
-                          {j.canEdit && (!j.protected || can("run_protected")) && (
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              iconOnly
-                              icon="trash"
-                              aria-label={`${j.name} 배포 작업 삭제`}
-                              title={j.last.status === "run" ? "실행 중에는 지울 수 없어요" : "배포 작업 삭제"}
-                              disabled={j.last.status === "run"}
-                              onClick={() => del(j)}
-                            />
-                          )}
                           {can("run") && (
                             <Button size="sm" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>
                               {j.protected && !can("run_protected") ? "승인 요청" : "실행"}
                             </Button>
                           )}
+                          {menuItems(j).length > 0 && <MoreMenu label={`${j.name} 메뉴`} items={menuItems(j)} />}
                         </span>
                       </td>
                     </tr>
@@ -214,10 +234,14 @@ export function Jobs() {
 }
 
 export function Runs() {
-  const { data } = useApi<Run[]>("/runs");
+  const { data: all } = useApi<Run[]>("/runs");
   const { openLog } = useRun();
   const { can } = useApp();
-  if (!data) return <Loading />;
+  const [params, setParams] = useSearchParams();
+  const jobId = params.get("job");
+  if (!all) return <Loading />;
+  const data = jobId ? all.filter((r) => r.jobId === jobId) : all;
+  const jobName = jobId ? data[0]?.job ?? null : null;
   const waiting = data.filter((r) => r.status === "approval").length;
   return (
     <>
@@ -229,6 +253,14 @@ export function Runs() {
             : "모든 실행의 로그는 90일 동안 보관돼요. 로그 속 비밀 값은 저장 전에 가려져요."
         }
       />
+      {jobId && (
+        <div className="flex items-center gap-2 text-[13px]">
+          <Chip tone="accent">작업: {jobName ?? "기록 없음"}</Chip>
+          <Button size="sm" variant="ghost" icon="x" onClick={() => setParams({})}>
+            전체 보기
+          </Button>
+        </div>
+      )}
       <Card>
         <TableWrap>
           <table className="tbl">
@@ -278,7 +310,7 @@ export function Runs() {
               ))}
             </tbody>
           </table>
-          {!data.length && <Empty>아직 실행 기록이 없어요.</Empty>}
+          {!data.length && <Empty>{jobId ? "이 작업은 아직 실행한 적이 없어요." : "아직 실행 기록이 없어요."}</Empty>}
         </TableWrap>
       </Card>
     </>

@@ -7,12 +7,12 @@ import type { BundleFile, EnvSet, Group, Inventory, Job, Key, Member, Repo } fro
 import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
-import { ModalFoot, ModalHead } from "../components/Modal";
+import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
 import { FileHistoryModal } from "./FileHistoryModal";
-import { Button, Check, Chip, Field, Hint, Input, Select, Seg, Switch, Textarea, cx } from "../components/ui";
+import { Button, Check, Chip, ErrorText, Field, Hint, Input, Loading, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /* Same rules as the server (docs/deploy-simplify.md). */
 const PATH_RE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml$/;
@@ -37,7 +37,7 @@ function parseImage(text: string): { ref: string; tag: string } | { error: strin
 
 const isSsh = (url: string) => /^(git@|ssh:\/\/)/.test(url.trim());
 
-type Mode = "new" | "edit";
+type Mode = "new" | "edit" | "copy";
 type Source = "git" | "builtin" | "script";
 interface StepDraft {
   id: number;
@@ -131,7 +131,7 @@ const SCRIPT_EXAMPLE: Omit<StepDraft, "id">[] = [
 /** Same rule as the server: an absolute folder, no "..". */
 const SERVICE_PATH_RE = /^\/(?!.*(^|\/)\.\.?(\/|$))[A-Za-z0-9._/-]{1,254}$/;
 /** Environment choice: "keep" only exists when editing; "on" means EnvSource decides paste or existing. */
-type EnvChoice = "keep" | "none" | "on";
+type EnvChoice = "keep" | "none" | "on" | "copy"; // copy: 복제 only, a new set with the source job's values
 
 interface GroupsData {
   groups: Group[];
@@ -152,6 +152,31 @@ export function EditJobModal({ job, onClose }: { job: Job; onClose: () => void }
   return <JobModal mode="edit" job={job} onClose={onClose} initialGuide={false} />;
 }
 
+/** A new job filled in from `job`: same method, files, images, targets and settings; uses the same .env set. */
+export function CopyJobModal({ job, onClose }: { job: Job; onClose: () => void }) {
+  const [files, setFiles] = useState<BundleFile[] | null>(job.playbook.kind === "script" && job.files.length ? null : []);
+  const [err, setErr] = useState("");
+  useEffect(() => {
+    if (files !== null) return;
+    api.get<BundleFile[]>(`/jobs/${job.id}/files`).then(
+      (fs) => setFiles(fs.map((f) => ({ ...f, size: f.size ?? (f.content ?? "").length }))),
+      (e) => setErr(errMsg(e)),
+    );
+  }, [job.id, files]);
+  if (err) {
+    return (
+      <>
+        <ModalHead title="배포 작업 복제" sub={job.name} onClose={onClose} />
+        <ModalBody>
+          <ErrorText>파일을 불러오지 못했어요: {err}</ErrorText>
+        </ModalBody>
+      </>
+    );
+  }
+  if (files === null) return <Loading />;
+  return <JobModal mode="copy" job={{ ...job, files }} onClose={onClose} initialGuide={false} />;
+}
+
 /** Step-by-step deploy job modal for both creating and editing (docs/deploy-edit.md). */
 function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job; onClose: () => void; initialGuide: boolean }) {
   const { toast, refresh, openModal, withSudo, session, can } = useApp();
@@ -161,6 +186,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const canResources = can("resources");
   const nav = useNavigate();
   const editing = mode === "edit" && !!job;
+  const copying = mode === "copy" && !!job;
   const inventories = useApi<Inventory[]>("/inventory").data ?? [];
   const allRepos = (useApi<Repo[]>("/repos").data ?? []).filter((r) => r.kind !== "builtin");
   const repos = allRepos.filter((r) => r.kind === "git");
@@ -170,7 +196,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const groupsRes = useApi<GroupsData>("/groups");
 
   const pb = job?.playbook;
-  const [name, setName] = useState(job?.name ?? "");
+  const [name, setName] = useState(copying ? `${job.name} 복사본` : job?.name ?? "");
   const [source, setSource] = useState<Source>(pb?.kind === "builtin" ? "builtin" : pb?.kind === "script" ? "script" : "git");
   const isRepo = pb && (pb.kind === "git" || pb.kind === "local");
   const [url, setUrl] = useState(isRepo ? pb.url : "");
@@ -195,7 +221,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [key, setKey] = useState(NO_KEY);
   const [inv, setInv] = useState(job?.inventory ?? "");
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
-  const [envChoice, setEnvChoice] = useState<EnvChoice>(editing ? "keep" : "none");
+  // A copy uses the same .env set (저장된 것 쓰기); pick another one or paste new values in the 환경 변수 step.
+  const [envChoice, setEnvChoice] = useState<EnvChoice>(editing ? "keep" : copying && job.env ? "copy" : "none");
   const [envMode, setEnvMode] = useState<EnvMode>(canEnv ? "paste" : "existing");
   const [envText, setEnvText] = useState("");
   const [envPick, setEnvPick] = useState(job?.env ?? "");
@@ -235,7 +262,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [edMembers, setEdMembers] = useState<string[]>(job?.editors?.members ?? []);
   const [cur, setCur] = useState(0);
   // New job: the furthest step reached, so the index can jump back to it.
-  const [reached, setReached] = useState(0);
+  const [reached, setReached] = useState(copying ? JOB_STEPS.length - 1 : 0); // a copy is filled in: every step can be opened
   const [skipped, setSkipped] = useState<JobStepId[]>([]);
   const [guide, setGuide] = useState(initialGuide);
   const [busy, setBusy] = useState(false);
@@ -382,7 +409,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   };
 
   // Optional steps (new job only): image unless the built-in playbook needs one, and env.
-  const skipLabel = mode === "new" ? (step === "image" && source !== "builtin" ? "추적 없이 진행" : step === "env" ? ".env 없이 진행" : null) : null;
+  const skipLabel = mode !== "edit" ? (step === "image" && source !== "builtin" ? "추적 없이 진행" : step === "env" ? ".env 없이 진행" : null) : null;
   const skip = () => {
     if (step === "image") setTracks([]);
     if (step === "env") setEnvChoice("none");
@@ -411,15 +438,15 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         : { source },
     script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
     servicePath: source === "script" ? servicePath.trim() : "",
-    files: source !== "script" ? [] : mode === "new" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
+    files: source !== "script" ? [] : mode !== "edit" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
     // SSH script jobs: the server reads the tracked images from the files.
     extraImages: source === "script" ? [] : extras.map((x) => ({ image: x.image.trim(), var: x.var, sourceRepo: canResources ? (x.repo ?? "").trim() : null })),
     imageSourceRepo: source === "script" || !canResources ? null : (tracks.find((t) => t.var === "")?.repo ?? "").trim(),
     inventory: inv,
     targets,
     image: source === "script" ? "" : image.trim(),
-    envMode: envChoice === "keep" ? "keep" : !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
-    envName: envOn && envMode === "existing" ? envPick : null,
+    envMode: envChoice === "keep" ? "keep" : envChoice === "copy" ? "copy" : !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
+    envName: envChoice === "copy" ? job?.env ?? null : envOn && envMode === "existing" ? envPick : null,
     envVars: envOn && envMode !== "existing" ? envVars : [],
     hook,
     hookRule,
@@ -598,7 +625,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     on: guide,
     tip,
     seq: tipSeq,
-    mode,
+    mode: editing ? ("edit" as const) : ("new" as const),
     builtin: source === "builtin",
     nextOf: (id: TipId) => tipOrder[tipOrder.indexOf(id) + 1] ?? null,
     focus: (id: TipId) => focusTip(id),
@@ -899,10 +926,16 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               { value: "on", label: "바꾸기" },
               { value: "none", label: "없음" },
             ]
-          : [
-              { value: "on", label: "넣기" },
-              { value: "none", label: "없음" },
-            ];
+          : copying && job?.env
+            ? [
+                { value: "copy", label: "값 복사" },
+                { value: "on", label: "고르기" },
+                { value: "none", label: "없음" },
+              ]
+            : [
+                { value: "on", label: "넣기" },
+                { value: "none", label: "없음" },
+              ];
         const hint =
           envChoice === "keep"
             ? job?.env
@@ -932,6 +965,15 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             <TipSpot id="env" arrow="right" className="contents">
               {null}
             </TipSpot>
+            {envChoice === "copy" && (
+              <div className="rounded-lg bg-surface-2 border border-line px-3.5 py-2.5 text-[13px] flex items-start gap-2">
+                <Icon name="copy" className="size-4 mt-px flex-none text-faint" />
+                <span>
+                  <span className="font-mono">{job?.env}</span>의 값을 복사해 이 작업만 쓰는 새 세트를 만들어요. 원래 작업의 값은 그대로이고, 한쪽을 고쳐도 다른 쪽은 바뀌지 않아요.
+                  같은 세트를 함께 쓰려면 "고르기"에서 <span className="font-mono">{job?.env}</span>를 고르세요.
+                </span>
+              </div>
+            )}
             {envChoice === "keep" && (
               <div className="rounded-lg bg-surface-2 border border-line text-[13px]">
                 <div className="flex items-center gap-2 px-3.5 py-2.5">
@@ -1191,8 +1233,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   return (
     <>
       <ModalHead
-        title={editing ? "배포 작업 편집" : "새 배포 작업"}
-        sub={editing ? job.name : undefined}
+        title={editing ? "배포 작업 편집" : copying ? "배포 작업 복제" : "새 배포 작업"}
+        sub={editing ? job.name : copying ? `${job.name}에서 복제 · 이름과 배포 대상을 확인해 주세요` : undefined}
         onClose={onClose}
         extra={
           <Button size="sm" variant={guide ? "default" : "ghost"} icon="wand" aria-pressed={guide} title="배포를 도와드릴까요?" onClick={() => setGuide((g) => !g)}>
@@ -1261,7 +1303,7 @@ function StepIndex({ steps, mode, cur, reached, skipped, onPick }: { steps: type
       <ol className="flex items-center gap-1.5 min-w-max sm:min-w-0">
         {steps.map((s, i) => {
           const now = i === cur;
-          const wasSkipped = mode === "new" && skipped.includes(s.id) && !now;
+          const wasSkipped = mode !== "edit" && skipped.includes(s.id) && !now;
           const done = mode === "edit" || ((i < cur || i < reached) && !now && !wasSkipped);
           const mark = wasSkipped ? "–" : done ? <Icon name="check" className="size-3" strokeWidth={2.6} /> : i + 1;
           const inner = (
