@@ -36,6 +36,7 @@ import asyncssh
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from . import bundles
 from . import crypto
 from . import models as m
 from . import store as s
@@ -251,6 +252,9 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         row = db.get(m.Job, job["id"])
         plan.script = list(job["script"] or [])
         plan.files = [dict(f) for f in (row.files if row else None) or []]
+        bad = bundles.image_line_problem(plan.files)
+        if bad:
+            raise PlanError(bad)
         plan.variables = runner.script_env(job, tag, bool(env))
         plan.service_path = plan.variables["SERVICE_PATH"]
         plan.env_path = plan.variables.get("ENV_FILE", "")
@@ -875,6 +879,10 @@ async def refresh_compose(plan: Plan, out: Out) -> bool:
             out.line("r", f"✘ {repo['url']}의 {path}를 받지 못했어요. {e}")
             return False
         plan.files = [{"path": COMPOSE_FILE, "content": content}]
+        bad = bundles.image_line_problem(plan.files)
+        if bad:
+            out.line("r", f"✘ {bad}")
+            return False
         out.line("g", f"✓ {path} @ {ref}" + (f" ({commit})" if commit else ""))
         return True
     return False

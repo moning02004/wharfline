@@ -253,3 +253,14 @@ def test_required_variable_with_a_message_is_a_tag_variable(client, login):
     run = wait_run(client, client.post(f"/api/jobs/{r.json()['id']}/runs", json={"tag": "-", "groups": [], "extraTags": {"WHARFLINE_VERSION": "v2026.11.11-1"}}).json()["no"])
     assert run["extraTags"]["WHARFLINE_VERSION"] == "v2026.11.11-1"
     assert "WHARFLINE_VERSION=v2026.11.11-1" in log_text(run)  # the name the file reads
+
+
+def test_leftover_text_after_an_image_is_caught(client, login):
+    from app import bundles
+
+    broken = "services:\n  b:\n    image: ghcr.io/acme/x:${X_TAG} WHARFLINE_VERSION in .env}\n"
+    ok = "services:\n  b:\n    image: \"ghcr.io/acme/x:${X:?set X in .env}\"  # the version\n"
+    assert "WHARFLINE_VERSION in .env}" in bundles.image_line_problem([{"path": "c.yml", "content": broken}])
+    assert bundles.image_line_problem([{"path": "c.yml", "content": ok}]) is None
+    r = client.post("/api/jobs", json=script_job("bundle · leftover") | {"files": [{"path": "c.yml", "content": broken}]})
+    assert r.status_code == 400 and "3번째 줄" in r.json()["detail"]

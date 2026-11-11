@@ -164,12 +164,33 @@ def check_files(files: list[dict]) -> list[dict[str, str]]:
         out[path] = content
     if total > MAX_TOTAL_BYTES:
         raise HTTPException(400, "파일은 모두 합쳐 2MB까지 올릴 수 있어요.")
+    bad = image_line_problem([{"path": p, "content": c} for p, c in out.items()])
+    if bad:
+        raise HTTPException(400, bad)
     for path, content in out.items():
         for value in IMAGE_LINE.findall(content):
             host = value.split("/", 1)[0].lower() if "/" in value else ""
             if host in REGISTRY_TYPOS:
                 raise HTTPException(400, f"{path}의 {value}: {host}는 {REGISTRY_TYPOS[host]}의 오타 같아요. 이 주소로는 이미지를 받을 수 없어요.")
     return [{"path": p, "content": out[p]} for p in sorted(out)]
+
+
+def image_line_problem(files: list[dict]) -> str | None:
+    """An `image:` line with something after its value (not a comment), e.g. a leftover
+    ` WHARFLINE_VERSION in .env}` — docker compose would fail with "invalid reference format"."""
+    for f in files:
+        for n, line in enumerate(str(f.get("content", "")).splitlines(), 1):
+            m = IMAGE_LINE.match(line)
+            if not m:
+                continue
+            rest = line[m.end():]
+            quote = re.match(r"""^\s*-?\s*image:\s*(["'])""", line)
+            if quote and rest.startswith(quote.group(1)):
+                rest = rest[1:]
+            rest = rest.strip()
+            if rest and not rest.startswith("#"):
+                return f"{f.get('path')} {n}번째 줄의 이미지 뒤에 \"{rest}\"가 붙어 있어요. 지우거나 이미지 이름을 고쳐 주세요."
+    return None
 
 
 # Registry hosts that are easy to mistype; pulls from them fail on every server.
