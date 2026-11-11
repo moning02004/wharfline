@@ -365,10 +365,37 @@ export interface Dashboard {
     hostsTotal: number;
     avgDuration: string;
   };
-  hostKeyAlert: Host | null;
+  /** What to look at now, most serious first (at most 8; alertsMore counts the rest) */
+  alerts: DashboardAlert[];
+  alertsMore: number;
   recentRuns: Run[];
   /** Runs waiting for an Owner/Admin to approve, oldest first */
   pendingApprovals: Run[];
   jobs: Job[];
-  security: { tfaUsers: number; members: number };
+}
+
+/** One item of the dashboard's 알림 card. `run` opens that run's log; `to` is a page to fix it on. */
+export interface DashboardAlert {
+  kind: "hostKey" | "failed" | "approval" | "offline" | "tfa";
+  tone: "bad" | "warn" | "neutral";
+  title: string;
+  sub: string;
+  run?: number;
+  to?: string;
+}
+
+export type NotifyChannel = "ntfy" | "slack" | "discord";
+export type NotifyEvent = "ok" | "bad" | "cancel" | "approval";
+export type NotifySecretKey = "ntfyToken" | "slackUrl" | "discordUrl";
+export interface NotifyConfig {
+  baseUrl: string;
+  events: Record<NotifyEvent, boolean>;
+  autoOnly: boolean;
+  ntfy: { on: boolean; server: string; topic: string };
+  slack: { on: boolean };
+  discord: { on: boolean };
+}
+export interface NotifySettings extends NotifyConfig {
+  secrets: Record<NotifySecretKey, { set: boolean; last4: string }>;
+  status: Partial<Record<NotifyChannel, { at: number; ok: boolean; error?: string; errorAt?: number }>>;
 }

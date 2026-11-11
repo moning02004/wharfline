@@ -7,7 +7,8 @@ import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Button, Check, ErrorText, Field, Input, Seg, cx } from "../components/ui";
 
 const REPO_RE = /^[^/\s]+\/[^/\s]+$/;
-export const GROUP_MENUS = ROUTES.filter((r) => r.id !== "dashboard");
+// 배포 알림 is Owner-only (the server has no such menu), so groups never grant it.
+export const GROUP_MENUS = ROUTES.filter((r) => r.id !== "dashboard" && r.id !== "notify");
 
 export function buildsLabel(g: Group): string {
   if (g.allBuilds) return "모든 빌드";

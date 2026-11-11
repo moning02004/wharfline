@@ -75,14 +75,87 @@ def all_jobs(db: Session) -> list[m.Job]:
     return list(db.scalars(select(m.Job).order_by(m.Job.ord)))
 
 
+ALERT_LIMIT = 8  # the dashboard's 알림 card shows this many, then "+N"
+FAILED_DAYS = 7  # failed deploys older than this drop off the card
+
+
+def ago(ts: float) -> str:
+    sec = max(0, time.time() - ts)
+    if sec < 60:
+        return "방금"
+    if sec < 3600:
+        return f"{int(sec // 60)}분 전"
+    if sec < 86400:
+        return f"{int(sec // 3600)}시간 전"
+    return f"{int(sec // 86400)}일 전"
+
+
+def dashboard_alerts(db: Session, who: m.Member | None, hosts: list[m.Host], names: dict[str, str]) -> list[dict]:
+    """What the viewer should look at now, most serious first.
+
+    Each: {kind, tone, title, sub, to (route) or run (run no to open)}. Only things the viewer can see:
+    deploys need the jobs or runs menu, servers the inventory menu, approvals the approve permission.
+    """
+    menus = s.visible_menus(who)
+    sees = lambda menu: menus is None or menu in menus  # noqa: E731
+    out: list[dict] = []
+
+    if sees("inventory"):
+        for h in hosts:
+            if h.host_key == "changed":
+                out.append({"kind": "hostKey", "tone": "bad", "title": f"{h.name} 호스트 키가 바뀌었어요",
+                            "sub": f"{h.inventory.name} · {h.ip} · 확인 전까지 배포가 막혀요", "to": "/inventory"})
+
+    if sees("jobs") or sees("runs"):
+        jobs = {j.id for j in db.scalars(select(m.Job))}
+        cutoff = time.time() - FAILED_DAYS * 86400
+        seen: set[str] = set()
+        recent = db.scalars(select(m.Run).where(m.Run.started_at >= cutoff, m.Run.status.notin_(("approval", "rejected")))
+                            .order_by(m.Run.no.desc()))
+        for r in recent:
+            if r.job_id in seen or r.job_id not in jobs:
+                continue
+            seen.add(r.job_id)  # only each job's latest run counts: a later success clears the failure
+            if r.status == "bad":
+                tags = [r.tag] if r.tag and r.tag != "-" else []
+                tags += [f"{k} {v}" for k, v in (r.extra_tags or {}).items()]
+                out.append({"kind": "failed", "tone": "bad", "title": f"{r.job} 배포 실패",
+                            "sub": " · ".join([f"#{r.no}", *tags, ago(r.started_at or 0)]), "run": r.no})
+
+    if s.can(who, "approve"):
+        for r in db.scalars(select(m.Run).where(m.Run.status == "approval").order_by(m.Run.no)):
+            asker = names.get(r.requested_by or "", r.requested_by) or r.by
+            out.append({"kind": "approval", "tone": "warn", "title": f"{r.job} 승인 대기",
+                        "sub": " · ".join(x for x in (f"#{r.no}", f"{asker}님 요청", r.tag if r.tag != "-" else "") if x), "run": r.no})
+
+    if sees("inventory"):
+        off: dict[str, list[m.Host]] = {}
+        for h in hosts:
+            if h.status == "off" and h.host_key != "changed":  # a changed key is already listed above
+                off.setdefault(h.inventory.name, []).append(h)
+        for inv, hs in off.items():
+            if len(hs) == 1:
+                title, sub = f"{hs[0].name} 응답 없음", f"{inv} · {hs[0].ip} · 배포에서 빠져요"
+            else:
+                title, sub = f"{inv} 서버 {len(hs)}대 응답 없음", f"{', '.join(h.name for h in hs)} · 배포에서 빠져요"
+            out.append({"kind": "offline", "tone": "warn", "title": title, "sub": sub, "to": "/inventory"})
+
+    if s.can(who, "admin"):  # the Owner can require 2FA for everyone (보안 설정)
+        members = list(db.scalars(select(m.Member)))
+        missing = sum(1 for x in members if not x.tfa)
+        if missing:
+            out.append({"kind": "tfa", "tone": "neutral", "title": f"2단계 인증 안 쓴 멤버 {missing}명",
+                        "sub": f"멤버 {len(members)}명 중 {len(members) - missing}명 사용 중", "to": "/security"})
+    return out
+
+
 @router.get("/dashboard")
 def dashboard(db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
     scope = s.build_scope(who)
-    hosts = list(db.scalars(select(m.Host)))
+    hosts = list(db.scalars(select(m.Host).order_by(m.Host.id)))
     online = sum(1 for h in hosts if h.status == "on")
-    changed = next((h for h in hosts if h.host_key == "changed"), None)
-    members = list(db.scalars(select(m.Member)))
-    names = {x.email: x.name for x in members}
+    names = member_names(db)
+    alerts = dashboard_alerts(db, who, hosts, names)
     return {
         "me": s.me_dict(who) if who else None,
         "stats": {
@@ -91,11 +164,11 @@ def dashboard(db: Session = Depends(get_db), who: m.Member | None = Depends(view
             "hostsOnline": online, "hostsTotal": len(hosts),
             "avgDuration": "1m 31s",
         },
-        "hostKeyAlert": changed.to_dict() if changed else None,
+        "alerts": alerts[:ALERT_LIMIT],
+        "alertsMore": max(0, len(alerts) - ALERT_LIMIT),
         "recentRuns": [run_view(r, names) for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()).limit(5))],
         "pendingApprovals": [run_view(r, names) for r in db.scalars(select(m.Run).where(m.Run.status == "approval").order_by(m.Run.no))],
         "jobs": [job_view(db, j, scope, who) for j in all_jobs(db)],
-        "security": {"tfaUsers": sum(1 for x in members if x.tfa), "members": len(members)},
     }
 
 

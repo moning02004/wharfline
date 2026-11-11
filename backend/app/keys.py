@@ -15,6 +15,7 @@ from sqlalchemy import select
 
 from . import crypto
 from . import githooks
+from . import notify
 from . import models as m
 from .db import SessionLocal
 
@@ -36,10 +37,10 @@ def status() -> int:
         rows = [row for model in ENCRYPTED for row in encrypted_rows(db, model)]
         counts = Counter(_label(r) for r in rows)
         stale = sum(1 for r in rows if ring.needs_rewrap(r.kek_id, r.wrapped_dek))
-        hook = githooks.secret_envelope(db)
-        if hook:
-            counts[_label(hook)] += 1
-            stale += ring.needs_rewrap(hook.kek_id, hook.wrapped_dek)
+        for env in (githooks.secret_envelope(db), notify.secret_envelope(db)):
+            if env:
+                counts[_label(env)] += 1
+                stale += ring.needs_rewrap(env.kek_id, env.wrapped_dek)
     print(f"active key: {ring.active_id}")
     print(f"loaded keys: {', '.join(ring.ids)}")
     for label, n in sorted(counts.items()):
@@ -65,6 +66,11 @@ def verify() -> int:
         except crypto.CryptoError as e:
             bad += 1
             print(f"  {githooks.CONTEXT}: {e}")
+        try:
+            notify.load_secrets(db)
+        except crypto.CryptoError as e:
+            bad += 1
+            print(f"  {notify.CONTEXT}: {e}")
     print("all encrypted rows decrypt" if not bad else f"{bad} rows failed")
     return 1 if bad else 0
 
@@ -81,6 +87,10 @@ def rotate() -> int:
         hook = githooks.secret_envelope(db)
         if hook and ring.needs_rewrap(hook.kek_id, hook.wrapped_dek):
             githooks.set_secret_envelope(db, crypto.rewrap(hook, githooks.CONTEXT, ring))
+            moved += 1
+        ns = notify.secret_envelope(db)
+        if ns and ring.needs_rewrap(ns.kek_id, ns.wrapped_dek):
+            notify.set_secret_envelope(db, crypto.rewrap(ns, notify.CONTEXT, ring))
             moved += 1
         db.commit()
     print(f"re-wrapped {moved} data keys with {ring.active_id}")

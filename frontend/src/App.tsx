@@ -5,7 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import { Jobs, Runs } from "./pages/Jobs";
 import { Inventory, Keys, Registries, Repos } from "./pages/Resources";
 import Envs from "./pages/Envs";
-import { Activity, Members, Security } from "./pages/Admin";
+import { Activity, Members, Notify, Security } from "./pages/Admin";
 import Notes from "./pages/Notes";
 import Login from "./pages/Login";
 
@@ -28,6 +28,7 @@ export default function App() {
         <Route path="/activity" element={<Activity />} />
         <Route path="/members" element={<Members />} />
         <Route path="/security" element={<Security />} />
+        <Route path="/notify" element={<Notify />} />
         <Route path="/notes" element={<Notes />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>

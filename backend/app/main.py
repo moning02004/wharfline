@@ -13,8 +13,8 @@ from . import authn, crypto
 from . import models as m
 from .db import SessionLocal, engine
 from .prestart import alembic_config
-from . import githooks
-from .routers import admin, auth, deploy, envs, integrations, resources
+from . import githooks, notify
+from .routers import admin, auth, deploy, envs, integrations, notifications, resources
 from .runner import mark_interrupted
 
 log = logging.getLogger("wharfline")
@@ -37,6 +37,9 @@ def check_keys() -> None:
         hook_secret = githooks.secret_envelope(db)
         if hook_secret:
             used.add(hook_secret.kek_id)
+        notify_secret = notify.secret_envelope(db)
+        if notify_secret:
+            used.add(notify_secret.kek_id)
     missing = used - set(ring.ids)
     if missing:
         raise RuntimeError(f"encrypted data uses master key(s) {sorted(missing)} that are not loaded")
@@ -65,7 +68,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (auth, deploy, resources, envs, admin, integrations):
+for r in (auth, deploy, resources, envs, admin, integrations, notifications):
     app.include_router(r.router)
 app.include_router(integrations.hooks)
 

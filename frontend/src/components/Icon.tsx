@@ -157,6 +157,12 @@ const P = {
     </>
   ),
   skip: <path d="M5 5l8 7-8 7zM17 5v14" />,
+  bell: (
+    <>
+      <path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2h-15z" />
+      <path d="M10 20a2 2 0 0 0 4 0" />
+    </>
+  ),
   external: (
     <>
       <path d="M14 4h6v6M20 4l-9 9" />

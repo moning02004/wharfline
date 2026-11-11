@@ -27,6 +27,7 @@ export const ROUTES = [
   { id: "activity", path: "/activity", label: "활동 기록", icon: "list", grp: "관리" },
   { id: "members", path: "/members", label: "멤버와 권한", icon: "users", grp: "관리" },
   { id: "security", path: "/security", label: "보안", icon: "shield", grp: "관리" },
+  { id: "notify", path: "/notify", label: "배포 알림", icon: "bell", grp: "관리" },
   { id: "notes", path: "/notes", label: "설계 노트", icon: "note", grp: "프로토타입" },
 ] as const;
 export type RouteId = (typeof ROUTES)[number]["id"];

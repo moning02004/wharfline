@@ -24,6 +24,7 @@ from sqlalchemy.orm import Session
 
 from . import executor
 from . import githooks
+from . import notify
 from . import models as m
 from . import store as s
 from .db import SessionLocal
@@ -359,6 +360,7 @@ def _finish(no: int, status: str) -> None:
         result = "ok" if status == "ok" else "warn" if status == "cancel" else "bad"
         s.log_act(db, action, f"{run['job_name']} #{no} · {run['tag']}", result)
         db.commit()
+        notify.notify_run(db, no, status)  # queued for a background thread; never raises
 
 
 def run_groups(db: Session, rec: m.Run, job: dict) -> list[str]:
@@ -513,6 +515,7 @@ def request_approval(db: Session, job: dict, groups: list[str], requested_tag: s
     rec = create_run(db, job, groups, requested_tag, trigger, status="approval", requested_by=requested_by, extra_tags=extra_tags)
     s.log_act(db, "배포 승인 요청", f"{job['name']} #{rec.no} · {rec.tag}", "warn")
     db.commit()
+    notify.notify_run(db, rec.no, "approval")
     return {"no": rec.no, "tag": rec.tag, "steps": rec.steps or [], "status": "approval"}
 
 

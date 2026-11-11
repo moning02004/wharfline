@@ -239,6 +239,15 @@ export function Runs() {
   const { can } = useApp();
   const [params, setParams] = useSearchParams();
   const jobId = params.get("job");
+  // /runs?run=123 (the link in a deploy notification) opens that run's log.
+  const openNo = Number(params.get("run")) || 0;
+  useEffect(() => {
+    if (!openNo) return;
+    openLog(openNo);
+    const next = new URLSearchParams(params);
+    next.delete("run");
+    setParams(next, { replace: true });
+  }, [openNo]); // eslint-disable-line react-hooks/exhaustive-deps
   if (!all) return <Loading />;
   const data = jobId ? all.filter((r) => r.jobId === jobId) : all;
   const jobName = jobId ? data[0]?.job ?? null : null;

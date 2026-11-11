@@ -80,6 +80,19 @@ def client():
     _drop_db()
 
 
+@pytest.fixture(scope="session", autouse=True)
+def notify_sent():
+    """Deploy notifications never leave the machine in tests: every send lands in this list instead.
+
+    Session-wide and never undone, so a send queued late by one test can't reach the network after it.
+    """
+    from app import notify
+
+    sent: list[tuple[str, dict, dict]] = []
+    notify.post = lambda url, body, headers: sent.append((url, body, headers))
+    return sent
+
+
 CSRF = {"X-Requested-With": "wharfline"}  # the browser app sends this on every write
 COOKIE_DOMAIN = "testserver.local"  # how the cookie jar stores cookies the TestClient's "testserver" host sets
 

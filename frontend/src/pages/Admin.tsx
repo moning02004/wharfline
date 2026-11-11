@@ -1,13 +1,13 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { ROLES, useApi, useApp } from "../lib/app";
-import type { Activity as Act, DeviceSession, Group, Login, Member, Policy, Role, Session } from "../lib/types";
+import type { Activity as Act, DeviceSession, Group, Login, Member, NotifyChannel, NotifyConfig, NotifyEvent, NotifySecretKey, NotifySettings, Policy, Role, Session } from "../lib/types";
 import { CodesModal, DisableTfaModal, PasswordModal, ResetPasswordModal, TfaSetupModal } from "../modals/SecurityModals";
 import { draftOf, effectiveAccess, GroupDetail, GroupModal, GroupPicker } from "../modals/AccessModals";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Icon } from "../components/Icon";
-import { Button, Card, CardHeader, Check, Chip, cx, Dot, Field, Input, ListItem, Loading, PageHeader, Seg, Select, StatusPill, TableWrap, Textarea } from "../components/ui";
+import { Banner, Button, Card, CardHeader, Check, Chip, cx, Dot, Field, Hint, Input, ListItem, Loading, PageHeader, Seg, Select, StatusPill, Switch, TableWrap, Textarea } from "../components/ui";
 
 /* ---------- activity ---------- */
 
@@ -586,6 +586,184 @@ export function Security() {
             </Field>
             <div className="flex justify-end">
               <Button variant="primary" onClick={save} disabled={!can("admin")} title={can("admin") ? undefined : "보안 정책은 Owner만 바꿀 수 있어요"}>
+                저장
+              </Button>
+            </div>
+          </div>
+        </Card>
+      </div>
+    </>
+  );
+}
+
+/* ---------- deploy notifications ---------- */
+
+const NOTIFY_EVENTS: [NotifyEvent, string][] = [
+  ["ok", "배포 성공"],
+  ["bad", "배포 실패"],
+  ["cancel", "배포 취소"],
+  ["approval", "승인 대기"],
+];
+
+/** Typed secrets: undefined keeps the saved value, "" clears it. */
+type SecretDraft = Partial<Record<NotifySecretKey, string>>;
+
+export function Notify() {
+  const data = useApi<NotifySettings>("/notify");
+  const { toast, withSudo, can } = useApp();
+  const [cfg, setCfg] = useState<NotifyConfig | null>(null);
+  const [sec, setSec] = useState<SecretDraft>({});
+  const [busy, setBusy] = useState<string | null>(null);
+  useEffect(() => {
+    if (data.data && !cfg) {
+      const { secrets: _s, status: _st, ...c } = data.data;
+      setCfg({ ...c, baseUrl: c.baseUrl || window.location.origin });
+    }
+  }, [data.data, cfg]);
+  if (!can("admin")) return <Banner icon="lock">배포 알림은 Owner만 설정할 수 있어요.</Banner>;
+  if (!data.data || !cfg) return <Loading />;
+  const saved = data.data;
+  const body = () => ({ ...cfg, secrets: sec });
+  const secretChanged = Object.values(sec).some((v) => v !== undefined);
+
+  const save = () => {
+    const run = async () => {
+      setBusy("save");
+      try {
+        await api.put<NotifySettings>("/notify", body());
+        setSec({});
+        data.reload();
+        toast("알림 설정을 저장했어요");
+      } finally {
+        setBusy(null);
+      }
+    };
+    if (secretChanged) withSudo("알림 비밀값 저장", run);
+    else run().catch((e) => toast(errMsg(e), "error"));
+  };
+  const test = async (channel: NotifyChannel) => {
+    setBusy(channel);
+    try {
+      await api.post("/notify/test", { channel, draft: body() });
+      toast("시험 메시지를 보냈어요");
+    } catch (e) {
+      toast(errMsg(e), "error");
+    } finally {
+      setBusy(null);
+      data.reload();
+    }
+  };
+
+  const secretInput = (key: NotifySecretKey, id: string, placeholder: string) => {
+    const s = saved.secrets[key];
+    const cleared = sec[key] === "";
+    return (
+      <div className="flex gap-1.5">
+        <Input
+          id={id}
+          type="password"
+          mono
+          autoComplete="off"
+          className="flex-1"
+          value={sec[key] ?? ""}
+          placeholder={s.set && !cleared ? `저장됨 · ••••${s.last4}` : placeholder}
+          onChange={(e) => setSec({ ...sec, [key]: e.target.value || undefined })}
+        />
+        {s.set && !sec[key] && (
+          <Button size="md" variant="ghost" onClick={() => setSec({ ...sec, [key]: cleared ? undefined : "" })}>
+            {cleared ? "되돌리기" : "지우기"}
+          </Button>
+        )}
+      </div>
+    );
+  };
+
+  const channel = (ch: NotifyChannel, title: string, fields: ReactNode) => {
+    const st = saved.status[ch];
+    const on = cfg[ch].on;
+    return (
+      <Card>
+        <CardHeader title={title}>
+          <Switch checked={on} onChange={(v) => setCfg({ ...cfg, [ch]: { ...cfg[ch], on: v } })} label={`${title} 알림`} />
+        </CardHeader>
+        <div className="p-5 flex flex-col gap-4">
+          {fields}
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            {st && !st.ok ? (
+              <Hint className="text-bad! min-w-0 break-all">마지막 전송 실패: {st.error}</Hint>
+            ) : st ? (
+              <Hint>마지막 전송 {ago(st.at * 1000)}</Hint>
+            ) : (
+              <span />
+            )}
+            <Button size="sm" icon="play" disabled={busy !== null} onClick={() => test(ch)}>
+              {busy === ch ? "보내는 중…" : "시험 보내기"}
+            </Button>
+          </div>
+        </div>
+      </Card>
+    );
+  };
+
+  return (
+    <>
+      <PageHeader title="배포 알림" desc="배포가 끝나면 휴대폰이나 메신저로 알려 드려요." />
+      <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[minmax(0,1.6fr)_minmax(0,1fr)] gap-5 items-start">
+        <div className="flex flex-col gap-4">
+          {channel(
+            "ntfy",
+            "ntfy",
+            <>
+              <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-3">
+                <Field label="서버" htmlFor="n-server">
+                  <Input id="n-server" mono value={cfg.ntfy.server} placeholder="https://ntfy.sh" onChange={(e) => setCfg({ ...cfg, ntfy: { ...cfg.ntfy, server: e.target.value } })} />
+                </Field>
+                <Field label="토픽" htmlFor="n-topic" hint="ntfy.sh에선 남이 못 맞힐 이름으로 지어 주세요.">
+                  <Input id="n-topic" mono value={cfg.ntfy.topic} placeholder="acme-deploys-7f3k" onChange={(e) => setCfg({ ...cfg, ntfy: { ...cfg.ntfy, topic: e.target.value } })} />
+                </Field>
+              </div>
+              <Field label="액세스 토큰 (선택)" htmlFor="n-token">
+                {secretInput("ntfyToken", "n-token", "tk_…")}
+              </Field>
+            </>,
+          )}
+          {channel(
+            "slack",
+            "Slack",
+            <Field label="웹훅 주소" htmlFor="s-url" hint="Slack 앱의 Incoming Webhooks에서 만들어요.">
+              {secretInput("slackUrl", "s-url", "https://hooks.slack.com/services/…")}
+            </Field>,
+          )}
+          {channel(
+            "discord",
+            "Discord",
+            <Field label="웹훅 주소" htmlFor="d-url" hint="채널 설정 › 연동 › 웹후크에서 만들어요.">
+              {secretInput("discordUrl", "d-url", "https://discord.com/api/webhooks/…")}
+            </Field>,
+          )}
+        </div>
+        <Card>
+          <CardHeader title="보낼 때">
+            <Chip>Owner만 수정</Chip>
+          </CardHeader>
+          <div className="p-5 flex flex-col gap-4">
+            <div className="flex flex-col">
+              {NOTIFY_EVENTS.map(([k, label]) => (
+                <Check key={k} checked={cfg.events[k]} onChange={(v) => setCfg({ ...cfg, events: { ...cfg.events, [k]: v } })} title={label} />
+              ))}
+            </div>
+            <label className="flex items-center justify-between gap-3 text-[13px]">
+              <span>
+                자동 배포만
+                <small className="block text-muted text-[12px] mt-px">새 이미지 push로 시작한 실행만 알려요.</small>
+              </span>
+              <Switch checked={cfg.autoOnly} onChange={(v) => setCfg({ ...cfg, autoOnly: v })} label="자동 배포만" />
+            </label>
+            <Field label="Wharfline 주소" htmlFor="n-base" hint="알림 속 실행 링크에 써요.">
+              <Input id="n-base" mono value={cfg.baseUrl} placeholder="https://deploy.example.com" onChange={(e) => setCfg({ ...cfg, baseUrl: e.target.value })} />
+            </Field>
+            <div className="flex justify-end">
+              <Button variant="primary" disabled={busy !== null} onClick={save}>
                 저장
               </Button>
             </div>

@@ -1,10 +1,19 @@
 import { useNavigate } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
-import type { Dashboard as D } from "../lib/types";
+import type { Dashboard as D, DashboardAlert } from "../lib/types";
+import type { IconName } from "../components/Icon";
 import { NewJobModal } from "../modals/NewJobModal";
 import { ApprovalButtons, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { Button, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
+
+const ALERT_ICON: Record<DashboardAlert["kind"], IconName> = {
+  hostKey: "alert",
+  failed: "x",
+  approval: "lock",
+  offline: "server",
+  tfa: "shield",
+};
 
 /** Dashboard: 바로 실행 on top, then 최근 실행 | 알림. */
 export default function Dashboard() {
@@ -13,8 +22,6 @@ export default function Dashboard() {
   const { confirm, openLog } = useRun();
   const nav = useNavigate();
   if (!data) return <Loading />;
-  const alert = data.hostKeyAlert;
-  const missing2fa = data.security.members - data.security.tfaUsers;
 
   return (
     <>
@@ -93,41 +100,43 @@ export default function Dashboard() {
         </Card>
 
         <Card>
-          <CardHeader title="알림">
-            <Button size="sm" variant="ghost" onClick={() => nav("/security")}>
-              보안 설정
-            </Button>
+          {/* min-h: as tall as 최근 실행's header, which has a button */}
+          <CardHeader title="알림" className="min-h-[57px]">
+            {data.alertsMore > 0 && <Chip>+{data.alertsMore}</Chip>}
           </CardHeader>
-          {data.pendingApprovals.map((r) => (
-            <ListItem
-              key={r.no}
-              icon="lock"
-              title={
-                <button type="button" className="text-left hover:underline" onClick={() => openLog(r.no)}>
-                  승인 대기 · {r.job} <span className="font-mono text-muted font-normal">#{r.no}</span>
-                </button>
-              }
-              sub={`${r.requestedByName ?? r.by}님 요청 · ${r.trigger} · ${r.tag}`}
-            >
-              {can("approve") ? <ApprovalButtons no={r.no} /> : <Dot tone="warn">승인 대기</Dot>}
-            </ListItem>
-          ))}
-          {alert && (
-            <ListItem icon="alert" title={`${alert.name}의 호스트 키가 바뀌었어요`} sub={`${alert.ip} · 확인 전까지 이 서버로의 배포는 막혀 있어요`}>
-              <Button size="sm" variant="ghost" onClick={() => nav("/inventory")}>
-                확인
-              </Button>
-            </ListItem>
+          {data.alerts.length ? (
+            data.alerts.map((a) => {
+              const open = () => (a.run ? openLog(a.run) : a.to && nav(a.to));
+              return (
+                <ListItem
+                  key={`${a.kind}-${a.run ?? a.title}`}
+                  icon={ALERT_ICON[a.kind]}
+                  title={
+                    <button type="button" className="text-left hover:underline" onClick={open}>
+                      {a.title}
+                    </button>
+                  }
+                  sub={a.sub}
+                >
+                  {a.kind === "approval" && a.run && can("approve") ? (
+                    <ApprovalButtons no={a.run} />
+                  ) : a.run ? (
+                    <Button size="sm" variant="ghost" onClick={open}>
+                      로그
+                    </Button>
+                  ) : (
+                    <Button size="sm" variant="ghost" onClick={open}>
+                      확인
+                    </Button>
+                  )}
+                </ListItem>
+              );
+            })
+          ) : (
+            <p className="m-0 px-4 py-6 text-center text-muted">
+              <Dot tone="ok">확인할 것이 없어요</Dot>
+            </p>
           )}
-          <ListItem icon="shield" title="2단계 인증" sub={`멤버 ${data.security.members}명 중 ${data.security.tfaUsers}명 사용 중`}>
-            {missing2fa > 0 ? <Dot tone="warn">{missing2fa}명 미설정</Dot> : <Dot tone="ok">모두 사용</Dot>}
-          </ListItem>
-          <ListItem icon="lock" title="로그인 실패 2회" sub="45.148.10.77 · 자동 차단됨">
-            <Dot tone="bad">차단</Dot>
-          </ListItem>
-          <ListItem icon="key" title="오래된 RSA 키" sub="legacy-rsa · 41일 동안 사용 안 함">
-            <Chip>정리 권장</Chip>
-          </ListItem>
         </Card>
       </div>
     </>
