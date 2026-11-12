@@ -64,14 +64,15 @@ export function Layout({ children }: { children: ReactNode }) {
   const { session, setSession, canSee, viewAs, version, openModal } = useApp();
   const { dark, toggle } = useTheme();
   const loc = useLocation();
-  const nav = useNavigate();
-  const route = ROUTES.find((r) => r.path === loc.pathname) ?? ROUTES[0];
+  // A detail page (/jobs/abc) belongs to its list's menu.
+  const route = ROUTES.find((r) => r.path === loc.pathname) ?? ROUTES.find((r) => r.path !== "/" && loc.pathname.startsWith(r.path + "/")) ?? ROUTES[0];
+  const [menuOpen, setMenuOpen] = useState(false);
+  useEffect(() => setMenuOpen(false), [loc.pathname]);
 
   const sections = useMemo(
     () => SECTIONS.map((s) => ({ ...s, pages: ROUTES.filter((r) => r.grp === s.grp && canSee(r.id)) })).filter((s) => s.pages.length),
     [canSee],
   );
-  const current = sections.find((s) => s.grp === route.grp);
 
   const [counts, setCounts] = useState<Record<string, number>>({});
   useEffect(() => {
@@ -95,42 +96,28 @@ export function Layout({ children }: { children: ReactNode }) {
   const logout = async () => setSession(await api.post<Session>("/auth/logout"));
 
   return (
-    <div className="min-h-full flex flex-col bg-canvas">
-      <header className="sticky top-0 z-30 bg-surface/95 backdrop-blur-md shadow-bar">
-        {/* row 1: brand, sections, tools */}
-        <div className="max-w-[1280px] mx-auto px-4 md:px-8 h-14 flex items-center gap-3 md:gap-6">
-          <div className="flex items-center gap-2 flex-none">
-            <div className="grid place-items-center size-[28px] rounded-lg text-primary-fg bg-[linear-gradient(180deg,color-mix(in_srgb,var(--primary)_85%,white),var(--primary))] shadow-primary">
-              <Icon name="arrow" className="size-3.5" strokeWidth={2.6} />
-            </div>
-            <b className="font-semibold tracking-[-0.01em] text-[15px] max-sm:hidden">Wharfline</b>
-            <span className="text-line-strong max-sm:hidden">/</span>
-            <span className="h-7 px-2 rounded-md bg-surface-2 border border-line text-[12.5px] font-medium inline-flex items-center max-sm:hidden">acme</span>
+    <div className="min-h-full flex bg-canvas">
+      {/* sidebar: brand, search, every page by section, then theme and account */}
+      <aside
+        aria-label="사이드 메뉴"
+        className={cx(
+          "fixed inset-y-0 left-0 z-40 w-[232px] flex-none bg-surface border-r border-line flex flex-col transition-transform duration-200",
+          "md:sticky md:top-0 md:h-screen md:translate-x-0",
+          menuOpen ? "translate-x-0 shadow-xl" : "-translate-x-full",
+        )}
+      >
+        <div className="h-14 flex-none flex items-center gap-2 px-4">
+          <div className="grid place-items-center size-[28px] rounded-lg text-primary-fg bg-[linear-gradient(180deg,color-mix(in_srgb,var(--primary)_85%,white),var(--primary))] shadow-primary">
+            <Icon name="arrow" className="size-3.5" strokeWidth={2.6} />
           </div>
-          <nav aria-label="주 메뉴" className="flex items-stretch h-14 gap-0.5 overflow-x-auto scroll-soft min-w-0">
-            {sections.map((s) => {
-              const active = s.grp === route.grp;
-              return (
-                <button
-                  key={s.label}
-                  type="button"
-                  onClick={() => nav(s.pages[0].path)}
-                  aria-current={active ? "page" : undefined}
-                  className={cx(
-                    "px-3 text-[13.5px] whitespace-nowrap transition-colors",
-                    active ? "text-fg font-semibold shadow-[inset_0_-2px_0_var(--primary)]" : "text-muted hover:text-fg",
-                  )}
-                >
-                  {s.label}
-                </button>
-              );
-            })}
-          </nav>
-          <div className="flex-1" />
+          <b className="font-semibold tracking-[-0.01em] text-[15px]">Wharfline</b>
+          <span className="ml-auto h-6 px-2 rounded-md bg-surface-2 border border-line text-[12px] font-medium inline-flex items-center">acme</span>
+        </div>
+        <div className="px-3 pb-2 flex-none">
           <button
             type="button"
             onClick={openQuick}
-            className="max-md:hidden flex items-center gap-2 h-8 w-[220px] px-2.5 rounded-lg border border-line bg-surface-2 text-faint text-[13px] shadow-[inset_0_1px_2px_rgba(16,24,40,.05)] hover:border-line-strong transition-colors"
+            className="w-full flex items-center gap-2 h-8 px-2.5 rounded-lg border border-line bg-surface-2 text-faint text-[13px] hover:border-line-strong transition-colors"
           >
             <svg viewBox="0 0 24 24" className="size-3.5" fill="none" stroke="currentColor" strokeWidth={2} strokeLinecap="round" aria-hidden="true">
               <circle cx="11" cy="11" r="7" />
@@ -139,47 +126,66 @@ export function Layout({ children }: { children: ReactNode }) {
             <span className="flex-1 text-left">이동하거나 실행하기</span>
             <kbd className="font-mono text-[11px] border border-line rounded px-1.5">⌘K</kbd>
           </button>
+        </div>
+        <nav aria-label="주 메뉴" className="flex-1 overflow-y-auto scroll-soft px-3 py-2 flex flex-col gap-4">
+          {sections.map((s) => (
+            <div key={s.label} className="flex flex-col gap-0.5">
+              {s.grp && <div className="px-2.5 pb-1 text-[11.5px] font-semibold text-faint tracking-[0.02em]">{s.label}</div>}
+              {s.pages.map((r) => (
+                <NavLink
+                  key={r.id}
+                  to={r.path}
+                  end={r.path === "/"}
+                  className={({ isActive }) =>
+                    cx(
+                      "h-8 px-2.5 rounded-lg flex items-center gap-2.5 text-[13px] transition-colors",
+                      isActive ? "bg-primary-soft text-primary font-semibold" : "text-muted hover:text-fg hover:bg-hover",
+                    )
+                  }
+                >
+                  <Icon name={r.icon} className="size-4 flex-none" />
+                  <span className="flex-1 truncate">{r.label}</span>
+                  {counts[r.id] ? <span className="text-[11px] text-faint tabular-nums">{counts[r.id]}</span> : null}
+                </NavLink>
+              ))}
+            </div>
+          ))}
+        </nav>
+        <div className="flex-none border-t border-line px-3 py-3 flex flex-col gap-2">
           <SudoTimer />
-          <Button variant="ghost" size="sm" iconOnly icon={dark ? "sun" : "moon"} title="테마 전환" aria-label="테마 전환" onClick={toggle} />
-          <div className="flex items-center gap-1 flex-none">
+          <div className="flex items-center gap-2">
             <span
-              className="grid place-items-center size-[30px] rounded-full bg-primary-soft text-primary font-semibold text-[11px] shadow-[0_0_0_2px_var(--surface),0_0_0_3px_color-mix(in_srgb,var(--primary)_25%,transparent)]"
+              className="grid place-items-center size-[30px] flex-none rounded-full bg-primary-soft text-primary font-semibold text-[11px]"
               title={`${session?.me.name} · ${session?.me.role}${session?.me.groups.length ? ` · ${session.me.groups.join(", ")}` : ""}${session?.tfa ? " · 2단계 인증 사용 중" : ""}`}
             >
               {session?.me.name.slice(0, 2)}
             </span>
+            <span className="flex-1 min-w-0 leading-tight">
+              <span className="block text-[13px] font-medium truncate">{session?.me.name}</span>
+              <span className="block text-[11.5px] text-faint truncate">{session?.me.role}</span>
+            </span>
+            <Button variant="ghost" size="sm" iconOnly icon={dark ? "sun" : "moon"} title="테마 전환" aria-label="테마 전환" onClick={toggle} />
             <Button variant="ghost" size="sm" iconOnly icon="logout" title="로그아웃" aria-label="로그아웃" onClick={logout} />
           </div>
         </div>
-        {/* row 2: pages of the current section */}
-        {current && current.pages.length > 1 && (
-          <div className="max-w-[1280px] mx-auto px-4 md:px-8 h-11 flex items-center gap-1 overflow-x-auto scroll-soft">
-            {current.pages.map((r) => (
-              <NavLink
-                key={r.id}
-                to={r.path}
-                end
-                className={({ isActive }) =>
-                  cx(
-                    "h-[30px] px-3 rounded-lg inline-flex items-center gap-1.5 text-[13px] whitespace-nowrap transition-all duration-150",
-                    isActive ? "bg-surface text-fg font-medium shadow-[0_0_0_1px_rgba(16,24,40,.06),0_1px_3px_rgba(16,24,40,.1)]" : "text-muted hover:text-fg hover:bg-hover",
-                  )
-                }
-              >
-                {r.label}
-                {counts[r.id] ? <span className="text-[11px] text-faint tabular-nums">{counts[r.id]}</span> : null}
-              </NavLink>
-            ))}
-          </div>
-        )}
-      </header>
+      </aside>
+      {menuOpen && <div className="fixed inset-0 z-30 bg-black/30 md:hidden" aria-hidden="true" onClick={() => setMenuOpen(false)} />}
 
-      <main className="flex-1" id="content">
-        <div className="max-w-[1280px] mx-auto flex flex-col gap-6 px-4 md:px-8 pt-7 pb-14">
-          {viewAs && <PreviewBar />}
-          {canSee(route.id) ? children : <Denied label={route.label} />}
-        </div>
-      </main>
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* narrow screens: a bar that opens the sidebar */}
+        <header className="md:hidden sticky top-0 z-20 h-14 bg-surface/95 backdrop-blur-md shadow-bar flex items-center gap-3 px-4">
+          <Button variant="ghost" size="sm" iconOnly icon="menu" aria-label="메뉴 열기" aria-expanded={menuOpen} onClick={() => setMenuOpen(true)} />
+          <b className="font-semibold text-[15px]">{route.label}</b>
+          <span className="flex-1" />
+          <SudoTimer />
+        </header>
+        <main className="flex-1" id="content">
+          <div className="max-w-[1280px] mx-auto flex flex-col gap-6 px-4 md:px-8 pt-7 pb-14">
+            {viewAs && <PreviewBar />}
+            {canSee(route.id) ? children : <Denied label={route.label} />}
+          </div>
+        </main>
+      </div>
     </div>
   );
 }

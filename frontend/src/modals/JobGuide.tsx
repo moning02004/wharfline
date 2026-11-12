@@ -14,7 +14,7 @@ export const JOB_STEPS: { id: JobStepId; label: string }[] = [
   { id: "image", label: "버전 추적" },
   { id: "env", label: "환경 변수" },
   { id: "vars", label: "플레이북 변수" }, // only when the deploy method is a Git playbook
-  { id: "access", label: "권한과 안전장치" },
+  { id: "access", label: "설정" }, // Compose 앱 / SSH 스크립트 also pick the images to track here
   { id: "review", label: "확인" },
 ];
 

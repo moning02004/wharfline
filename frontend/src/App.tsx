@@ -2,7 +2,8 @@ import { Navigate, Route, Routes } from "react-router-dom";
 import { useApp } from "./lib/app";
 import { Layout } from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
-import { Jobs, Runs } from "./pages/Jobs";
+import { JobDetail, Jobs, Runs } from "./pages/Jobs";
+import { CopyJobPage, EditJobPage, NewJobPage } from "./modals/JobEditor";
 import { Inventory, Keys, Registries, Repos } from "./pages/Resources";
 import Envs from "./pages/Envs";
 import { Activity, Members, Notify, Security } from "./pages/Admin";
@@ -19,6 +20,10 @@ export default function App() {
       <Routes>
         <Route path="/" element={<Dashboard />} />
         <Route path="/jobs" element={<Jobs />} />
+        <Route path="/jobs/new" element={<NewJobPage />} />
+        <Route path="/jobs/:id" element={<JobDetail />} />
+        <Route path="/jobs/:id/edit" element={<EditJobPage />} />
+        <Route path="/jobs/:id/copy" element={<CopyJobPage />} />
         <Route path="/runs" element={<Runs />} />
         <Route path="/registries" element={<Registries />} />
         <Route path="/repos" element={<Repos />} />

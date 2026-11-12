@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, errMsg, parseEnv } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import { indentOnTab } from "../lib/indent";
@@ -9,10 +9,10 @@ import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
-import { NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
+import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
 import { FileHistoryModal } from "./FileHistoryModal";
-import { Banner, Button, Check, Chip, ErrorText, Field, Hint, Input, Loading, Select, Seg, Switch, Textarea, cx } from "../components/ui";
+import { Banner, Button, Check, Chip, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /* Same rules as the server (docs/deploy-simplify.md). */
 const PATH_RE = /^(?!\/)(?!.*\.\.)[A-Za-z0-9_./-]+\.ya?ml$/;
@@ -146,6 +146,135 @@ const SCRIPT_EXAMPLE: Omit<StepDraft, "id">[] = [
   { name: "정리", run: "docker image prune -f" },
 ];
 
+/* 스크립트 가이드: "예시 보기" opens one, to copy from or to fill the script with. */
+const COMPOSE_NAMES = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
+/** Whether an uploaded file is what an applied example needs: the same path, or for compose any compose file name at any
+ * depth, for Kubernetes any YAML manifest. The banner only says the deploy cannot run yet, so near matches count. */
+function fileServes(path: string, need: { path: string; guide: GuideId }) {
+  const p = path.replace(/^\.\//, "").toLowerCase();
+  if (p === need.path.toLowerCase()) return true;
+  const base = p.split("/").pop() ?? p;
+  if (need.guide === "kubernetes") return /\.ya?ml$/.test(base) && !COMPOSE_NAMES.includes(base);
+  return COMPOSE_NAMES.includes(base);
+}
+
+interface ScriptGuide {
+  title: string;
+  summary: string;
+  intro: string;
+  notes: string[];
+  file?: { path: string; content: string };
+  steps: Omit<StepDraft, "id">[];
+}
+type GuideId = "compose" | "rollout" | "kubernetes";
+const COMPOSE_SAMPLE = `services:
+  app:
+    image: ghcr.io/acme/app:\${APP_TAG}
+    restart: unless-stopped
+    env_file: .env
+    ports:
+      - "8080:8080"
+`;
+const ROLLOUT_SAMPLE = `services:
+  app:
+    image: ghcr.io/acme/app:\${APP_TAG}
+    restart: unless-stopped
+    env_file: .env
+    # rollout은 새 컨테이너를 옆에 띄운 뒤 옛 것을 내려요.
+    # 그래서 container_name과 ports를 쓰지 않고, 앞단 프록시가 서비스 이름(app)으로 찾아가게 해요.
+    expose:
+      - "8080"
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8080/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    networks: [proxy]
+
+networks:
+  proxy:
+    external: true
+`;
+const K8S_SAMPLE = `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app
+spec:
+  replicas: 2
+  selector:
+    matchLabels: { app: app }
+  template:
+    metadata:
+      labels: { app: app }
+    spec:
+      containers:
+        - name: app
+          image: ghcr.io/acme/app:\${APP_TAG}
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet: { path: /health, port: 8080 }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: app
+spec:
+  selector: { app: app }
+  ports:
+    - port: 80
+      targetPort: 8080
+`;
+const SCRIPT_GUIDES: Record<GuideId, ScriptGuide> = {
+  compose: {
+    title: "Docker Compose로 배포",
+    summary: "docker-compose.yml을 올리고, 새 이미지를 받아 다시 띄워요.",
+    intro: "배포 파일 단계에서 올린 docker-compose.yml이 서버의 배포 폴더에 놓여요. 스크립트는 그 폴더에서 이미지를 받고 컨테이너를 바꿔요.",
+    notes: [
+      "이미지 태그를 ${APP_TAG}처럼 변수로 적으면 실행할 때 버전을 고를 수 있어요. 설정 단계에서 추적할 이미지를 체크해요.",
+      "배포 파일 단계의 환경 변수는 같은 폴더에 .env로 놓여요.",
+      "교체하는 몇 초 동안 접속이 끊길 수 있어요. 끊기면 안 되면 docker rollout 예시를 보세요.",
+    ],
+    file: { path: "docker-compose.yml", content: COMPOSE_SAMPLE },
+    steps: SCRIPT_EXAMPLE,
+  },
+  rollout: {
+    title: "docker rollout으로 무중단 교체",
+    summary: "새 컨테이너가 준비된 뒤 옛 컨테이너를 내려서 접속이 끊기지 않아요.",
+    intro: "docker rollout은 서버 초기화 때 함께 설치돼요. 서비스를 잠깐 2개로 늘려 새 컨테이너가 healthy가 되면 옛 컨테이너를 내려요.",
+    notes: [
+      "rollout할 서비스에는 container_name과 ports(호스트 포트)를 쓰지 마세요. 컨테이너 2개가 잠깐 같이 떠야 해요.",
+      "healthcheck를 넣어 두세요. 그래야 새 컨테이너가 준비됐는지 보고 옛 것을 내려요.",
+      "앞단 프록시(nginx 등)가 같은 네트워크에서 서비스 이름으로 찾아가게 해 주세요.",
+      "처음 배포할 때는 '처음이면 띄우기'가 서비스를 띄우고, 그다음부터는 rollout이 바꿔요. 다른 서비스의 새 이미지는 docker compose up -d db 처럼 이름을 적어 따로 띄워요.",
+      "서버에 docker rollout이 없으면 새 서버 초기화를 다시 하거나 github.com/wowu/docker-rollout 의 설치 방법을 따르세요.",
+    ],
+    file: { path: "docker-compose.yml", content: ROLLOUT_SAMPLE },
+    steps: [
+      { name: "이미지 받기", run: 'mkdir -p "$SERVICE_PATH"\ncd "$SERVICE_PATH"\ndocker compose pull' },
+      { name: "처음이면 띄우기", run: 'cd "$SERVICE_PATH"\ndocker compose up -d --no-recreate --remove-orphans' },
+      { name: "무중단 교체", run: 'cd "$SERVICE_PATH"\ndocker rollout app' },
+      { name: "정리", run: "docker image prune -f" },
+    ],
+  },
+  kubernetes: {
+    title: "Kubernetes에 적용",
+    summary: "yaml 파일을 올리고 kubectl apply로 적용해요.",
+    intro: "배포 파일 단계에서 올린 yaml 파일이 서버의 배포 폴더에 놓여요. 스크립트는 이미지 태그를 채워 넣은 뒤 kubectl apply로 클러스터에 적용하고, 새 Pod가 준비될 때까지 기다려요.",
+    notes: [
+      "배포할 서버에 kubectl과 클러스터 접속 정보(kubeconfig)가 있어야 해요.",
+      "kubectl은 ${APP_TAG}를 채우지 않아서 envsubst로 먼저 채워요. envsubst가 없으면 sudo apt install gettext-base로 설치해요.",
+      "여러 파일이면 zip으로 올리거나(k8s/01_namespace.yaml …) 파일마다 apply 줄을 더해요.",
+      "설정 단계에서 추적할 이미지를 체크하면 실행할 때 버전을 고를 수 있어요.",
+    ],
+    file: { path: "k8s/app.yaml", content: K8S_SAMPLE },
+    steps: [
+      { name: "적용", run: 'cd "$SERVICE_PATH"\nenvsubst < k8s/app.yaml | kubectl apply -f -' },
+      { name: "준비될 때까지 기다리기", run: "kubectl rollout status deployment/app --timeout=180s" },
+    ],
+  },
+};
+
 /* Playbook variables (Git playbook jobs only). Same rules as the server. */
 interface VarDraft {
   id: number;
@@ -178,41 +307,83 @@ function jobImageText(job: Job): string {
   return job.defaultTag && job.defaultTag !== "latest" ? `${job.image}:${job.defaultTag}` : job.image;
 }
 
-export function NewJobModal({ onClose, guide = false }: { onClose: () => void; guide?: boolean }) {
-  return <JobModal mode="new" onClose={onClose} initialGuide={guide} />;
+/** Back to where the editor was opened from, or to `fallback` when it was opened by its URL. */
+function useBack(fallback: string) {
+  const nav = useNavigate();
+  const loc = useLocation();
+  return () => (loc.key !== "default" ? nav(-1) : nav(fallback));
 }
 
-export function EditJobModal({ job, onClose }: { job: Job; onClose: () => void }) {
-  return <JobModal mode="edit" job={job} onClose={onClose} initialGuide={false} />;
+/** /jobs/new: a new deploy job. ?guide=1 starts with the guide on. */
+export function NewJobPage() {
+  const [q] = useSearchParams();
+  const back = useBack("/jobs");
+  return <JobEditor mode="new" onClose={back} initialGuide={q.get("guide") === "1"} />;
 }
 
-/** A new job filled in from `job`: same method, files, images, targets and settings; uses the same .env set. */
-export function CopyJobModal({ job, onClose }: { job: Job; onClose: () => void }) {
-  const [files, setFiles] = useState<BundleFile[] | null>(job.playbook.kind === "script" && job.files.length ? null : []);
+/** The job of /jobs/:id/…, or what to show instead while it loads or when it is gone. */
+function useRouteJob(): { job?: Job; gone: ReactNode } {
+  const { id = "" } = useParams();
+  const { data, error } = useApi<Job[]>("/jobs");
+  const job = data?.find((j) => j.id === id);
+  if (error) return { gone: <EditorMissing text={`배포 작업을 불러오지 못했어요: ${errMsg(error)}`} /> };
+  if (!data) return { gone: <Loading /> };
+  if (!job) return { gone: <EditorMissing text="이 배포 작업을 찾을 수 없어요. 지워졌거나 볼 권한이 없어요." /> };
+  return { job, gone: null };
+}
+
+function EditorMissing({ text }: { text: string }) {
+  return (
+    <>
+      <EditorBack to="/jobs" label="배포 작업" />
+      <div className="bg-surface rounded-xl shadow-soft px-5 py-10 text-center text-muted text-[13px]">{text}</div>
+    </>
+  );
+}
+
+function EditorBack({ to, label }: { to: string; label: ReactNode }) {
+  return (
+    <Link to={to} className="inline-flex items-center gap-1 text-[13px] text-muted hover:text-fg w-fit -mb-3">
+      <Icon name="chev" className="size-3.5 rotate-90" />
+      {label}
+    </Link>
+  );
+}
+
+/** /jobs/:id/edit */
+export function EditJobPage() {
+  const { job, gone } = useRouteJob();
+  const back = useBack(job ? `/jobs/${job.id}` : "/jobs");
+  if (!job) return <>{gone}</>;
+  if (!job.canEdit) return <EditorMissing text="이 배포 작업을 고칠 권한이 없어요." />;
+  return <JobEditor key={job.id} mode="edit" job={job} onClose={back} initialGuide={false} />;
+}
+
+/** /jobs/:id/copy: a new job filled in from the job: same method, files, images, targets and settings; same .env set. */
+export function CopyJobPage() {
+  const { job, gone } = useRouteJob();
+  const back = useBack("/jobs");
+  const [files, setFiles] = useState<BundleFile[] | null>(null);
   const [err, setErr] = useState("");
   useEffect(() => {
-    if (files !== null) return;
+    if (!job || files !== null) return;
+    if (job.playbook.kind !== "script" || !job.files.length) {
+      setFiles([]);
+      return;
+    }
     api.get<BundleFile[]>(`/jobs/${job.id}/files`).then(
       (fs) => setFiles(fs.map((f) => ({ ...f, size: f.size ?? (f.content ?? "").length }))),
       (e) => setErr(errMsg(e)),
     );
-  }, [job.id, files]);
-  if (err) {
-    return (
-      <>
-        <ModalHead title="배포 작업 복제" sub={job.name} onClose={onClose} />
-        <ModalBody>
-          <ErrorText>파일을 불러오지 못했어요: {err}</ErrorText>
-        </ModalBody>
-      </>
-    );
-  }
+  }, [job, files]);
+  if (!job) return <>{gone}</>;
+  if (err) return <EditorMissing text={`파일을 불러오지 못했어요: ${err}`} />;
   if (files === null) return <Loading />;
-  return <JobModal mode="copy" job={{ ...job, files }} onClose={onClose} initialGuide={false} />;
+  return <JobEditor mode="copy" job={{ ...job, files }} onClose={back} initialGuide={false} />;
 }
 
-/** Step-by-step deploy job modal for both creating and editing (docs/deploy-edit.md). */
-function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job; onClose: () => void; initialGuide: boolean }) {
+/** Step-by-step deploy job page for creating, copying and editing (docs/deploy-edit.md). */
+function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job; onClose: () => void; initialGuide: boolean }) {
   const { toast, refresh, openModal, withSudo, session, can } = useApp();
   // Deployers: new jobs are protected with auto-deploy off, and those two can't be changed; .env values can't be pasted.
   const fixedSafety = !can("run_protected");
@@ -231,12 +402,12 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   const pb = job?.playbook;
   const [name, setName] = useState(copying ? `${job.name} 복사본` : job?.name ?? "");
-  const [source, setSource] = useState<Source>(pb?.kind === "builtin" ? "builtin" : job?.compose ? "compose" : pb?.kind === "script" ? "script" : job ? "git" : "compose");
+  const [source, setSource] = useState<Source>(pb?.kind === "builtin" ? "builtin" : job?.compose ? "compose" : pb?.kind === "script" ? "script" : job ? "git" : "script");
   const scriptLike = source === "script" || source === "compose";
   const [composeFrom, setComposeFrom] = useState<ComposeFrom>(job?.compose && !job.composePath ? "text" : "git");
   const [composeBusy, setComposeBusy] = useState(false);
   const [nameTouched, setNameTouched] = useState(!!job);
-  const [advanced, setAdvanced] = useState(mode === "edit"); // Compose apps: the 권한과 안전장치 step
+  const [neededFile, setNeededFile] = useState<{ path: string; guide: GuideId } | null>(null); // an applied example's file, until uploaded
   const isRepo = pb && (pb.kind === "git" || pb.kind === "local");
   const repoCompose = !!job?.compose && !!job.composePath;
   const [url, setUrl] = useState(isRepo || repoCompose ? pb!.url : "");
@@ -318,18 +489,15 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   const [busy, setBusy] = useState(false);
   const bodyRef = useRef<HTMLDivElement>(null);
 
-  // The 스크립트 step exists only for SSH script jobs.
-  // SSH script jobs track the images their files name, so they skip 버전 추적.
-  // The 플레이북 변수 step exists only for Git playbook jobs.
-  // A Compose app asks two pages: the file, then servers and .env together; 권한과 안전장치 only when asked for.
+  // A file + script job asks three pages: 배포 (name, servers, folder, files, .env), 스크립트, 설정 (images to track,
+  // 권한, 안전장치). Older Compose apps keep file → 배포 → 설정. Git and built-in playbook jobs keep their own steps.
+  const asDeploy = (st: (typeof JOB_STEPS)[number]) => (st.id === "target" ? { ...st, label: "배포 파일" } : st);
   const flow =
-    source === "compose"
-      ? JOB_STEPS.filter((st) => st.id === "compose" || st.id === "target" || (st.id === "access" && advanced)).map((st) =>
-          st.id === "target" ? { ...st, label: "서버 · 환경 변수" } : st,
-        )
-      : JOB_STEPS.filter(
-          (st) => st.id !== "compose" && (st.id !== "script" || source === "script") && (st.id !== "image" || source !== "script") && (st.id !== "vars" || source === "git"),
-        );
+    source === "script"
+      ? (["target", "script", "access"] as JobStepId[]).map((id) => asDeploy(JOB_STEPS.find((st) => st.id === id)!))
+      : scriptLike
+        ? JOB_STEPS.filter((st) => st.id === source || st.id === "target" || st.id === "access").map(asDeploy)
+        : JOB_STEPS.filter((st) => st.id !== "compose" && st.id !== "script" && (st.id !== "vars" || source === "git"));
   const step = flow[Math.min(cur, flow.length - 1)].id;
   const last = cur >= flow.length - 1;
 
@@ -340,7 +508,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     if (!envPick && envs[0]) setEnvPick(envs[0].name);
   }, [envs, envPick]);
   useEffect(() => {
-    bodyRef.current?.scrollTo({ top: 0 });
+    window.scrollTo({ top: 0 });
   }, [cur]);
 
   // Keys that fit the URL: SSH keys for git@/ssh:// (one is required), tokens for https (optional).
@@ -434,7 +602,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       () => undefined,
     );
   }, [editing, job?.id]);
-  const trackFixed = (fi: FileImage) => {
+  const trackFixed = (fi: FileImage, quiet = false) => {
     const tagVar = `${fi.var}_TAG`;
     setFiles((prev) =>
       prev.map((f) =>
@@ -444,7 +612,21 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
       ),
     );
     setFilesTouched(true);
-    toast(`${fi.path}의 이미지를 \${${tagVar}}로 바꿨어요. 이제 버전이 기록돼요`);
+    if (!quiet) toast(`${fi.path}의 이미지를 \${${tagVar}}로 바꿨어요. 이제 버전이 기록돼요`);
+  };
+
+  /** Stop tracking an image: the file's ${NAME_TAG} goes back to its default tag, or latest. */
+  const untrack = (fi: FileImage, quiet = false) => {
+    const tag = fi.value.match(/:-([^}]+)\}$/)?.[1] ?? "latest";
+    setFiles((prev) =>
+      prev.map((f) =>
+        f.path !== fi.path || f.content === undefined
+          ? f
+          : { ...f, content: f.content.replace(new RegExp(`(image:\\s*["']?)${escapeRe(fi.value)}`, "g"), `$1${fi.ref}:${tag}`) },
+      ),
+    );
+    setFilesTouched(true);
+    if (!quiet) toast(`${fi.ref}를 :${tag}로 고정했어요. 이제 버전을 추적하지 않아요`);
   };
 
   /** Client-side check of one step; the server validates everything again. */
@@ -478,8 +660,14 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         return bad >= 0 ? `${bad + 1}번째 단계의 이름과 명령을 적어 주세요.` : "";
       }
       case "target":
+        if (source === "script" && !name.trim()) return "이름을 넣어 주세요.";
         if (!hosts.length) return "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
-        return source === "compose" ? validateStep("env") : ""; // a Compose app fills .env on the same page
+        if (!scriptLike) return "";
+        {
+          const sp = servicePath.trim().replace(/\/+$/, "");
+          if (servicePath.trim() && (!sp || !SERVICE_PATH_RE.test(sp))) return "배포 폴더는 /srv/api-server처럼 /로 시작하는 폴더예요. ..은 쓸 수 없어요.";
+        }
+        return validateStep("env"); // 배포 holds the .env too
       case "image": {
         if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요. 변수 이름을 비운 이미지를 넣어 주세요.";
         const seen = new Set<string>();
@@ -558,7 +746,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   // Optional steps (new job only): image unless the built-in playbook needs one, and env.
   const varsEmpty = !playVars.length && !secretList.length && !secretNames.length;
   const skipLabel =
-    mode !== "edit" && source !== "compose"
+    mode !== "edit" && !scriptLike
       ? step === "image" && source !== "builtin"
         ? "추적 없이 진행"
         : step === "env"
@@ -628,9 +816,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     setBusy(true);
     try {
       await api.post("/jobs", body());
-      onClose();
       refresh();
-      nav("/jobs");
+      nav("/jobs", { replace: true });
       toast("배포 작업을 만들었어요");
     } catch (e) {
       fail(errMsg(e));
@@ -736,8 +923,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         : step === "script"
           ? ["playbook.script"]
           : step === "target"
-          ? source === "compose"
-            ? (["target.inv", "target.groups", "env", ...(envOn && envMode !== "existing" ? ["env.vars"] : [])] as TipId[])
+          ? scriptLike
+            ? ([...(source === "script" ? ["name"] : []), "target.inv", "target.groups", "env", ...(envOn && envMode !== "existing" ? ["env.vars"] : [])] as TipId[])
             : ["target.inv", "target.groups"]
           : step === "image"
             ? ["image"]
@@ -782,7 +969,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   // Arriving at the env step: put the variables the script uses but nobody set yet, ready to fill in.
   useEffect(() => {
-    if ((step !== "env" && !(step === "target" && source === "compose")) || !canEnv || !neededVars.length) return;
+    const later = step === "access" && source === "script"; // the .env field is on the 배포 page, before the script
+    if ((step !== "env" && !(step === "target" && scriptLike) && !later) || !canEnv || !neededVars.length) return;
     if (envChoice === "keep" || (envOn && envMode === "existing")) return; // a saved set: just show what it lacks
     const have = new Set(parseEnv(envText).map(([k]) => k));
     const missing = neededVars.filter((v) => !have.has(v));
@@ -790,7 +978,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     setEnvChoice("on");
     setEnvMode("paste");
     setEnvText((t) => (t.trim() ? `${t.replace(/\s+$/, "")}\n` : "") + missing.map((k) => `${k}=`).join("\n"));
-    toast(`스크립트에서 쓰는 변수 ${missing.length}개를 넣어 뒀어요. 값을 채워 주세요.`);
+    toast(later ? `스크립트에서 쓰는 변수 ${missing.length}개를 배포 파일 단계의 환경 변수에 넣어 뒀어요. 값을 채워 주세요.` : `스크립트에서 쓰는 변수 ${missing.length}개를 넣어 뒀어요. 값을 채워 주세요.`);
   }, [step]); // only when arriving at the step
 
   /** Variables from an uploaded .env: added to the env step, names already there are skipped. */
@@ -902,6 +1090,128 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </div>
   );
 
+  /* ---------- file + script jobs (and older Compose apps): the pieces of their three pages ---------- */
+
+  /** 예시 적용: the guide's steps replace the script. Files stay as uploaded; a missing one is pointed out. */
+  const applyGuide = (g: ScriptGuide) => {
+    setSteps(g.steps.map((st) => ({ ...st, id: ++stepSeq })));
+    const id = (Object.keys(SCRIPT_GUIDES) as GuideId[]).find((k) => SCRIPT_GUIDES[k] === g) ?? "compose";
+    setNeededFile(g.file ? { path: g.file.path, guide: id } : null);
+    toast(`스크립트 ${g.steps.length}단계를 넣었어요`);
+  };
+  // Shown on the script page while the applied example's file is not among the uploaded ones.
+  const missingFile = neededFile && !files.some((x) => fileServes(x.path, neededFile)) ? neededFile : null;
+
+  // 배포 page: under the servers, the folder on them and the files put there.
+  const deployFiles = (
+    <>
+      <Field
+        label="배포 폴더"
+        htmlFor="jServicePath"
+        hint={
+          <>
+            서버의 이 폴더에 파일과 .env를 올리고 거기서 실행해요. 스크립트에서는 <span className="font-mono">$SERVICE_PATH</span>예요.{" "}
+            {!servicePath.trim() && (
+              <>
+                비워 두면 <span className="font-mono">/srv/{slug(name) || "작업-이름"}</span>을 써요.
+              </>
+            )}
+          </>
+        }
+      >
+        <Input id="jServicePath" mono spellCheck={false} placeholder={`/srv/${slug(name) || "app"}`} value={servicePath} onChange={(e) => setServicePath(e.target.value)} />
+      </Field>
+      {source === "compose" ? (
+        <Field label="올릴 파일">
+          <div className="flex items-center gap-2 flex-wrap rounded-lg border border-line px-3 py-2 text-[12.5px]">
+            <Icon name="file" className="size-3.5 text-faint flex-none" />
+            <span className="font-mono">{COMPOSE_FILE}</span>
+            <span className="text-muted">{composeFrom === "git" ? `저장소의 ${composePath} · 배포할 때 받아요` : "Compose 파일 단계에서 넣은 내용"}</span>
+          </div>
+        </Field>
+      ) : (
+        <FileBundleField
+          jobId={editing ? job.id : null}
+          jobName={job?.name ?? ""}
+          filesVer={job?.filesVer ?? null}
+          files={files}
+          update={(fn) => {
+            setFiles(fn);
+            setFilesTouched(true);
+          }}
+          onEnv={mergeEnv}
+        />
+      )}
+    </>
+  );
+
+  // 설정 page: which `image:` lines follow a version. Checking one writes ${NAME_TAG} into the file.
+  const tracked = fileImages.filter((fi) => !fi.fixed);
+  const fromRepo = source === "compose" && composeFrom === "git";
+  const openImages = () =>
+    openModal(
+      (c) => (
+        <TrackImagesModal
+          images={fileImages}
+          fromRepo={fromRepo}
+          manyFiles={files.length > 1}
+          onClose={c}
+          onApply={(want) => {
+            const changed = fileImages.filter((fi) => want.has(imageKey(fi)) === fi.fixed);
+            changed.forEach((fi) => (fi.fixed ? trackFixed(fi, true) : untrack(fi, true)));
+            if (changed.length) toast(`추적하는 이미지를 ${want.size}개로 바꿨어요`);
+          }}
+        />
+      ),
+      "md",
+    );
+  // Tracked images by the tag variable they read: one variable, one version for all of them.
+  const trackedGroups = [
+    ...tracked
+      .reduce((m, fi) => {
+        const v = fi.tagVar || "IMAGE_TAG";
+        const name = fi.ref.split("/").pop() ?? fi.ref;
+        const names = m.get(v) ?? [];
+        if (!names.includes(name)) names.push(name);
+        return m.set(v, names);
+      }, new Map<string, string[]>())
+      .entries(),
+  ];
+  // Under 자동 배포: which images it watches, with 설정하기 to change them.
+  const trackedRow = (
+    <div className="flex flex-col gap-2 px-3.5 pb-3">
+      <div className="flex items-center gap-2 flex-wrap text-[12.5px]">
+        <span className="font-medium">자동 배포 이미지</span>
+        <span className="text-muted">{fileImages.length ? `${tracked.length}개 (총: ${fileImages.length}개)` : "파일에 image: 줄이 없어요"}</span>
+        {fileImages.length > 0 && (
+          <Button size="sm" icon="edit" onClick={openImages}>
+            설정하기
+          </Button>
+        )}
+      </div>
+      {tracked.length > 0 ? (
+        <div className="flex flex-col gap-1.5">
+          <div className="flex flex-wrap gap-1.5">
+            {trackedGroups.map(([v, names]) => (
+              <Chip key={v} mono tone="ok">
+                {names.join(" + ")}
+              </Chip>
+            ))}
+          </div>
+          {trackedGroups
+            .filter(([, names]) => names.length > 1)
+            .map(([v, names]) => (
+              <Hint key={v}>
+                {names.join(", ")}는 같은 변수 <span className="font-mono">${v}</span>를 써서 항상 같은 버전으로 올라가요.
+              </Hint>
+            ))}
+        </div>
+      ) : (
+        fileImages.length > 0 && <Hint className="text-warn">추적하는 이미지가 없으면 새 버전을 알 수 없어서 자동 배포가 일어나지 않아요.</Hint>
+      )}
+    </div>
+  );
+
   const renderStep = (id: JobStepId = step): React.ReactNode => {
     switch (id) {
       case "compose":
@@ -954,29 +1264,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 </>
               )}
             </Field>
-            {fileImages.length > 0 && (
-              <Field label="배포할 이미지" hint="${변수}로 적은 태그는 실행할 때 버전을 고를 수 있어요.">
-                <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
-                  {fileImages.map((fi) => (
-                    <div key={`${fi.path}:${fi.value}`} className="flex items-center gap-2 px-3 py-2 text-[12.5px] min-w-0 flex-wrap">
-                      <span className="font-mono truncate min-w-0 flex-1">{fi.ref}</span>
-                      {fi.fixed ? (
-                        <>
-                          <span className="text-muted font-mono">:{fi.tag ?? "latest"}</span>
-                          {composeFrom === "text" && (
-                            <Button size="sm" variant="ghost" onClick={() => trackFixed(fi)}>
-                              변수로 바꾸기
-                            </Button>
-                          )}
-                        </>
-                      ) : (
-                        <Chip mono tone="ok">{"$" + (fi.tagVar || "IMAGE_TAG")}</Chip>
-                      )}
-                    </div>
-                  ))}
-                </div>
-              </Field>
-            )}
             {noRegistry.length > 0 && (
               <Banner tone="warn" icon="alert" title={`${noRegistry.join(", ")} 레지스트리가 없어요`}>
                 공개 이미지면 그대로 두세요. 비공개 이미지면 받을 수 있게 토큰을 등록해 주세요.{" "}
@@ -996,28 +1283,6 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                 placeholder="api-server"
               />
             </Field>
-            <details className="text-[13px]">
-              <summary className="cursor-pointer select-none text-muted">더 보기</summary>
-              <div className="flex flex-col gap-3 mt-3">
-                <Field label="서버의 배포 폴더" htmlFor="jServicePath">
-                  <Input id="jServicePath" mono spellCheck={false} placeholder={`/srv/${slug(name) || "app"}`} value={servicePath} onChange={(e) => setServicePath(e.target.value)} />
-                </Field>
-                {!editing && (
-                  <div>
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      onClick={() => {
-                        setSource("script");
-                        setCur(1);
-                      }}
-                    >
-                      다른 방법으로 배포하기 (SSH 스크립트 · 플레이북)
-                    </Button>
-                  </div>
-                )}
-              </div>
-            </details>
           </>
         );
 
@@ -1040,12 +1305,11 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                   { value: "git", label: "Git 레포" },
                   { value: "script", label: "SSH 스크립트" },
                   { value: "builtin", label: "기본 플레이북" },
-                  { value: "compose", label: "Compose 앱" },
                 ]}
                 value={source}
                 onChange={(s) => {
                   setSource(s);
-                  if (s === "compose") setCur(0);
+                  if (s === "compose" || s === "script") setCur(0);
                 }}
               />
               </div>
@@ -1112,11 +1376,49 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
       case "script":
         return (
-          <Field label="스크립트">
-            <TipSpot id="playbook.script">
-              <ScriptEditor steps={steps} onChange={setSteps} />
-            </TipSpot>
-          </Field>
+          <>
+            <Field
+              label="스크립트"
+              hint={
+                <>
+                  단계마다 모든 서버에서 차례로 실행해요. 배포 폴더는 <span className="font-mono">$SERVICE_PATH</span>예요.
+                </>
+              }
+            >
+              {missingFile && (
+                <Banner tone="warn" icon="alert" title={`${missingFile.path} 파일이 필요해요`}>
+                  <span className="block">이 스크립트는 배포 폴더의 <span className="font-mono">{missingFile.path}</span>를 써요. 배포 파일 단계에서 올려 주세요.</span>
+                  <span className="mt-2 flex flex-wrap gap-1.5">
+                    <Button size="sm" onClick={() => goto(flow.findIndex((st) => st.id === "target"))}>
+                      배포 파일 단계로 가기
+                    </Button>
+                    <Button size="sm" variant="ghost" icon="book" onClick={() => openModal((c) => <ScriptGuideModal guide={SCRIPT_GUIDES[missingFile.guide]} onUse={applyGuide} onClose={c} />, "md")}>
+                      샘플 보기
+                    </Button>
+                  </span>
+                </Banner>
+              )}
+              <div className="grid grid-cols-[repeat(auto-fit,minmax(200px,1fr))] gap-2">
+                {(Object.keys(SCRIPT_GUIDES) as GuideId[]).map((id) => (
+                  <div key={id} className="rounded-lg border border-line bg-surface-2 px-3.5 py-3 flex flex-col gap-1 text-[13px]">
+                    <b className="font-semibold">{SCRIPT_GUIDES[id].title}</b>
+                    <span className="text-muted text-[12.5px]">{SCRIPT_GUIDES[id].summary}</span>
+                    <div className="mt-1 flex flex-wrap gap-1.5">
+                      <Button size="sm" variant="primary" icon="check" onClick={() => applyGuide(SCRIPT_GUIDES[id])}>
+                        바로 적용
+                      </Button>
+                      <Button size="sm" icon="book" onClick={() => openModal((c) => <ScriptGuideModal guide={SCRIPT_GUIDES[id]} onUse={applyGuide} onClose={c} />, "md")}>
+                        예시 보기
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <TipSpot id="playbook.script">
+                <ScriptEditor steps={steps} onChange={setSteps} />
+              </TipSpot>
+            </Field>
+          </>
         );
 
       case "target": {
@@ -1173,9 +1475,17 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             )}
           </Field>
         );
-        return source === "compose" ? (
+        return scriptLike ? (
           <>
+            {source === "script" && (
+              <Field label="이름" htmlFor="jName">
+                <TipSpot id="name">
+                  <Input id="jName" value={name} onChange={(e) => setName(e.target.value)} placeholder="api-server · production" />
+                </TipSpot>
+              </Field>
+            )}
             {targetField}
+            {deployFiles}
             {renderStep("env")}
           </>
         ) : (
@@ -1433,8 +1743,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         return (
           <>
             <Field
-              label="편집할 수 있는 사람"
-              hint="Owner, Admin, 만든 사람은 항상 고칠 수 있어요."
+              label="권한"
+              hint="이 작업을 고칠 수 있는 그룹과 멤버예요. Owner, Admin, 만든 사람은 항상 고칠 수 있어요."
             >
               <TipSpot id="access.editors">
               <Field
@@ -1522,6 +1832,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
                     desc="고른 규칙에 맞는 새 버전이 올라오면 바로 배포해요."
                   />
                   {hook && <HookRulePicker value={hookRule} onChange={setHookRule} disabled={fixedSafety} />}
+                  {hook && scriptLike && trackedRow}
                 </div>
                 <Toggle
                   checked={prot}
@@ -1584,7 +1895,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           ],
           ["env", "환경 변수", envSummary],
           ...(source === "git" ? ([["vars", "플레이북 변수", varsSummary]] as [JobStepId, string, React.ReactNode][]) : []),
-          ["access", "권한과 안전장치", `${editorsSummary} · ${safetySummary}`],
+          ["access", "설정", `${editorsSummary} · ${safetySummary}`],
         ];
         return (
           <Field label="확인">
@@ -1607,80 +1918,121 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
     }
   };
 
+  const backTo = (editing || copying) && job ? `/jobs/${job.id}` : "/jobs";
   return (
     <>
-      <ModalHead
+      <EditorBack to={backTo} label={(editing || copying) && job ? job.name : "배포 작업"} />
+      <PageHeader
         title={editing ? "배포 작업 편집" : copying ? "배포 작업 복제" : "새 배포 작업"}
-        sub={editing ? job.name : copying ? `${job.name}에서 복제 · 이름과 배포 대상을 확인해 주세요` : undefined}
-        onClose={onClose}
-        extra={
-          <Button size="sm" variant={guide ? "default" : "ghost"} icon="wand" aria-pressed={guide} title="배포를 도와드릴까요?" onClick={() => setGuide((g) => !g)}>
-            <span className="hidden sm:inline">배포를 도와드릴까요?</span>
-          </Button>
-        }
-      />
-      <StepIndex steps={flow} mode={editing ? "edit" : "new"} cur={cur} reached={reached} skipped={skipped} onPick={editing ? goto : pick} />
-      <form id="jobForm" onSubmit={submit} className="contents" noValidate>
-        <div
-          ref={bodyRef}
-          onMouseDown={(e) => {
-            if (!(e.target as HTMLElement).closest("[data-tip]")) setTip(null);
-          }}
-          onFocusCapture={(e) => {
-            const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]")?.dataset.tip as TipId | undefined;
-            if (t) setTip(t);
-          }}
-          className="modal-body px-5 pt-4 pb-5 overflow-auto scroll-soft flex flex-col gap-5 flex-[0_1_420px] min-h-[140px]">
-          <GuideContext.Provider value={guideState}>
-            <div key={step} className="flex flex-col gap-5 animate-fade">
-              {renderStep()}
-            </div>
-          </GuideContext.Provider>
-        </div>
-      </form>
-      <ModalFoot between>
-        <Button variant="ghost" onClick={onClose}>
-          취소
+        desc={editing ? job.name : copying ? `${job.name}에서 복제 · 이름과 배포 대상을 확인해 주세요` : undefined}
+      >
+        <Button size="sm" variant={guide ? "default" : "ghost"} icon="wand" aria-pressed={guide} title="배포를 도와드릴까요?" onClick={() => setGuide((g) => !g)}>
+          배포를 도와드릴까요?
         </Button>
-        <span className="flex items-center gap-2 flex-wrap justify-end">
-          <Button onClick={() => goto(cur - 1)} disabled={cur === 0}>
-            이전
-          </Button>
-          {editing ? (
-            <>
-              <Button onClick={next} disabled={last}>
-                다음
+      </PageHeader>
+      {/* no overflow-hidden here: the footer sticks to the bottom of the window */}
+      <div className="bg-surface rounded-xl shadow-soft min-w-0 flex flex-col">
+        <div className="pt-4">
+          <StepIndex steps={flow} mode={editing ? "edit" : "new"} cur={cur} reached={reached} skipped={skipped} onPick={editing ? goto : pick} />
+        </div>
+        <form id="jobForm" onSubmit={submit} noValidate>
+          <div
+            ref={bodyRef}
+            onMouseDown={(e) => {
+              if (!(e.target as HTMLElement).closest("[data-tip]")) setTip(null);
+            }}
+            onFocusCapture={(e) => {
+              const t = (e.target as HTMLElement).closest<HTMLElement>("[data-tip]")?.dataset.tip as TipId | undefined;
+              if (t) setTip(t);
+            }}
+            className="modal-body px-5 md:px-8 pt-5 pb-8 flex flex-col gap-5 min-h-[min(520px,60vh)]"
+          >
+            <GuideContext.Provider value={guideState}>
+              <div key={step} className="flex flex-col gap-5 animate-fade">
+                {renderStep()}
+              </div>
+            </GuideContext.Provider>
+          </div>
+        </form>
+        <div className="sticky bottom-0 z-10 rounded-b-xl overflow-hidden">
+          <ModalFoot between>
+            <Button variant="ghost" onClick={onClose}>
+              취소
+            </Button>
+            <span className="flex items-center gap-2 flex-wrap justify-end">
+              <Button onClick={() => goto(cur - 1)} disabled={cur === 0}>
+                이전
               </Button>
-              <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
-                {busy ? "저장하는 중…" : "저장"}
-              </Button>
-            </>
-          ) : (
-            <>
-              {skipLabel && (
-                <Button variant="ghost" icon="skip" onClick={skip}>
-                  {skipLabel}
-                </Button>
+              {editing ? (
+                <>
+                  <Button onClick={next} disabled={last}>
+                    다음
+                  </Button>
+                  <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
+                    {busy ? "저장하는 중…" : "저장"}
+                  </Button>
+                </>
+              ) : (
+                <>
+                  {skipLabel && (
+                    <Button variant="ghost" icon="skip" onClick={skip}>
+                      {skipLabel}
+                    </Button>
+                  )}
+                  <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
+                    {last ? (busy ? "만드는 중…" : "만들기") : "다음"}
+                  </Button>
+                </>
               )}
-              {source === "compose" && last && !advanced && (
-                <Button
-                  variant="ghost"
-                  onClick={() => {
-                    const v = validateStep(step);
-                    if (v) return fail(v);
-                    setAdvanced(true);
-                    goto(cur + 1);
-                  }}
-                >
-                  권한과 안전장치
-                </Button>
-              )}
-              <Button variant="primary" type="submit" form="jobForm" disabled={busy}>
-                {last ? (busy ? "만드는 중…" : "만들기") : "다음"}
-              </Button>
-            </>
-          )}
-        </span>
+            </span>
+          </ModalFoot>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function ScriptGuideModal({ guide, onUse, onClose }: { guide: ScriptGuide; onUse: (g: ScriptGuide) => void; onClose: () => void }) {
+  const { toast } = useApp();
+  const script = guide.steps.map((st, i) => `# ${i + 1}. ${st.name}\n${st.run}`).join("\n\n");
+  const block = (label: string, text: string) => (
+    <Field
+      label={label}
+      right={
+        <Button size="sm" variant="ghost" icon="copy" onClick={() => copyText(text, toast)}>
+          복사
+        </Button>
+      }
+    >
+      <pre className="m-0 max-h-[260px] overflow-auto scroll-soft rounded-lg bg-surface-2 border border-line p-3 font-mono text-[12px] leading-relaxed">{text}</pre>
+    </Field>
+  );
+  return (
+    <>
+      <ModalHead title={guide.title} sub="예시" onClose={onClose} />
+      <ModalBody>
+        <p className="m-0 text-[13px]">{guide.intro}</p>
+        <ul className="m-0 pl-5 text-[12.5px] text-muted flex flex-col gap-1">
+          {guide.notes.map((n) => (
+            <li key={n}>{n}</li>
+          ))}
+        </ul>
+        {guide.file && block(guide.file.path, guide.file.content)}
+        {block(`스크립트 · ${guide.steps.length}단계`, script)}
+      </ModalBody>
+      <ModalFoot>
+        <Button variant="ghost" onClick={onClose}>
+          닫기
+        </Button>
+        <Button
+          variant="primary"
+          onClick={() => {
+            onUse(guide);
+            onClose();
+          }}
+        >
+          이 예시로 채우기
+        </Button>
       </ModalFoot>
     </>
   );
@@ -1726,6 +2078,83 @@ function StepIndex({ steps, mode, cur, reached, skipped, onPick }: { steps: type
         })}
       </ol>
     </nav>
+  );
+}
+
+const imageKey = (fi: FileImage) => `${fi.path}:${fi.value}`;
+
+/** 추적하는 이미지 설정: check the `image:` lines that follow a version; 적용 rewrites their tags in the files. */
+function TrackImagesModal({
+  images,
+  fromRepo,
+  manyFiles,
+  onApply,
+  onClose,
+}: {
+  images: FileImage[];
+  fromRepo: boolean;
+  manyFiles: boolean;
+  onApply: (want: Set<string>) => void;
+  onClose: () => void;
+}) {
+  const [want, setWant] = useState(() => new Set(images.filter((fi) => !fi.fixed).map(imageKey)));
+  const flip = (k: string) =>
+    setWant((w) => {
+      const n = new Set(w);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
+      return n;
+    });
+  return (
+    <>
+      <ModalHead title="추적하는 이미지" sub="새 버전이 오면 자동 배포하고, 실행할 때 버전을 고를 이미지예요." onClose={onClose} />
+      <ModalBody>
+        {fromRepo ? (
+          <Banner tone="info" icon="info" title="저장소의 파일을 그대로 써요">
+            추적하려면 저장소에서 태그를 <span className="font-mono">{"${이름_TAG}"}</span>로 바꿔 주세요.
+          </Banner>
+        ) : (
+          <Hint>
+            체크한 이미지는 파일의 태그가 <span className="font-mono">{"${이름_TAG}"}</span>로 바뀌고, 체크를 풀면 지금 태그로 고정돼요.
+          </Hint>
+        )}
+        <div className="flex flex-col rounded-lg border border-line divide-y divide-line px-2">
+          {images.map((fi) => {
+            const k = imageKey(fi);
+            return (
+              <Check
+                key={k}
+                checked={want.has(k)}
+                onChange={() => !fromRepo && flip(k)}
+                title={<span className="font-mono text-[12.5px] break-all">{fi.ref}</span>}
+                desc={
+                  <>
+                    {fi.fixed ? `지금 :${fi.tag ?? "latest"} 고정` : "$" + (fi.tagVar || "IMAGE_TAG")}
+                    {manyFiles ? ` · ${fi.path}` : ""}
+                  </>
+                }
+              />
+            );
+          })}
+        </div>
+      </ModalBody>
+      <ModalFoot>
+        <Button variant="ghost" onClick={onClose}>
+          {fromRepo ? "닫기" : "취소"}
+        </Button>
+        {!fromRepo && (
+          <Button
+            variant="primary"
+            onClick={() => {
+              onApply(want);
+              onClose();
+            }}
+          >
+            적용
+          </Button>
+        )}
+      </ModalFoot>
+    </>
   );
 }
 

@@ -2,7 +2,6 @@ import { useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { ROUTES, useApi, useApp } from "../lib/app";
 import type { Job } from "../lib/types";
-import { EditJobModal } from "../modals/NewJobModal";
 import { shortImage, useRun } from "../modals/RunModals";
 import { Icon, type IconName } from "./Icon";
 import { cx } from "./ui";
@@ -61,7 +60,7 @@ export function QuickNav({ onClose }: { onClose: () => void }) {
                   icon: "edit" as IconName,
                   run: () => {
                     onClose();
-                    openModal((c) => <EditJobModal job={j} onClose={c} />, "md");
+                    nav(`/jobs/${j.id}/edit`);
                   },
                 },
               ]
