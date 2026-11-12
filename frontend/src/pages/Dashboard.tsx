@@ -2,6 +2,7 @@ import { useNavigate } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
 import type { Dashboard as D, DashboardAlert } from "../lib/types";
 import type { IconName } from "../components/Icon";
+import { since, stamp } from "../lib/time";
 import { NewJobModal } from "../modals/NewJobModal";
 import { ApprovalButtons, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
@@ -91,7 +92,7 @@ export default function Dashboard() {
                       <StatusPill status={r.status} />
                     </td>
                     <td className="text-muted">{r.by}</td>
-                    <td className="text-muted">{r.time}</td>
+                    <td className="text-muted" title={stamp(r.at)}>{since(r.at, r.time)}</td>
                   </tr>
                 ))}
               </tbody>

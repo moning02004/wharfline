@@ -351,7 +351,7 @@ def _finish(no: int, status: str) -> None:
         db.execute(update(m.Run).where(m.Run.no == no).values(status=status, duration=d, time="방금", log=list(run["events"])))
         job = db.get(m.Job, run["job_id"])
         if job:
-            job.last_status, job.last_time, job.last_duration = status, "방금", d
+            job.last_status, job.last_time, job.last_duration, job.last_at = status, "방금", d, time.time()
             if status == "ok":
                 job.tag_now = run["tag"]
                 if run.get("extra") and job.extra_images:
@@ -400,7 +400,7 @@ def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, tr
     step_names = (executor.step_names(db, job) if not executor.simulated()
                   else [st["name"] for st in build_script(db, job, groups, no, tag, trigger)])
     rec = m.Run(no=no, job=job["name"], job_id=job["id"], target=s.target_label(groups, s.inv_of(db, job)), tag=tag,
-                status=status, by=s.actor_name(db), trigger=trigger, time="방금", duration="-", steps=step_names,
+                status=status, by=s.actor_name(db), trigger=trigger, time="방금", started_at=time.time(), duration="-", steps=step_names,
                 requested_by=requested_by, extra_tags=extras or None, files_ver=job.get("filesVer"))
     db.add(rec)
     db.flush()

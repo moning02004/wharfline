@@ -321,10 +321,12 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
   // The 스크립트 step exists only for SSH script jobs.
   // SSH script jobs track the images their files name, so they skip 버전 추적.
   // The 플레이북 변수 step exists only for Git playbook jobs.
-  // A Compose app asks three things; 권한과 안전장치 only when asked for, the rest Wharfline fills in.
+  // A Compose app asks two pages: the file, then servers and .env together; 권한과 안전장치 only when asked for.
   const flow =
     source === "compose"
-      ? JOB_STEPS.filter((st) => st.id === "compose" || st.id === "target" || st.id === "env" || (st.id === "access" && advanced))
+      ? JOB_STEPS.filter((st) => st.id === "compose" || st.id === "target" || (st.id === "access" && advanced)).map((st) =>
+          st.id === "target" ? { ...st, label: "서버 · 환경 변수" } : st,
+        )
       : JOB_STEPS.filter(
           (st) => st.id !== "compose" && (st.id !== "script" || source === "script") && (st.id !== "image" || source !== "script") && (st.id !== "vars" || source === "git"),
         );
@@ -476,7 +478,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         return bad >= 0 ? `${bad + 1}번째 단계의 이름과 명령을 적어 주세요.` : "";
       }
       case "target":
-        return hosts.length ? "" : "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
+        if (!hosts.length) return "배포할 서버가 없어요. 인벤토리나 그룹을 바꿔 주세요.";
+        return source === "compose" ? validateStep("env") : ""; // a Compose app fills .env on the same page
       case "image": {
         if (source === "builtin" && !image.trim()) return "기본 플레이북은 띄울 이미지가 있어야 해요. 변수 이름을 비운 이미지를 넣어 주세요.";
         const seen = new Set<string>();
@@ -733,7 +736,9 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
         : step === "script"
           ? ["playbook.script"]
           : step === "target"
-          ? ["target.inv", "target.groups"]
+          ? source === "compose"
+            ? (["target.inv", "target.groups", "env", ...(envOn && envMode !== "existing" ? ["env.vars"] : [])] as TipId[])
+            : ["target.inv", "target.groups"]
           : step === "image"
             ? ["image"]
             : step === "env"
@@ -777,7 +782,7 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
 
   // Arriving at the env step: put the variables the script uses but nobody set yet, ready to fill in.
   useEffect(() => {
-    if (step !== "env" || !canEnv || !neededVars.length) return;
+    if ((step !== "env" && !(step === "target" && source === "compose")) || !canEnv || !neededVars.length) return;
     if (envChoice === "keep" || (envOn && envMode === "existing")) return; // a saved set: just show what it lacks
     const have = new Set(parseEnv(envText).map(([k]) => k));
     const missing = neededVars.filter((v) => !have.has(v));
@@ -897,8 +902,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
               </div>
   );
 
-  const renderStep = () => {
-    switch (step) {
+  const renderStep = (id: JobStepId = step): React.ReactNode => {
+    switch (id) {
       case "compose":
         return (
           <>
@@ -1114,8 +1119,8 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
           </Field>
         );
 
-      case "target":
-        return (
+      case "target": {
+        const targetField = (
           <Field
             label="배포 대상"
             right={
@@ -1168,6 +1173,15 @@ function JobModal({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job;
             )}
           </Field>
         );
+        return source === "compose" ? (
+          <>
+            {targetField}
+            {renderStep("env")}
+          </>
+        ) : (
+          targetField
+        );
+      }
 
       case "image":
         return (

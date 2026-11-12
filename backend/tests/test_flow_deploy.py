@@ -1,5 +1,7 @@
 """Make an inventory and a server, then deploy to it, through the real API."""
 
+import time
+
 from tests.conftest import builtin_job, log_text, wait_run
 
 
@@ -53,6 +55,10 @@ def test_deploy_to_the_new_servers(client, login):
 
     after = next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])
     assert after["tagNow"] == "16" and after["last"]["status"] == "ok"
+    # Times go out as epoch seconds, so the lists can say "N분 전" instead of a stored "방금".
+    assert 0 <= time.time() - after["last"]["at"] < 300
+    listed = next(r for r in client.get("/api/runs").json() if r["no"] == started.json()["no"])
+    assert 0 <= time.time() - listed["at"] < 300
     assert "16" in [t["name"] for t in after["imageTags"]]  # a typed tag is remembered
 
 

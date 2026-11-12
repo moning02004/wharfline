@@ -10,6 +10,7 @@ import { Icon } from "../components/Icon";
 import { EnvLink } from "../modals/EnvModals";
 import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { api, errMsg } from "../lib/api";
+import { since, stamp } from "../lib/time";
 import { ConfirmDelete } from "./Resources";
 import { Button, Card, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap, cx } from "../components/ui";
 
@@ -162,7 +163,7 @@ export function Jobs() {
                         <div className="flex items-center gap-2">
                           <StatusPill status={j.last.status} />
                           <span className="text-muted text-[12px] tabular-nums">
-                            {j.last.time} · {j.last.duration}
+                            <span title={stamp(j.last.at)}>{since(j.last.at, j.last.time)}</span> · {j.last.duration}
                           </span>
                         </div>
                       </td>
@@ -311,7 +312,7 @@ export function Runs() {
                     )}
                   </td>
                   <td className="tabular-nums text-muted">{r.duration}</td>
-                  <td className="text-muted">{r.time}</td>
+                  <td className="text-muted" title={stamp(r.at)}>{since(r.at, r.time)}</td>
                   <td className="text-right" onClick={(e) => e.stopPropagation()}>
                     {r.status === "approval" && can("approve") && <ApprovalButtons no={r.no} />}
                   </td>

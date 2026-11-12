@@ -102,7 +102,7 @@ export interface Job {
   protected: boolean;
   lock: boolean;
   rollback: boolean;
-  last: { status: Status; time: string; duration: string };
+  last: { status: Status; time: string; duration: string; /** epoch seconds the last run ended */ at: number | null };
   inventoryHostCount: number;
   targetLabel: string;
   targetHosts: Host[];
@@ -181,6 +181,8 @@ export interface Run {
   by: string;
   trigger: string;
   time: string;
+  /** epoch seconds the run started (null for old sample runs) */
+  at: number | null;
   duration: string;
   steps?: string[];
   /** Email and name of who asked for the run (null for auto-deploy and old runs) */

@@ -279,6 +279,7 @@ class Job(Base):
     last_status: Mapped[str] = mapped_column(String(16), default="warn")
     last_time: Mapped[str] = mapped_column(String(64), default="아직 실행 안 함")
     last_duration: Mapped[str] = mapped_column(String(32), default="-")
+    last_at: Mapped[float | None] = mapped_column(Float)  # when the last run ended (epoch seconds); lists show "N분 전" from it
     # Who may edit besides Owner/Admin and the creator: group ids and member emails.
     editors: Mapped[dict[str, list[str]]] = mapped_column(
         JSONB, default=lambda: {"groups": [], "members": []}, server_default=text("""'{"groups": [], "members": []}'::jsonb"""))
@@ -306,7 +307,7 @@ class Job(Base):
                 "extraImages": [dict(x) for x in self.extra_images or []],
                 "inventory": self.inventory, "targets": self.targets, "env": self.env,
                 "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
-                "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration},
+                "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration, "at": self.last_at},
                 "editors": {"groups": list((self.editors or {}).get("groups", [])),
                             "members": list((self.editors or {}).get("members", []))},
                 "createdBy": self.created_by}
@@ -350,7 +351,7 @@ class Run(Base):
 
     def to_dict(self) -> dict[str, Any]:
         d = {"no": self.no, "job": self.job, "jobId": self.job_id, "target": self.target, "tag": self.tag,
-             "status": self.status, "by": self.by, "trigger": self.trigger, "time": self.time, "duration": self.duration,
+             "status": self.status, "by": self.by, "trigger": self.trigger, "time": self.time, "at": self.started_at, "duration": self.duration,
              "requestedBy": self.requested_by, "decidedBy": self.decided_by, "extraTags": self.extra_tags or {}, "filesVer": self.files_ver,
              "decidedAt": self.decided_at.isoformat() if self.decided_at else None}
         if self.steps:
