@@ -47,6 +47,8 @@ def job_view(db: Session, job: m.Job, scope: set[str] | None, who: m.Member | No
         "imageSourceRepo": db.get(m.Image, j["image"]).source_repo if has_image and db.get(m.Image, j["image"]) else None,
         "extraImages": [extra_view(db, x, scope) for x in job.extra_images or []],
         "canEdit": s.can_edit(who, job),
+        # Who made the job: their name, or the email when the account is gone; None for jobs made before this was kept.
+        "createdByName": (maker.name if (maker := db.get(m.Member, job.created_by)) else job.created_by) if job.created_by else None,
         # Playbook variables: plain ones with values, secret ones by name only (values never leave the server).
         "playVars": [list(x) for x in job.play_vars or []],
         "secretVarNames": list(secret.var_names) if (secret := db.get(m.JobSecretVars, job.id)) else [],

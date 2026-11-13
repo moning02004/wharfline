@@ -54,6 +54,7 @@ def test_editor_group_grants_edit(client, login):
     r = client.post("/api/jobs", json=builtin_job("perm · group", "staging", "nginx:1.27", editors={"groups": [deployer_group["id"]], "members": []}))
     assert r.status_code == 200, r.text
     assert r.json()["createdBy"] == OWNER
+    assert r.json()["createdByName"] == "정훈"  # shown as 만든 사람
 
     login(DEPLOYER)
     job = _job(client, "perm · group")

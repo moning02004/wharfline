@@ -141,6 +141,8 @@ export interface Job {
   editors: { groups: string[]; members: string[] };
   /** Email of the member who created the job */
   createdBy: string | null;
+  /** Name of who created the job (their email if the account is gone); null when not recorded */
+  createdByName: string | null;
   /** Whether the shown member may edit this job */
   canEdit: boolean;
   /** Git playbook jobs: plain playbook variables as [name, value] (empty otherwise). */
