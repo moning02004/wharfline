@@ -151,7 +151,7 @@ function JobFlags({ job: j }: { job: Job }) {
     },
   ];
   return (
-    <span className="inline-flex gap-1.5">
+    <span className="inline-flex flex-col items-start gap-1">
       {flags.map((f) => (
         <span key={f.label} title={f.title} aria-label={`${f.label} ${f.on ? "켜짐" : "꺼짐"}`}>
           <Chip tone={f.on ? f.tone : "neutral"} icon={f.icon} className={f.on ? undefined : "opacity-40"}>
@@ -262,17 +262,15 @@ export function Jobs() {
       </PageHeader>
       <Card>
         <TableWrap>
-          <table className="tbl">
+          <table className="tbl grid-lines">
             <thead>
               <tr>
                 <th>작업</th>
-                <th>생성자</th>
-                <th>권한</th>
-                <th>상태</th>
-                <th>최근 배포</th>
-                <th className="text-right">
-                  <span className="sr-only">동작</span>
-                </th>
+                <th className="w-px">생성자</th>
+                <th className="w-px">권한</th>
+                <th className="w-px">상태</th>
+                <th className="w-px">최근 배포</th>
+                <th className="w-px text-right">실행</th>
               </tr>
             </thead>
             <tbody>
@@ -293,13 +291,7 @@ export function Jobs() {
                   </td>
                   <td>
                     <span className="text-muted text-[12px] tabular-nums">
-                      {j.last.status === "warn" ? (
-                        "-"
-                      ) : (
-                        <>
-                          <span title={stamp(j.last.at)}>{since(j.last.at, j.last.time)}</span> · {j.last.duration}
-                        </>
-                      )}
+                      {j.last.status === "warn" ? "-" : <span title={`${stamp(j.last.at)} · ${j.last.duration}`}>{since(j.last.at, j.last.time)}</span>}
                     </span>
                   </td>
                   <td className="text-right" onClick={(e) => e.stopPropagation()}>
