@@ -1,10 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useApi, useApp } from "../lib/app";
-import type { Job, Run } from "../lib/types";
+import type { Build, Job, JobImage, Run } from "../lib/types";
 import { MoreMenu, type MenuItem } from "../components/Menu";
 import { ApprovalButtons, PlaybookLine, shortImage, useRun } from "../modals/RunModals";
-import { BuildBadge } from "../components/BuildBadge";
+import { BuildBadge, buildNo, buildState, elapsed } from "../components/BuildBadge";
 import { Icon, type IconName } from "../components/Icon";
 import { ModalBody, ModalHead } from "../components/Modal";
 import { EnvLink } from "../modals/EnvModals";
@@ -12,14 +12,14 @@ import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { api, errMsg } from "../lib/api";
 import { since, stamp } from "../lib/time";
 import { ConfirmDelete } from "./Resources";
-import { Button, Card, CardHeader, Chip, Empty, KV, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
+import { Button, Card, CardHeader, Chip, Empty, KV, Loading, PageHeader, Dot, StatusPill, TableWrap, cx } from "../components/ui";
 
 /** The job list, refreshed every few seconds while a CI build or a deploy is in progress. */
 function useJobs() {
   const [poll, setPoll] = useState(0);
   const res = useApi<Job[]>("/jobs", poll);
   useEffect(() => {
-    setPoll(res.data?.some((j) => j.build?.active || j.last.status === "run") ? 3000 : 0);
+    setPoll(res.data?.some((j) => jobBuilds(j).some((b) => b.active) || j.last.status === "run" || j.last.status === "approval") ? 3000 : 0);
   }, [res.data]);
   return res.data;
 }
@@ -99,6 +99,45 @@ function useJobActions(afterDelete?: () => void) {
 }
 
 /** The job list's 상태: the same words as everywhere else; a job that never ran says 배포 전. */
+/** The builds of a job's images, one per build repo (images built by the same repo share it). */
+function jobBuilds(j: Job): Build[] {
+  const all = [j.build, ...(j.extraImages ?? []).map((x) => x.build)].filter((b): b is Build => !!b);
+  return all.filter((b, i) => all.findIndex((o) => o.id === b.id) === i);
+}
+
+/** Under 상태: what the image builds are doing. Running beats finished; several at once are counted, not listed. */
+function BuildLine({ job }: { job: Job }) {
+  const builds = jobBuilds(job);
+  if (!builds.length) return null;
+  const running = builds.filter((b) => b.active);
+  const failed = builds.filter((b) => b.status === "failure");
+  const done = builds.filter((b) => b.status === "success");
+  let tone: "accent" | "ok" | "bad", text: string, title: string | undefined;
+  if (running.length) {
+    const count = running.reduce((n, b) => n + Math.max(1, b.activeCount ?? 1), 0);
+    const b = running.reduce((a, x) => (x.startedAt > a.startedAt ? x : a));
+    tone = "accent";
+    text = running.length > 1 ? `빌드 중 ${count}개` : count > 1 ? `빌드 중 ${buildNo(b)} 외 ${count - 1}건` : `빌드 중 ${buildNo(b)} · ${elapsed(b.startedAt)}`;
+    title = running.map((x) => `${x.repo} ${buildNo(x)}${x.step ? ` · ${x.step}` : ""}`).join("\n");
+  } else if (failed.length) {
+    tone = "bad";
+    text = failed.length > 1 ? `빌드 실패 ${failed.length}개` : `빌드 실패 ${buildNo(failed[0])}`;
+    title = failed.map((x) => `${x.repo} ${buildNo(x)}`).join("\n");
+  } else if (done.length) {
+    tone = "ok";
+    text = done.length > 1 ? "빌드 성공 · 새 버전 있음" : `빌드 성공 ${buildNo(done[0])}${done[0].tag ? ` → ${done[0].tag}` : ""}`;
+    title = done.map((x) => `${x.repo} ${buildNo(x)}${x.tag ? ` → ${x.tag}` : ""}`).join("\n");
+  } else return null;
+  const color = { accent: "text-accent", ok: "text-ok", bad: "text-bad" }[tone];
+  const dot = { accent: "bg-accent animate-pulse-dot", ok: "bg-ok", bad: "bg-bad" }[tone];
+  return (
+    <div className={cx("mt-1 flex items-center gap-1.5 text-[11.5px] whitespace-nowrap", color)} title={title}>
+      <span className={cx("size-1.5 rounded-full flex-none", dot)} />
+      {text}
+    </div>
+  );
+}
+
 function DeployState({ status }: { status: Job["last"]["status"] }) {
   return status === "warn" ? <span className="text-faint text-[12.5px]">배포 전</span> : <StatusPill status={status} />;
 }
@@ -250,6 +289,7 @@ export function Jobs() {
                   </td>
                   <td>
                     <DeployState status={j.last.status} />
+                    <BuildLine job={j} />
                   </td>
                   <td>
                     <span className="text-muted text-[12px] tabular-nums">
@@ -397,6 +437,8 @@ export function JobDetail() {
         </Card>
       </div>
 
+      <ImageBuilds job={j} />
+
       <Card>
         <CardHeader title="실행 기록" sub={mine.length ? `최근 ${Math.min(mine.length, 20)}건` : undefined}>
           {mine.length > 20 && (
@@ -446,6 +488,93 @@ export function JobDetail() {
         </TableWrap>
       </Card>
     </>
+  );
+}
+
+/** A build date for the table: "11월 13일 14:05". */
+const buildDate = (at: number) => {
+  const d = new Date(at * 1000);
+  return `${d.getMonth() + 1}월 ${d.getDate()}일 ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
+};
+
+/** 이미지 빌드 on the job page: a tab per image the job follows, then its builds as 빌드 번호 | 태그 | 상태 | 날짜 (running first). */
+function ImageBuilds({ job }: { job: Job }) {
+  const [poll, setPoll] = useState(0);
+  const { data } = useApi<JobImage[]>(`/jobs/${encodeURIComponent(job.id)}/images`, poll);
+  const [pick, setPick] = useState<string | null>(null);
+  useEffect(() => {
+    setPoll(data?.some((im) => im.builds.some((b) => b.active)) ? 3000 : 0);
+  }, [data]);
+  if (!data?.length) return null;
+  const cur = data.find((im) => im.ref === pick) ?? data[0];
+  const builds = [...cur.builds].sort((a, b) => Number(b.active) - Number(a.active) || b.startedAt - a.startedAt);
+  const name = (im: JobImage) => (im.var ? im.var.toLowerCase() : im.ref.slice(im.ref.lastIndexOf("/") + 1));
+  return (
+    <Card>
+      <CardHeader title="이미지 빌드" />
+      <div role="tablist" aria-label="이미지" className="flex flex-wrap gap-1.5 px-5 pt-3 pb-3 border-b border-line">
+        {data.map((im) => (
+          <button
+            key={im.ref}
+            type="button"
+            role="tab"
+            aria-selected={im.ref === cur.ref}
+            title={im.ref}
+            onClick={() => setPick(im.ref)}
+            className={cx(
+              "inline-flex items-center gap-1.5 h-7 px-3 rounded-md border text-[12.5px] transition-colors",
+              im.ref === cur.ref ? "border-accent/40 bg-accent-soft text-accent font-medium" : "border-line text-muted hover:bg-hover hover:text-fg",
+            )}
+          >
+            {im.builds.some((b) => b.active) && <span className="size-1.5 rounded-full bg-accent animate-pulse-dot" />}
+            {name(im)}
+          </button>
+        ))}
+      </div>
+      <div className="max-h-[360px] overflow-y-auto scroll-soft">
+        <TableWrap>
+          <table className="tbl">
+            <thead>
+              <tr>
+                <th>빌드 번호</th>
+                <th>태그</th>
+                <th>상태</th>
+                <th>날짜</th>
+              </tr>
+            </thead>
+            <tbody>
+              {builds.map((b) => {
+                const { tone, label } = buildState(b);
+                return (
+                  <tr key={b.id}>
+                    <td className="font-mono">
+                      {b.url ? (
+                        <a href={b.url} target="_blank" rel="noreferrer noopener" className="text-accent hover:underline">
+                          {buildNo(b)}
+                        </a>
+                      ) : (
+                        buildNo(b)
+                      )}
+                    </td>
+                    <td className="font-mono">{b.tag ?? <span className="text-faint">-</span>}</td>
+                    <td>
+                      <Dot tone={tone === "neutral" ? undefined : tone} pulse={b.active}>
+                        {label}
+                        {b.active && <span className="text-muted font-normal"> · {elapsed(b.startedAt)}</span>}
+                      </Dot>
+                    </td>
+                    <td className="text-muted tabular-nums whitespace-nowrap" title={since(b.startedAt)}>
+                      {buildDate(b.startedAt)}
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {!builds.length && <Empty>{cur.sourceRepo ? "아직 받은 빌드가 없어요." : "빌드 레포를 연결하면 이 이미지의 빌드가 여기에 모여요."}</Empty>}
+        </TableWrap>
+      </div>
+    </Card>
   );
 }
 

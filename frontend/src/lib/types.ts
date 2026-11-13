@@ -172,6 +172,18 @@ export interface Build {
   tag: string | null;
   startedAt: number;
   updatedAt: number;
+  activeCount?: number; // how many builds of the repo run now (the one shown is the newest started)
+}
+
+/** GET /api/jobs/{id}/images: an image the job follows, with the tags collected and its recent builds. */
+export interface JobImage {
+  ref: string;
+  var: string; // "" = the main image (IMAGE_TAG)
+  tagNow: string;
+  literal: string | null; // a tag written in the file: watched, never picked
+  sourceRepo: string | null;
+  tags: { name: string; digest: string; pushedAt: number | null; build: Build | null }[];
+  builds: Build[];
 }
 
 export interface ExtraImage {

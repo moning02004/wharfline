@@ -77,6 +77,37 @@ def test_failed_build(client, login, secret, hook_job):
     assert b["status"] == "failure" and not b["active"]
 
 
+def test_overlapping_builds_show_the_newest_running_one(client, login, secret, hook_job):
+    # #41 starts, then #42; #41 finishing first must not make the job look built while #42 still runs.
+    send_hook(client, secret, "workflow_run", run_payload(6001, "in_progress"))
+    send_hook(client, secret, "workflow_run", run_payload(6002, "in_progress"))
+    b = _build(client, hook_job["id"])
+    assert b["runId"] == 6002 and b["active"] and b["activeCount"] == 2
+
+    send_hook(client, secret, "workflow_run", run_payload(6001, "completed", "success"))
+    b = _build(client, hook_job["id"])
+    assert b["runId"] == 6002 and b["active"] and b["activeCount"] == 1
+    assert client.get(f"/api/jobs/{hook_job['id']}/builds").json()[""]["runId"] == 6002  # the deploy dialog too
+
+    send_hook(client, secret, "workflow_run", run_payload(6002, "completed", "failure"))
+    b = _build(client, hook_job["id"])
+    assert b["runId"] == 6002 and b["status"] == "failure" and b["activeCount"] == 0
+
+
+def test_job_page_lists_the_image_builds_and_tags(client, login, secret, hook_job):
+    send_hook(client, secret, "workflow_run", run_payload(7001, "in_progress"))
+    images = client.get(f"/api/jobs/{hook_job['id']}/images").json()
+    assert [im["ref"] for im in images] == [IMAGE]
+    im = images[0]
+    assert im["sourceRepo"] == REPO and im["var"] == ""
+    assert any(b["runId"] == 7001 and b["active"] for b in im["builds"])  # 빌드 중
+    tag = next(t for t in im["tags"] if t["name"] == "v1.0.1")  # pushed by build 5001 earlier
+    assert tag["build"]["runId"] == 5001 and tag["pushedAt"]
+    send_hook(client, secret, "workflow_run", run_payload(7001, "completed", "success"))
+    im = client.get(f"/api/jobs/{hook_job['id']}/images").json()[0]
+    assert not any(b["active"] for b in im["builds"])  # 빌드 완료
+
+
 def test_github_registry_package_records_tag(client, login, secret, hook_job):
     pkg = {"name": "hook-demo", "package_type": "CONTAINER", "owner": {"login": "acme"},
            "package_version": {"version": "sha256:aa", "container_metadata": {"tag": {"name": "v1.1.0"}}}}

@@ -1019,15 +1019,41 @@ def job_files(job_id: str, ver: int | None = None, db: Session = Depends(get_db)
 
 @router.get("/jobs/{job_id}/builds")
 def job_builds(job_id: str, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
-    """The latest CI build of every tracked image: {"": main image's build, VAR: extra image's build} (null when none)."""
+    """The current CI build of every tracked image (githooks.current_build): {"": main image's, VAR: an extra image's} (null when none)."""
     job = db.get(m.Job, job_id)
     if not job:
         raise HTTPException(404, "작업을 찾을 수 없어요.")
     refs = ([("", job.image)] if job.image else []) + [(x["var"] or x["ref"], x["ref"]) for x in job.extra_images or []]
     out = {}
     for var, ref in refs:
-        latest = githooks.builds_for_image(db, ref, limit=1, scope=scope)
-        out[var] = latest[0] if latest else None
+        out[var] = githooks.current_build(db, ref, scope)
+    return out
+
+
+@router.get("/jobs/{job_id}/images")
+def job_images(job_id: str, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
+    """이미지 빌드 on the job page: each image the job follows, the tags Wharfline collected (newest first, each with the
+    build that pushed it when known) and the image's recent CI builds. Builds only from repos the viewer may see."""
+    job = db.get(m.Job, job_id)
+    if not job:
+        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    items = ([{"ref": job.image, "var": "", "tagNow": job.tag_now, "literal": None}] if job.image else []) + [
+        {"ref": x["ref"], "var": x.get("var") or "", "tagNow": x.get("tagNow") or "-", "literal": x.get("literal")}
+        for x in job.extra_images or []]
+    out: list[dict] = []
+    for it in items:
+        if any(o["ref"] == it["ref"] for o in out):
+            continue  # images sharing a variable, or the main image listed again
+        img = db.get(m.Image, it["ref"])
+        builds = githooks.builds_for_image(db, it["ref"], limit=20, scope=scope)
+        by_tag: dict[str, dict] = {}
+        for b in builds:  # newest first: the first build with a tag is the one that pushed it
+            if b.get("tag"):
+                by_tag.setdefault(b["tag"], b)
+        # Sample tags carry a placeholder time (1e9 − n): no time rather than a date in 2001.
+        tags = [{"name": t.name, "digest": t.digest, "pushedAt": t.pushed_at if t.pushed_at and t.pushed_at > 1.5e9 else None,
+                 "build": by_tag.get(t.name)} for t in (img.tags if img else [])[:50]]
+        out.append({**it, "sourceRepo": img.source_repo if img else None, "tags": tags, "builds": builds})
     return out
 
 

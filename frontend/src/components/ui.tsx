@@ -168,7 +168,7 @@ export function Chip({ tone = "neutral", mono, icon, children, className }: { to
   );
 }
 
-/** A run's or job's state, in the same words everywhere: 대기, 진행중, 완료, 실패 (and 취소, 거절). */
+/** A run's or job's state, in the same words everywhere: 대기, 배포중, 완료, 실패 (and 취소, 거절). */
 export function StatusPill({ status }: { status: Status }) {
   switch (status) {
     case "ok":
@@ -178,7 +178,7 @@ export function StatusPill({ status }: { status: Status }) {
     case "run":
       return (
         <Dot tone="accent" pulse>
-          진행중
+          배포중
         </Dot>
       );
     case "cancel":

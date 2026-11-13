@@ -376,20 +376,31 @@ def handle_package(db: Session, payload: dict) -> list[tuple[m.Image, str]]:
 
 # ---------- reading builds ----------
 
-def build_for_image(db: Session, image_ref: str, scope: set[str] | None = None) -> dict[str, Any] | None:
-    """The build worth showing next to a job: running now, succeeded in the last 15 minutes, or failed in the last day.
+def current_build(db: Session, image_ref: str, scope: set[str] | None = None) -> dict[str, Any] | None:
+    """The build of an image's repo that matters now: the newest started of those running (with `activeCount`, how many run),
+    else the newest started of all. An older build finishing while a newer one runs doesn't take its place.
 
     `scope` limits which build repos may be shown (None = all).
     """
     img = db.get(m.Image, image_ref)
     if not img or not img.source_repo or not s.repo_allowed(scope, img.source_repo):
         return None
-    b = db.scalar(select(m.Build).where(m.Build.repo == img.source_repo).order_by(m.Build.updated_at.desc()).limit(1))
+    of_repo = select(m.Build).where(m.Build.repo == img.source_repo)
+    running = db.scalars(of_repo.where(m.Build.status.in_(("queued", "in_progress"))).order_by(m.Build.started_at.desc(), m.Build.id.desc())).all()
+    if running:
+        return running[0].to_dict() | {"activeCount": len(running)}
+    b = db.scalar(of_repo.order_by(m.Build.started_at.desc(), m.Build.id.desc()).limit(1))
+    return b.to_dict() | {"activeCount": 0} if b else None
+
+
+def build_for_image(db: Session, image_ref: str, scope: set[str] | None = None) -> dict[str, Any] | None:
+    """The build worth showing next to a job: running now, succeeded in the last 15 minutes, or failed in the last day."""
+    b = current_build(db, image_ref, scope)
     if not b:
         return None
-    age = time.time() - b.updated_at
-    if b.active or (b.status == "success" and age < 900) or (b.status == "failure" and age < 86400):
-        return b.to_dict()
+    age = time.time() - b["updatedAt"]
+    if b["active"] or (b["status"] == "success" and age < 900) or (b["status"] == "failure" and age < 86400):
+        return b
     return None
 
 
