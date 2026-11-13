@@ -278,6 +278,13 @@ export function Jobs() {
                           보호됨
                         </Chip>
                       )}
+                      {j.hook && (
+                        <span title={`새 태그가 올라오면 바로 배포 (${j.hookRule || "모든 태그"})`}>
+                          <Chip tone="accent" icon="refresh">
+                            자동 배포
+                          </Chip>
+                        </span>
+                      )}
                     </div>
                     <div className="text-[12px] text-muted truncate max-w-[320px]">{methodLine(j)}</div>
                   </td>
