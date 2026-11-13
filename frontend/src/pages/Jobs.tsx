@@ -142,22 +142,6 @@ function DeployState({ status }: { status: Job["last"]["status"] }) {
   return status === "warn" ? <span className="text-faint text-[12.5px]">배포 전</span> : <StatusPill status={status} />;
 }
 
-function methodLine(j: Job) {
-  if (j.playbook.kind === "builtin") return "기본 플레이북";
-  if (j.playbook.kind === "script") return j.playbook.path;
-  if (j.playbook.kind === "upload")
-    return (
-      <>
-        올린 플레이북 · <span className="font-mono">{j.playbook.path}</span>
-      </>
-    );
-  return (
-    <>
-      {j.playbook.repo} · <span className="font-mono">{j.playbook.path}</span>
-    </>
-  );
-}
-
 function ImageCell({ job: j }: { job: Job }) {
   const newer = j.latestTag && j.latestTag !== j.tagNow;
   return (
@@ -260,6 +244,7 @@ export function Jobs() {
                 <th>대상</th>
                 <th>상태</th>
                 <th>최근 배포</th>
+                <th>생성자</th>
                 <th className="text-right">
                   <span className="sr-only">동작</span>
                 </th>
@@ -286,15 +271,6 @@ export function Jobs() {
                         </span>
                       )}
                     </div>
-                    <div className="text-[12px] text-muted truncate max-w-[360px]">
-                      {methodLine(j)}
-                      {j.createdByName && (
-                        <span className="text-faint" title={j.createdBy ?? undefined}>
-                          {" "}
-                          · 만든 사람 {j.createdByName}
-                        </span>
-                      )}
-                    </div>
                   </td>
                   <td>
                     <span>{j.inventory}</span>
@@ -317,6 +293,7 @@ export function Jobs() {
                       )}
                     </span>
                   </td>
+                  <td className="text-[13px] whitespace-nowrap">{j.createdByName ?? <span className="text-faint">-</span>}</td>
                   <td className="text-right" onClick={(e) => e.stopPropagation()}>
                     <span className="inline-flex gap-1">
                       {rollbackButton(j)}
@@ -374,7 +351,6 @@ export function JobDetail() {
             )}
           </span>
         }
-        desc={methodLine(j)}
       >
         {runButton(j)}
         {j.canEdit && (
@@ -438,17 +414,7 @@ export function JobDetail() {
                   </span>,
                 ],
                 ["지금 버전", <span className="font-mono text-[12.5px]">{j.tagNow || "-"}</span>],
-                [
-                  "만든 사람",
-                  j.createdByName ? (
-                    <span title={j.createdBy ?? undefined}>
-                      {j.createdByName}
-                      {j.createdBy && j.createdBy !== j.createdByName && <span className="text-muted text-[12px] ml-1.5">{j.createdBy}</span>}
-                    </span>
-                  ) : (
-                    <span className="text-muted">기록 없음</span>
-                  ),
-                ],
+                ["생성자", j.createdByName ?? <span className="text-muted">기록 없음</span>],
                 ["자동 배포", j.hook ? `새 태그가 올라오면 바로 배포 (${j.hookRule || "모든 태그"})` : <span className="text-muted">수동 실행만</span>],
                 ["안전장치", [j.protected && "운영 보호", j.lock && "동시 실행 잠금", j.rollback && "실패 시 되돌리기"].filter(Boolean).join(" · ") || "없음"],
                 [
