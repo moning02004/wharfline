@@ -4,6 +4,7 @@ import { Layout } from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import { JobDetail, Jobs, Runs } from "./pages/Jobs";
 import { CopyJobPage, EditJobPage, NewJobPage } from "./modals/JobEditor";
+import { NewPlaybookPage } from "./pages/PlaybookEditor";
 import { Inventory, Keys, Registries, Repos } from "./pages/Resources";
 import Envs from "./pages/Envs";
 import { Activity, Members, Notify, Security } from "./pages/Admin";
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/jobs" element={<Jobs />} />
         <Route path="/jobs/new" element={<NewJobPage />} />
+        <Route path="/jobs/new-playbook" element={<NewPlaybookPage />} />
         <Route path="/jobs/:id" element={<JobDetail />} />
         <Route path="/jobs/:id/edit" element={<EditJobPage />} />
         <Route path="/jobs/:id/copy" element={<CopyJobPage />} />

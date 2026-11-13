@@ -296,6 +296,8 @@ class Job(Base):
         if self.script is not None:
             playbook = {"repo": self.repo or "", "kind": "script", "url": r.url if r else "", "branch": r.branch if r else "",
                         "path": "Docker Compose" if self.compose else f"SSH 스크립트 · {len(self.script)}단계"}
+        elif self.repo is None:  # a playbook uploaded with its files (stored in `files`, run from a temp folder)
+            playbook = {"repo": "", "kind": "upload", "url": "", "branch": "-", "path": self.book}
         else:
             playbook = {"repo": self.repo, "kind": r.kind if r else "git", "url": r.url if r else "",
                         "branch": r.branch if r else "-", "path": self.book}

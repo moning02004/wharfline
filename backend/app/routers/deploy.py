@@ -16,6 +16,7 @@ from .. import bundles
 from .. import executor
 from .. import githooks
 from .. import models as m
+from .. import playinspect
 from .. import runner
 from .. import store as s
 from ..db import get_db
@@ -179,7 +180,8 @@ def list_jobs(db: Session = Depends(get_db), scope: set[str] | None = Depends(bu
 
 
 class PlaybookIn(BaseModel):
-    source: str = Field(pattern="^(git|builtin|script)$")
+    # upload: a playbook uploaded with its files (JobIn.files); path is the playbook among them
+    source: str = Field(pattern="^(git|builtin|script|upload)$")
     url: str = ""
     branch: str = "main"
     path: str = ""
@@ -241,6 +243,9 @@ class JobIn(BaseModel):
     playVars: list[list[str]] = []  # plain playbook variables [[name, value], ...]
     secretVars: list[list[str]] | None = None  # secret ones; None: none on create, keep the saved ones on edit
     copySecretVarsFrom: str | None = None  # create only (복제): copy the secret variables of this job id
+    # Secret names whose saved value stays (edit: this job's, 복제: copySecretVarsFrom's) while secretVars
+    # brings new values for others. The form never has the saved values, so it can change one without the rest.
+    keepSecretVars: list[str] = []
     compose: ComposeIn | None = None  # a Docker Compose app: Wharfline writes the script (playbook.source must be "script")
 
 
@@ -484,6 +489,11 @@ def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | Non
         if not ref:
             raise HTTPException(400, "기본 플레이북은 띄울 이미지가 있어야 해요.")
         repo, path = s.builtin_repo(db), s.BUILTIN_BOOK
+    elif pb.source == "upload":
+        path = pb.path.strip()
+        if not s.PLAYBOOK_PATH_RE.match(path):
+            raise HTTPException(400, "실행할 플레이북을 골라 주세요. 올린 파일 중 .yml 파일이에요.")
+        repo = None
     else:
         path = pb.path.strip()
         if not s.PLAYBOOK_PATH_RE.match(path):
@@ -492,6 +502,24 @@ def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | Non
     if ref:
         s.ensure_image(db, ref, tag)
     return repo, path, ref, tag, script, service_path
+
+
+def playbook_files(files: list[FileIn] | None, book: str, current: list[dict] | None = None) -> list[dict[str, str]]:
+    """An uploaded playbook's files: checked like script files, holding the playbook, and no private key.
+
+    files None keeps the current ones (edit without a new upload)."""
+    if files is None:
+        if not current:
+            raise HTTPException(400, "플레이북 파일을 올려 주세요.")
+        out = [dict(f) for f in current]
+    else:
+        out = bundles.check_files([f.model_dump() for f in files])
+    if not any(f["path"] == book for f in out):
+        raise HTTPException(400, f"올린 파일에 {book}이(가) 없어요.")
+    bad = next((f["path"] for f in out if bundles.PRIVATE_KEY.search(f["content"])), None)
+    if bad:
+        raise HTTPException(400, f"{bad}은(는) 개인키로 보여요. 개인키는 플레이북과 함께 올리지 않아요.")
+    return out
 
 
 def existing_env(db: Session, env_name: str | None) -> str:
@@ -569,7 +597,7 @@ def resolve_play_vars(db: Session, me: m.Member | None, body: JobIn, job: m.Job 
     Writing secret values (new ones, a copy, or changing/removing saved ones) needs the "env" permission;
     changing saved ones also needs a recent password check, like pasting over a .env.
     """
-    git = body.playbook.source == "git"
+    git = body.playbook.source in ("git", "upload")  # playbooks the member brings (not the built-in one)
     copy_from = (body.copySecretVarsFrom or "").strip() if job is None else ""  # create only
     if not git and (body.playVars or body.secretVars or copy_from):
         raise HTTPException(400, NOT_GIT_PLAY)
@@ -579,16 +607,22 @@ def resolve_play_vars(db: Session, me: m.Member | None, body: JobIn, job: m.Job 
         plain, secret = None, []
     else:
         plain = clean_play_vars(body.playVars)
-        if body.secretVars is not None:
-            secret = clean_play_vars(body.secretVars)
-        elif copy_from:
+        base = current
+        if copy_from:
             src = db.get(m.Job, copy_from)
             if not src:
                 raise HTTPException(400, "복제할 작업을 찾을 수 없어요.")
             src_row = db.get(m.JobSecretVars, src.id)
-            secret = src_row.get_vars() if src_row else []
+            base = src_row.get_vars() if src_row else []
+        keep = {n.strip() for n in body.keepSecretVars}
+        if keep:  # new values for some, the saved value for the names kept
+            typed = clean_play_vars(body.secretVars or [])
+            have = {k for k, _ in typed}
+            secret = typed + [[k, v] for k, v in base if k in keep and k not in have]
+        elif body.secretVars is not None:
+            secret = clean_play_vars(body.secretVars)
         else:
-            secret = current  # edit without new values: keep the saved ones
+            secret = base  # edit without new values: keep the saved ones (복제: the source's)
         check_play_var_names([k for k, _ in plain] + [k for k, _ in secret], extra_images)
     if secret != current:
         if not s.can(me, "env"):
@@ -639,6 +673,8 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         env_name = new_env_set(db, name, body.envVars)
 
     files = bundles.check_files([f.model_dump() for f in body.files or []]) if script is not None else None
+    if body.playbook.source == "upload":
+        files = playbook_files(body.files, path or "")
     if body.compose is not None:
         files = compose_files(files)
     if script is not None:  # SSH script: tracked images come from the files
@@ -659,7 +695,8 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
     db.flush()
     save_secret_vars(db, job.id, secret_vars)
     save_file_version(db, job, None, job.files)
-    s.log_act(db, "배포 작업 생성", f"{name} · " + (f"{repo.name}/{path}" if repo else f"SSH 스크립트 {len(script or [])}단계"))
+    how = f"{repo.name}/{path}" if repo else f"올린 플레이북 {path}" if body.playbook.source == "upload" else f"SSH 스크립트 {len(script or [])}단계"
+    s.log_act(db, "배포 작업 생성", f"{name} · {how}")
     db.commit()
     return job_view(db, job, scope, who)
 
@@ -690,6 +727,8 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     db.flush()
     set_source_repo(db, ref, body.imageSourceRepo)
     files = None if script is None else job.files if body.files is None else bundles.check_files([f.model_dump() for f in body.files])
+    if body.playbook.source == "upload":
+        files = playbook_files(body.files, path or "", job.files if job.repo is None and job.script is None else None)
     if body.compose is not None:
         files = compose_files(files)
     if script is not None:  # SSH script: tracked images come from the files
@@ -880,6 +919,86 @@ def parse_bundle(body: UploadIn):
     except (binascii.Error, ValueError) as e:
         raise HTTPException(400, "파일을 읽을 수 없어요.") from e
     return bundles.parse_upload(body.name, data)
+
+
+class PlaybookUploadIn(BaseModel):
+    """A zip or one .yml (name + base64 data), or a folder picked in the browser (entries: path + base64 content)."""
+    name: str = ""
+    data: str = ""
+    entries: list[FileIn] | None = None
+
+
+def _b64(text: str) -> bytes:
+    try:
+        return base64.b64decode(text, validate=True)
+    except (binascii.Error, ValueError) as e:
+        raise HTTPException(400, "파일을 읽을 수 없어요.") from e
+
+
+def _inspected(files: list[dict], book: str) -> dict:
+    """playinspect.inspect without the names Wharfline or Ansible keep for themselves (saving them is refused)."""
+    out = playinspect.inspect(files, book)
+    out["vars"] = [v for v in out["vars"] if not reserved_play_var(v["name"], None)]
+    return out
+
+
+@router.post("/playbooks/parse", dependencies=[Depends(require("job_create"))])
+def parse_playbook_upload(body: PlaybookUploadIn):
+    """Read an uploaded playbook set: the files to keep, what was left out (private keys, .env, binaries), and
+    which files are playbooks. The upload is not stored until the job is saved."""
+    limit = bundles.MAX_UPLOAD_BYTES * 4 // 3 + 16
+    if body.entries is not None:
+        if sum(len(e.content) for e in body.entries) > limit:
+            raise HTTPException(400, "폴더가 너무 커요. 모두 합쳐 5MB까지 올릴 수 있어요.")
+        res = bundles.parse_folder([(e.path, _b64(e.content)) for e in body.entries], playbook=True)
+    else:
+        if len(body.data) > limit:
+            raise HTTPException(400, "파일이 너무 커요. 5MB까지 올릴 수 있어요.")
+        res = bundles.parse_upload(body.name, _b64(body.data), playbook=True)
+    res.pop("env", None)
+    res["playbooks"] = playinspect.playbooks(res["files"])
+    return res
+
+
+class PlaybookInspectIn(BaseModel):
+    files: list[FileIn]
+    book: str
+
+
+@router.post("/playbooks/inspect")
+def inspect_playbook(body: PlaybookInspectIn, db: Session = Depends(get_db)):
+    """What a playbook needs filled in (variables, secrets, sudo), read from the uploaded files."""
+    me = s.current_member(db)
+    if not s.can(me, "job_create") and not s.can(me, "job_edit"):
+        raise HTTPException(403, s.NO_PERM)
+    return _inspected([f.model_dump() for f in body.files], body.book.strip())
+
+
+class PlaybookGitIn(BaseModel):
+    url: str
+    branch: str = "main"
+    key: str = ""
+
+
+@router.post("/playbooks/git")
+async def git_playbooks(body: PlaybookGitIn, db: Session = Depends(get_db)):
+    """The playbooks in a Git repo and what each needs, read with the access the job will use when it runs."""
+    me = s.current_member(db)
+    if not s.can(me, "job_create") and not s.can(me, "job_edit"):
+        raise HTTPException(403, s.NO_PERM)
+    url, branch = body.url.strip(), body.branch.strip() or "main"
+    if not s.GIT_URL_RE.match(url):
+        raise HTTPException(400, "저장소 주소를 확인해 주세요. 예: https://github.com/org/ansible.git")
+    if not s.BRANCH_RE.match(branch):
+        raise HTTPException(400, "브랜치 이름을 확인해 주세요. 예: main")
+    existing = db.scalar(select(m.Repo).where(m.Repo.url == url, m.Repo.branch == branch))
+    key, auth = (s.repo_key(db, existing), existing.auth) if existing else s.repo_key_for(db, url, body.key.strip())
+    try:
+        files, commit = await executor.read_repo_files(executor.git_access("", url, branch, auth, key), branch)
+    except executor.RepoFileError as e:
+        raise HTTPException(400, str(e)) from None
+    books = playinspect.playbooks(files)[:30]
+    return {"commit": commit, "playbooks": books, "inspect": {b: _inspected(files, b) for b in books}}
 
 
 @router.get("/jobs/{job_id}/files")
