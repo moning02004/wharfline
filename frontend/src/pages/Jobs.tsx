@@ -11,7 +11,6 @@ import { EnvLink } from "../modals/EnvModals";
 import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { api, errMsg } from "../lib/api";
 import { since, stamp } from "../lib/time";
-import { jobView } from "../lib/jobViews";
 import { ConfirmDelete } from "./Resources";
 import { Button, Byline, Card, CardHeader, Chip, Empty, KV, Loading, PageHeader, Dot, StatusPill, TableWrap, cx } from "../components/ui";
 
@@ -242,18 +241,15 @@ export function AddJobModal({ onClose }: { onClose: () => void }) {
 
 export function Jobs() {
   const data = useJobs();
-  const { can, openModal, session } = useApp();
+  const { can, openModal } = useApp();
   const { menuItems, runButton, rollbackButton } = useJobActions();
   const nav = useNavigate();
-  const [params] = useSearchParams();
-  // A saved view from the side menu (/jobs?view=failed): the same test it counts with.
-  const view = jobView(params.get("view"));
   if (!data) return <Loading />;
-  const rows = data.filter((j) => view.test(j, session?.me.email));
+  const rows = data;
 
   return (
     <>
-      <PageHeader title={view.label} desc="무엇을, 어디에, 어떻게 배포할지 묶은 단위예요.">
+      <PageHeader title="배포 작업" desc="무엇을, 어디에, 어떻게 배포할지 묶은 단위예요.">
         {can("job_create") && (
           <>
             <Button icon="wand" onClick={() => nav("/jobs/new?guide=1")}>
@@ -281,7 +277,7 @@ export function Jobs() {
               {rows.length === 0 && (
                 <tr>
                   <td colSpan={5} className="!text-center text-muted py-10">
-                    이 보기에 맞는 작업이 없어요.
+                    아직 배포 작업이 없어요.
                   </td>
                 </tr>
               )}

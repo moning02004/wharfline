@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState, type ReactNode } from "react";
-import { NavLink, useLocation, useNavigate, useSearchParams } from "react-router-dom";
+import { Link, NavLink, useLocation, useNavigate } from "react-router-dom";
 import { api } from "../lib/api";
 import { ROUTES, useApp } from "../lib/app";
-import { JOB_VIEWS } from "../lib/jobViews";
-import type { Job, Session } from "../lib/types";
+import { since } from "../lib/time";
+import type { Job, Run, Session } from "../lib/types";
 import { Icon } from "./Icon";
 import { QuickNav } from "./QuickNav";
 import { Button, cx } from "./ui";
@@ -65,7 +65,6 @@ export function Layout({ children }: { children: ReactNode }) {
   const { session, setSession, canSee, viewAs, version, openModal } = useApp();
   const { dark, toggle } = useTheme();
   const loc = useLocation();
-  const [params] = useSearchParams();
   // A detail page (/jobs/abc) belongs to its list's menu.
   const route = ROUTES.find((r) => r.path === loc.pathname) ?? ROUTES.find((r) => r.path !== "/" && loc.pathname.startsWith(r.path + "/")) ?? ROUTES[0];
 
@@ -76,6 +75,7 @@ export function Layout({ children }: { children: ReactNode }) {
   const section = sections.find((s) => s.grp === route.grp);
 
   const [jobs, setJobs] = useState<Job[]>([]);
+  const [runs, setRuns] = useState<Run[]>([]);
   const [counts, setCounts] = useState<Record<string, number>>({});
   useEffect(() => {
     Promise.all([api.get<Job[]>("/jobs"), api.get<{ hosts: unknown[] }[]>("/inventory"), api.get<unknown[]>("/keys")])
@@ -85,6 +85,12 @@ export function Layout({ children }: { children: ReactNode }) {
       })
       .catch(() => {});
   }, [loc.pathname, version]);
+  // 지금 (the deploy section's side panel): runs playing or waiting; refetched on every live update.
+  const inDeploy = route.grp === "배포";
+  useEffect(() => {
+    if (!inDeploy) return;
+    api.get<Run[]>("/runs").then(setRuns, () => {});
+  }, [inDeploy, loc.pathname, version]);
 
   const openQuick = () => openModal((c) => <QuickNav onClose={c} />, "sm");
   useEffect(() => {
@@ -99,11 +105,8 @@ export function Layout({ children }: { children: ReactNode }) {
   }, []); // openModal is stable, so the shortcut is registered once
 
   const logout = async () => setSession(await api.post<Session>("/auth/logout"));
-  const me = session?.me.email;
-  const onJobs = route.id === "jobs" && loc.pathname === "/jobs";
-  const view = params.get("view") ?? "all";
-  // The side menu: the pages of the current section, and the job list's saved views.
-  const side = !!section && (section.pages.length > 1 || route.id === "jobs");
+  // The side menu: the pages of the current section (and 지금 in the deploy section).
+  const side = !!section && (section.pages.length > 1 || inDeploy);
 
   return (
     <div className="min-h-full flex flex-col bg-canvas">
@@ -180,33 +183,7 @@ export function Layout({ children }: { children: ReactNode }) {
                 </NavLink>
               ))}
             </nav>
-            {route.id === "jobs" && (
-              <div className="flex flex-col gap-1.5 min-w-0">
-                <span className="text-[11.5px] font-bold tracking-[0.08em] text-faint">저장된 보기</span>
-                <div className="flex md:flex-col gap-1 overflow-x-auto scroll-soft">
-                  {JOB_VIEWS.map((v) => {
-                    const on = onJobs && v.id === view;
-                    const n = jobs.filter((j) => v.test(j, me)).length;
-                    return (
-                      <NavLink
-                        key={v.id}
-                        to={v.id === "all" ? "/jobs" : `/jobs?view=${v.id}`}
-                        className={() =>
-                          cx(
-                            "flex items-center gap-2.5 px-3 py-2 rounded-xl text-[13.5px] whitespace-nowrap transition-[background,box-shadow]",
-                            on ? "font-semibold text-fg bg-surface shadow-soft" : "text-muted hover:bg-hover",
-                          )
-                        }
-                      >
-                        <span className="size-2 rounded-[3px] flex-none" style={{ background: v.dot }} />
-                        <span className="flex-1">{v.label}</span>
-                        <span className="font-mono text-[12px] text-faint">{n}</span>
-                      </NavLink>
-                    );
-                  })}
-                </div>
-              </div>
-            )}
+            {route.grp === "배포" && <NowPanel jobs={jobs} runs={runs} />}
           </aside>
         )}
         <main id="content" className="flex-1 min-w-0 flex flex-col gap-6">
@@ -214,6 +191,49 @@ export function Layout({ children }: { children: ReactNode }) {
           {canSee(route.id) ? children : <Denied label={route.label} />}
         </main>
       </div>
+    </div>
+  );
+}
+
+/** 지금: what needs eyes in the deploy section — runs playing, runs waiting for approval, jobs whose last deploy failed. */
+function NowPanel({ jobs, runs }: { jobs: Job[]; runs: Run[] }) {
+  const playing = runs.filter((r) => r.status === "run");
+  const waiting = runs.filter((r) => r.status === "approval");
+  const failed = jobs.filter((j) => j.last?.status === "bad");
+  const group = (label: string, tone: string, count: number, rows: ReactNode) => (
+    <div className="flex flex-col gap-1">
+      <span className="flex items-center gap-2 px-1 text-[13px] font-semibold">
+        <span className="size-2 rounded-full flex-none" style={{ background: tone }} />
+        <span className="flex-1">{label}</span>
+        <span className="font-mono text-[12px] text-faint">{count}</span>
+      </span>
+      {rows}
+    </div>
+  );
+  const row = (key: string | number, to: string, title: string, sub: string) => (
+    <Link key={key} to={to} className="block pl-5 pr-2 py-1.5 rounded-lg hover:bg-hover transition-colors" title={title}>
+      <span className="block text-[13px] truncate">{title}</span>
+      <span className="block text-[11.5px] text-faint truncate">{sub}</span>
+    </Link>
+  );
+  const quiet = !playing.length && !waiting.length && !failed.length;
+  return (
+    <div className="flex flex-col gap-3 min-w-0 max-md:hidden">
+      <span className="text-[11.5px] font-bold tracking-[0.08em] text-faint">지금</span>
+      {quiet && <span className="px-1 text-[13px] text-faint">진행 중인 일이 없어요</span>}
+      {playing.length > 0 && group("배포중", "var(--accent)", playing.length, playing.slice(0, 3).map((r) => row(r.no, `/runs?run=${r.no}`, r.job, `#${r.no} · ${r.trigger}`)))}
+      {waiting.length > 0 &&
+        group("승인 대기", "var(--mark)", waiting.length, waiting.slice(0, 3).map((r) => row(r.no, `/runs?run=${r.no}`, r.job, `#${r.no} · ${r.requestedByName ?? r.by} 요청`)))}
+      {failed.length > 0 &&
+        group(
+          "최근 실패",
+          "var(--bad)",
+          failed.length,
+          <>
+            {failed.slice(0, 3).map((j) => row(j.id, `/jobs/${encodeURIComponent(j.id)}`, j.name, since(j.last.at, j.last.time)))}
+            {failed.length > 3 && <span className="pl-5 text-[12px] text-faint">외 {failed.length - 3}개</span>}
+          </>,
+        )}
     </div>
   );
 }
