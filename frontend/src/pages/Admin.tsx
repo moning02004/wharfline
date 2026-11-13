@@ -442,8 +442,8 @@ function GroupsTab({ members, gd, canEdit, selected, onSelect, onNew }: {
 
   return (
     <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[280px_minmax(0,1fr)] gap-4 items-start">
-      <Card className="lg:sticky lg:top-[120px]">
-        <nav aria-label="그룹 목록" className="p-1.5 flex flex-col gap-0.5 max-h-[calc(100vh-180px)] overflow-auto scroll-soft">
+      <Card>
+        <nav aria-label="그룹 목록" className="p-1.5 flex flex-col gap-0.5 max-h-[560px] overflow-auto scroll-soft">
           {gd.groups.map((g) => {
             const active = g.id === group?.id;
             return (

@@ -100,7 +100,7 @@ export function GroupFields({ draft, set, repos, members, disabled, autoFocus }:
                   (c) => (
                     <TransferModal
                       title="볼 수 있는 빌드"
-                      sub="왼쪽에서 눌러 이 그룹에 주고, 오른쪽에서 눌러 빼요. 목록에 없는 레포는 검색 칸에 owner/name 으로 적어 추가해요."
+                      sub="눌러서 옮기거나 반대편으로 끌어다 놓아요. 목록에 없는 레포는 검색 칸에 owner/name 으로 적어 추가해요."
                       leftLabel="빌드 레포"
                       rightLabel="이 그룹이 보는 빌드"
                       items={choices.map((r) => ({ id: r, label: r, text: r }))}
@@ -133,7 +133,7 @@ export function GroupFields({ draft, set, repos, members, disabled, autoFocus }:
               (c) => (
                 <TransferModal
                   title="그룹 멤버"
-                  sub="왼쪽에서 눌러 이 그룹에 넣고, 오른쪽에서 눌러 빼요. 이름이나 이메일로 찾을 수 있어요."
+                  sub="눌러서 옮기거나 반대편으로 끌어다 놓아요. 이름이나 이메일로 찾을 수 있어요."
                   leftLabel="전체 멤버"
                   rightLabel="이 그룹의 멤버"
                   items={members.map((u) => ({
@@ -221,6 +221,8 @@ export function TransferModal({ title, sub, leftLabel, rightLabel, items, mono, 
   const [extra, setExtra] = useState<TransferItem[]>([]);
   const [qa, setQa] = useState("");
   const [qb, setQb] = useState("");
+  const [drag, setDrag] = useState<{ id: string; from: "left" | "right" } | null>(null);
+  const [over, setOver] = useState<"left" | "right" | null>(null);
   const plain = (id: string): TransferItem => ({ id, label: id, text: id });
   const all: TransferItem[] = [...items, ...extra, ...selected.filter((id) => !items.some((x) => x.id === id)).map(plain)];
   const byId = new Map(all.map((x) => [x.id, x]));
@@ -247,8 +249,29 @@ export function TransferModal({ title, sub, leftLabel, rightLabel, items, mono, 
     const q = side === "left" ? qa : qb;
     const setQ = side === "left" ? setQa : setQb;
     const total = side === "left" ? all.length - picked.length : picked.length;
+    const target = drag !== null && drag.from !== side; // a row from the other side may be dropped here
     return (
-      <div className="flex flex-col min-h-0 rounded-xl border border-line overflow-hidden">
+      <div
+        className={cx(
+          "flex flex-col min-h-0 rounded-xl border overflow-hidden transition-colors",
+          target && over === side ? "border-primary ring-2 ring-primary/30 bg-primary-soft/40" : target ? "border-dashed border-primary/60" : "border-line",
+        )}
+        onDragOver={(e) => {
+          if (!target) return;
+          e.preventDefault();
+          e.dataTransfer.dropEffect = "move";
+          if (over !== side) setOver(side);
+        }}
+        onDragLeave={(e) => {
+          if (!e.currentTarget.contains(e.relatedTarget as Node | null)) setOver(null);
+        }}
+        onDrop={(e) => {
+          e.preventDefault();
+          if (target && drag) (side === "left" ? drop : add)([drag.id]);
+          setDrag(null);
+          setOver(null);
+        }}
+      >
         <div className="flex items-center gap-2 px-3 h-10 border-b border-line bg-surface-2">
           <span className="text-[12.5px] font-semibold">{side === "left" ? leftLabel : rightLabel}</span>
           <span className="text-[11.5px] text-faint tabular-nums">{total}</span>
@@ -292,9 +315,22 @@ export function TransferModal({ title, sub, leftLabel, rightLabel, items, mono, 
             <li key={x.id}>
               <button
                 type="button"
+                draggable
+                onDragStart={(e) => {
+                  e.dataTransfer.effectAllowed = "move";
+                  e.dataTransfer.setData("text/plain", x.id); // Firefox starts a drag only with data set
+                  setDrag({ id: x.id, from: side });
+                }}
+                onDragEnd={() => {
+                  setDrag(null);
+                  setOver(null);
+                }}
                 onClick={() => (side === "left" ? add : drop)([x.id])}
-                className="group w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left hover:bg-hover"
-                title={side === "left" ? "눌러서 추가" : "눌러서 빼기"}
+                className={cx(
+                  "group w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left hover:bg-hover cursor-grab active:cursor-grabbing",
+                  drag?.id === x.id && "opacity-40",
+                )}
+                title={side === "left" ? "눌러서 추가 · 오른쪽으로 끌어도 돼요" : "눌러서 빼기 · 왼쪽으로 끌어도 돼요"}
               >
                 <span className="min-w-0 flex-1">
                   <span className={cx("block truncate text-[13px]", mono && "font-mono text-[12.5px]")}>{x.label}</span>
