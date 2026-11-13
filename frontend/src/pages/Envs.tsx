@@ -6,7 +6,7 @@ import { EditEnvModal, EnvHistoryModal, NewEnvModal } from "../modals/EnvModals"
 import { copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Button, Card, Chip, Input, Loading, PageHeader, TableWrap, cx } from "../components/ui";
+import { Button, Byline, Card, Chip, Input, Loading, PageHeader, TableWrap, cx } from "../components/ui";
 
 export default function Envs() {
   const { data } = useApi<EnvSet[]>("/envs");
@@ -57,13 +57,16 @@ export default function Envs() {
               )}
               {sets.map((e) => (
                 <tr key={e.id} className="click" onClick={() => open(e)}>
-                  <td className="font-mono font-medium">{e.name}</td>
+                  <td>
+                    <span className="font-mono font-medium">{e.name}</span>
+                    <Byline label="수정" name={e.updated.includes(" · ") ? e.updated.split(" · ").slice(1).join(" · ") : null} />
+                  </td>
                   <td className="tabular-nums">{e.vars.length}개</td>
                   <td>
                     <Chip>v{e.ver}</Chip>
                   </td>
                   <td className="text-muted">{e.usedBy.length ? (e.usedBy.length === 1 ? e.usedBy[0] : `${e.usedBy[0]} 외 ${e.usedBy.length - 1}개`) : <span className="text-faint">없음</span>}</td>
-                  <td className="text-muted">{e.updated}</td>
+                  <td className="text-muted">{e.updated.split(" · ")[0]}</td>
                   <td className="text-right">
                     <Button size="sm" variant="ghost">
                       자세히

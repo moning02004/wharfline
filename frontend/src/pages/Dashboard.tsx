@@ -6,7 +6,7 @@ import { since, stamp } from "../lib/time";
 import { ApprovalButtons, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
 import { AddJobModal } from "./Jobs";
-import { Button, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
+import { Button, Byline, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
 
 const ALERT_ICON: Record<DashboardAlert["kind"], IconName> = {
   hostKey: "alert",
@@ -79,7 +79,6 @@ export default function Dashboard() {
                   <th>실행</th>
                   <th>작업</th>
                   <th>상태</th>
-                  <th>실행한 사람</th>
                   <th>시간</th>
                 </tr>
               </thead>
@@ -87,11 +86,13 @@ export default function Dashboard() {
                 {data.recentRuns.map((r) => (
                   <tr key={r.no} className="click" onClick={() => openLog(r.no)}>
                     <td className="font-mono">#{r.no}</td>
-                    <td>{r.job}</td>
+                    <td>
+                      {r.job}
+                      <Byline label="실행" name={r.by} />
+                    </td>
                     <td>
                       <StatusPill status={r.status} />
                     </td>
-                    <td className="text-muted">{r.by}</td>
                     <td className="text-muted" title={stamp(r.at)}>{since(r.at, r.time)}</td>
                   </tr>
                 ))}

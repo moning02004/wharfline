@@ -1,3 +1,4 @@
+import { MoreMenu, type MenuItem } from "../components/Menu";
 import { useEffect, useState, type ReactNode } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
@@ -376,7 +377,7 @@ function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: G
             </option>
           ))}
         </Select>
-        <span className="ml-auto text-[12px] text-faint">{canEdit ? "그룹 칸을 누르면 여러 그룹을 고를 수 있어요" : "Owner만 바꿀 수 있어요"}</span>
+        {!canEdit && <span className="ml-auto text-[12px] text-faint">Owner만 바꿀 수 있어요</span>}
       </div>
       {/* scrolls sideways on phones; on wider screens it stays visible so the group picker is never clipped */}
       <div className="relative overflow-x-auto md:overflow-visible">
@@ -396,11 +397,11 @@ function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: G
             const eff = effectiveAccess(u, groups);
             return (
               <tr key={u.email}>
-                <td>
+                <td className="!whitespace-normal min-w-[200px]">
                   <span className="flex items-center gap-2.5">
                     <span className="grid place-items-center size-8 rounded-full bg-primary-soft text-primary text-[12px] font-semibold flex-none">{u.name[0]}</span>
                     <span className="min-w-0">
-                      <span className="flex items-center gap-1.5 font-medium">
+                      <span className="flex items-center gap-1.5 font-medium break-keep">
                         {u.name}
                         {u.email === session?.me.email && <span className="text-[10.5px] text-faint border border-line rounded px-1">나</span>}
                       </span>
@@ -434,24 +435,18 @@ function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: G
                     {u.mustChangePassword && <Chip tone="warn">새 비밀번호 대기</Chip>}
                   </span>
                 </td>
-                <td className="text-right whitespace-nowrap">
-                  {canRename && (
-                    <Button size="sm" variant="ghost" icon="edit" onClick={() => openModal((c) => <RenameModal member={u} onClose={c} />)}>
-                      이름 바꾸기
-                    </Button>
-                  )}
-                  {isOwner && u.email !== session?.me.email && (
-                    <>
-                      <Button size="sm" variant="ghost" icon="eye" onClick={() => preview(u)} disabled={viewAs?.email === u.email}>
-                        미리보기
-                      </Button>
-                      {canEdit && (
-                        <Button size="sm" variant="ghost" icon="key" onClick={() => openModal((c) => <ResetPasswordModal member={u} onClose={c} onDone={refresh} />)}>
-                          비밀번호 재설정
-                        </Button>
-                      )}
-                    </>
-                  )}
+                <td className="text-right">
+                  {(() => {
+                    const other = isOwner && u.email !== session?.me.email;
+                    const items: MenuItem[] = [
+                      ...(canRename ? [{ label: "이름 바꾸기", icon: "edit" as const, onClick: () => openModal((c) => <RenameModal member={u} onClose={c} />) }] : []),
+                      ...(other ? [{ label: "이 멤버로 미리보기", icon: "eye" as const, disabled: viewAs?.email === u.email, onClick: () => preview(u) }] : []),
+                      ...(other && canEdit
+                        ? [{ label: "비밀번호 재설정", icon: "key" as const, onClick: () => openModal((c) => <ResetPasswordModal member={u} onClose={c} onDone={refresh} />) }]
+                        : []),
+                    ];
+                    return items.length ? <MoreMenu items={items} label={`${u.name} 메뉴`} /> : null;
+                  })()}
                 </td>
               </tr>
             );

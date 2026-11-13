@@ -100,6 +100,17 @@ export function PageHeader({ title, desc, children }: { title: ReactNode; desc?:
   );
 }
 
+/** "생성자 정훈" under a title: small, one line, the full name on hover (names can be long, e.g. a team and a title). */
+export function Byline({ label, name, children }: { label: string; name?: string | null; children?: ReactNode }) {
+  if (!name) return null;
+  return (
+    <span className="block mt-0.5 max-w-[280px] truncate text-[12px] font-normal text-faint" title={`${label} ${name}`}>
+      {label} <span className="text-muted">{name}</span>
+      {children}
+    </span>
+  );
+}
+
 export function TableWrap({ children }: { children: ReactNode }) {
   // relative: absolutely positioned children (e.g. sr-only labels) stay inside the scroll box instead of widening the page
   return <div className="relative overflow-x-auto scroll-soft">{children}</div>;

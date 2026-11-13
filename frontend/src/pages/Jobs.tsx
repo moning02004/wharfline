@@ -13,7 +13,7 @@ import { api, errMsg } from "../lib/api";
 import { since, stamp } from "../lib/time";
 import { jobView } from "../lib/jobViews";
 import { ConfirmDelete } from "./Resources";
-import { Button, Card, CardHeader, Chip, Empty, KV, Loading, PageHeader, Dot, StatusPill, TableWrap, cx } from "../components/ui";
+import { Button, Byline, Card, CardHeader, Chip, Empty, KV, Loading, PageHeader, Dot, StatusPill, TableWrap, cx } from "../components/ui";
 
 /** The job list, refreshed every few seconds while a CI build or a deploy is in progress. */
 function useJobs() {
@@ -270,8 +270,7 @@ export function Jobs() {
           <table className="tbl center">
             <thead>
               <tr>
-                <th className="w-[26%]">작업</th>
-                <th>생성자</th>
+                <th className="w-[30%]">작업</th>
                 <th>권한</th>
                 <th>상태</th>
                 <th>최근 배포</th>
@@ -281,7 +280,7 @@ export function Jobs() {
             <tbody>
               {rows.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="!text-center text-muted py-10">
+                  <td colSpan={5} className="!text-center text-muted py-10">
                     이 보기에 맞는 작업이 없어요.
                   </td>
                 </tr>
@@ -292,16 +291,7 @@ export function Jobs() {
                     <Link to={`/jobs/${encodeURIComponent(j.id)}`} className="font-medium text-fg hover:underline" onClick={(e) => e.stopPropagation()}>
                       {j.name}
                     </Link>
-                  </td>
-                  <td className="text-[13px] !whitespace-normal">
-                    {/* Names can be long ("브랜드마케팅2팀 이미지 대리"): wrap at spaces, two lines at most, full name on hover */}
-                    {j.createdByName ? (
-                      <span className="mx-auto w-max max-w-[104px] break-keep line-clamp-2 leading-[1.35]" title={j.createdByName}>
-                        {j.createdByName}
-                      </span>
-                    ) : (
-                      <span className="text-faint">-</span>
-                    )}
+                    <Byline label="생성자" name={j.createdByName} />
                   </td>
                   <td>
                     <JobFlags job={j} />
@@ -469,7 +459,6 @@ export function JobDetail() {
                 <th>상태</th>
                 <th>트리거</th>
                 <th>이미지 태그</th>
-                <th>실행한 사람</th>
                 <th>소요</th>
                 <th>시간</th>
                 <th className="text-right">
@@ -484,9 +473,11 @@ export function JobDetail() {
                   <td>
                     <StatusPill status={r.status} />
                   </td>
-                  <td className="text-muted">{r.trigger}</td>
+                  <td className="text-muted">
+                    {r.trigger}
+                    <Byline label="실행" name={r.by} />
+                  </td>
                   <td className="font-mono">{r.tag}</td>
-                  <td>{r.by}</td>
                   <td className="tabular-nums text-muted">{r.duration}</td>
                   <td className="text-muted" title={stamp(r.at)}>
                     {since(r.at, r.time)}
@@ -649,7 +640,6 @@ export function Runs() {
                 <th>상태</th>
                 <th>트리거</th>
                 <th>이미지 태그</th>
-                <th>실행한 사람</th>
                 <th>소요</th>
                 <th>시간</th>
                 <th className="text-right">
@@ -665,6 +655,9 @@ export function Runs() {
                     <Link to={`/jobs/${encodeURIComponent(r.jobId)}`} className="hover:underline" onClick={(e) => e.stopPropagation()}>
                       {r.job}
                     </Link>
+                    <Byline label="실행" name={r.by}>
+                      {r.decidedByName && <> · {r.status === "rejected" ? "거절" : "승인"} <span className="text-muted">{r.decidedByName}</span></>}
+                    </Byline>
                   </td>
                   <td>
                     <Chip>{r.target || "전체"}</Chip>
@@ -674,14 +667,6 @@ export function Runs() {
                   </td>
                   <td className="text-muted">{r.trigger}</td>
                   <td className="font-mono">{r.tag}</td>
-                  <td>
-                    {r.by}
-                    {r.decidedByName && (
-                      <div className="text-[12px] text-muted">
-                        {r.status === "rejected" ? "거절" : "승인"} · {r.decidedByName}
-                      </div>
-                    )}
-                  </td>
                   <td className="tabular-nums text-muted">{r.duration}</td>
                   <td className="text-muted" title={stamp(r.at)}>
                     {since(r.at, r.time)}
