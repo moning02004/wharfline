@@ -26,7 +26,7 @@ function useJobs() {
 /** 실행 and the ⋮ menu of a job, shared by the list and the job page. */
 function useJobActions(afterDelete?: () => void) {
   const { openModal, can, withSudo, refresh, toast } = useApp();
-  const { confirm } = useRun();
+  const { confirm, rollbackNow } = useRun();
   const nav = useNavigate();
   const toggleHook = async (j: Job) => {
     try {
@@ -57,10 +57,10 @@ function useJobActions(afterDelete?: () => void) {
     ));
   const tracksImage = (j: Job) => !!j.image || (j.extraImages ?? []).length > 0;
   const edit = (j: Job) => nav(`/jobs/${j.id}/edit`);
-  const menuItems = (j: Job, { withEdit = true, withRuns = true } = {}): MenuItem[] => [
+  const menuItems = (j: Job, { withEdit = true, withRuns = true, withRollback = true } = {}): MenuItem[] => [
     ...(withEdit && j.canEdit ? [{ label: "편집", icon: "edit" as const, onClick: () => edit(j) }] : []),
-    ...(can("run") && j.prevTag && j.prevTag !== j.tagNow
-      ? [{ label: `이전 버전으로 되돌리기 (${j.prevTag})`, icon: "undo" as const, onClick: () => confirm(j, { tag: j.prevTag!, rollback: true }) }]
+    ...(withRollback && canRollback(j)
+      ? [{ label: `이전 배포로 되돌리기 (${j.prevTag})`, icon: "undo" as const, onClick: () => confirm(j, { tag: j.prevTag!, rollback: true }) }]
       : []),
     ...(j.canEdit && can("run_protected") && tracksImage(j)
       ? [{ label: j.hook ? "자동 배포 끄기" : "자동 배포 켜기", icon: "refresh" as const, onClick: () => toggleHook(j) }]
@@ -80,13 +80,26 @@ function useJobActions(afterDelete?: () => void) {
         ]
       : []),
   ];
+  const canRollback = (j: Job) => can("run") && !!j.prevTag && j.prevTag !== j.tagNow;
+  /** 이전 배포: deploys the version before this one right away (the run log opens). */
+  const rollbackButton = (j: Job) =>
+    canRollback(j) && (
+      <Button size="sm" variant="ghost" icon="undo" title={`${j.prevTag}로 되돌리기`} onClick={() => rollbackNow(j)}>
+        이전 배포
+      </Button>
+    );
   const runButton = (j: Job) =>
     can("run") && (
       <Button size="sm" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>
-        {j.protected && !can("run_protected") ? "승인 요청" : "실행"}
+        {j.protected && !can("run_protected") ? "승인 요청" : "배포하기"}
       </Button>
     );
-  return { menuItems, runButton, edit };
+  return { menuItems, runButton, rollbackButton, edit };
+}
+
+/** The job list's 상태: the same words as everywhere else; a job that never ran says 배포 전. */
+function DeployState({ status }: { status: Job["last"]["status"] }) {
+  return status === "warn" ? <span className="text-faint text-[12.5px]">배포 전</span> : <StatusPill status={status} />;
 }
 
 function methodLine(j: Job) {
@@ -124,7 +137,7 @@ function ImageCell({ job: j }: { job: Job }) {
 export function Jobs() {
   const data = useJobs();
   const { can } = useApp();
-  const { menuItems, runButton } = useJobActions();
+  const { menuItems, runButton, rollbackButton } = useJobActions();
   const nav = useNavigate();
   if (!data) return <Loading />;
 
@@ -148,9 +161,9 @@ export function Jobs() {
             <thead>
               <tr>
                 <th>작업</th>
-                <th>이미지 · 버전</th>
                 <th>대상</th>
-                <th>최근 실행</th>
+                <th>상태</th>
+                <th>최근 배포</th>
                 <th className="text-right">
                   <span className="sr-only">동작</span>
                 </th>
@@ -173,26 +186,30 @@ export function Jobs() {
                     <div className="text-[12px] text-muted truncate max-w-[320px]">{methodLine(j)}</div>
                   </td>
                   <td>
-                    <ImageCell job={j} />
-                  </td>
-                  <td>
                     <span>{j.inventory}</span>
                     <span className="text-faint mx-1.5">·</span>
                     <Chip mono>{j.targetLabel}</Chip>
                     <span className="text-muted text-[12px] ml-1.5 tabular-nums">{j.targetHosts.length}대</span>
                   </td>
                   <td>
-                    <div className="flex items-center gap-2">
-                      <StatusPill status={j.last.status} />
-                      <span className="text-muted text-[12px] tabular-nums">
-                        <span title={stamp(j.last.at)}>{since(j.last.at, j.last.time)}</span> · {j.last.duration}
-                      </span>
-                    </div>
+                    <DeployState status={j.last.status} />
+                  </td>
+                  <td>
+                    <span className="text-muted text-[12px] tabular-nums">
+                      {j.last.status === "warn" ? (
+                        "-"
+                      ) : (
+                        <>
+                          <span title={stamp(j.last.at)}>{since(j.last.at, j.last.time)}</span> · {j.last.duration}
+                        </>
+                      )}
+                    </span>
                   </td>
                   <td className="text-right" onClick={(e) => e.stopPropagation()}>
                     <span className="inline-flex gap-1">
+                      {rollbackButton(j)}
                       {runButton(j)}
-                      {menuItems(j).length > 0 && <MoreMenu label={`${j.name} 메뉴`} items={menuItems(j)} />}
+                      {menuItems(j, { withRollback: false }).length > 0 && <MoreMenu label={`${j.name} 메뉴`} items={menuItems(j, { withRollback: false })} />}
                     </span>
                   </td>
                 </tr>

@@ -168,28 +168,29 @@ export function Chip({ tone = "neutral", mono, icon, children, className }: { to
   );
 }
 
+/** A run's or job's state, in the same words everywhere: 대기, 진행중, 완료, 실패 (and 취소, 거절). */
 export function StatusPill({ status }: { status: Status }) {
   switch (status) {
     case "ok":
-      return <Dot tone="ok">성공</Dot>;
+      return <Dot tone="ok">완료</Dot>;
     case "bad":
       return <Dot tone="bad">실패</Dot>;
     case "run":
       return (
         <Dot tone="accent" pulse>
-          실행 중
+          진행중
         </Dot>
       );
     case "cancel":
-      return <Dot>취소됨</Dot>;
+      return <Dot>취소</Dot>;
     case "approval":
       return (
         <Dot tone="warn" pulse>
-          승인 대기
+          대기
         </Dot>
       );
     case "rejected":
-      return <Dot tone="bad">거절됨</Dot>;
+      return <Dot tone="bad">거절</Dot>;
     default:
       return <Dot tone="warn">주의</Dot>;
   }

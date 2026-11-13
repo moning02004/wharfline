@@ -3,12 +3,11 @@ import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, Job, RunDetail, RunEvent, Status } from "../lib/types";
 import { BuildBadge, PROVIDER_NAME, buildNo, buildState, elapsed } from "../components/BuildBadge";
-import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { EnvLink } from "./EnvModals";
 import { FileHistoryModal } from "./FileHistoryModal";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Button, Chip, Field, Hint, Input, KV, Select, StatusPill, cx } from "../components/ui";
+import { Button, Chip, Input, KV, Select, StatusPill, cx } from "../components/ui";
 
 /** Same rule as the server's TAG_RE. */
 const TAG_RE = /^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/;
@@ -102,7 +101,26 @@ export function useRun() {
     [app, openLog],
   );
 
-  return { confirm, openLog, runById, decide };
+  /** 이전 버전으로 without the dialog: the job's own servers, the previous tag, other images as they run now. */
+  const rollbackNow = useCallback(
+    async (job: Job) => {
+      if (!job.prevTag) return;
+      const extraTags = Object.fromEntries(
+        (job.extraImages ?? []).filter((x) => x.var).map((x) => [x.var, x.tagNow && x.tagNow !== "-" ? x.tagNow : x.defaultTag]),
+      );
+      try {
+        const r = await api.post<{ no: number; status: string }>(`/jobs/${job.id}/runs`, { tag: job.prevTag, groups: job.targets, extraTags, rollback: true });
+        app.refresh();
+        if (r.status === "approval") app.toast(`${job.prevTag}로 되돌리기 승인을 요청했어요`);
+        else openLog(r.no);
+      } catch (e) {
+        app.toast(errMsg(e), "error");
+      }
+    },
+    [app, openLog],
+  );
+
+  return { confirm, openLog, runById, decide, rollbackNow };
 }
 
 /** 승인 / 거절 buttons for a run waiting for approval. */
@@ -149,7 +167,7 @@ function ConfirmRun({
   const [tag, setTag] = useState(opt.tag ?? job.defaultTag ?? "latest");
   // "직접 입력…": type a tag the image list doesn't know yet (the server records it on the image).
   const [custom, setCustom] = useState(() => tag !== "latest" && !job.imageTags.some((t) => t.name === tag));
-  const [sel, setSel] = useState<string[]>([...job.targets]);
+  const sel = job.targets;
   // Extra watched images: each keeps the version running now unless picked here.
   const extras = job.extraImages ?? [];
   const [extraTags, setExtraTags] = useState<Record<string, string>>(() =>
@@ -186,7 +204,6 @@ function ConfirmRun({
     .flat()
     .filter((h) => !sel.length || sel.includes(h.group));
   const ready = hosts.filter((h) => !h.skip);
-  const changed = JSON.stringify([...sel].sort()) !== JSON.stringify([...job.targets].sort());
   const tagOk = !hasImage || !tag || tag === "latest" || TAG_RE.test(tag); // empty only disables the button
 
   const go = async (useTag = tag, useExtra = extraTags) => {
@@ -226,20 +243,76 @@ function ConfirmRun({
     go(mainTag, nextExtra);
   }, [waiting, jobBuilds]); // react to build state changes
 
+  // 버전 rows: the version running now beside the name, the picker for what this deploy puts up.
+  const extraNow = (x: (typeof extras)[number]) => (x.tagNow && x.tagNow !== "-" ? x.tagNow : null);
+  const mainNow = job.tagNow && job.tagNow !== "-" ? job.tagNow : null;
+  const changes = (hasImage && resolved !== mainNow ? 1 : 0) + extras.filter((x) => x.var && extraTags[x.var] !== extraNow(x)).length;
+  // Only images whose version can be picked count; fixed tags in the files are left out of the dialog.
+  const imageCount = (hasImage ? 1 : 0) + extras.filter((x) => x.var).length;
+  const behind = (hasImage && !!latestTag && resolved !== latestTag) || extras.some((x) => x.var && x.latestTag && extraTags[x.var] !== x.latestTag);
+  const allLatest = () => {
+    if (hasImage && latestTag) {
+      setCustom(false);
+      setTag(latestTag);
+    }
+    setCustomExtra({});
+    setExtraTags(Object.fromEntries(extras.filter((x) => x.var).map((x) => [x.var, x.latestTag ?? extraTags[x.var]])));
+  };
+  const badge = (next: string, now: string | null, newest?: string | null) =>
+    !now ? (
+      <Chip tone="accent">처음</Chip>
+    ) : next === now ? (
+      <Chip>재배포</Chip>
+    ) : opt.rollback ? (
+      <Chip tone="warn">되돌리기</Chip>
+    ) : next === newest ? (
+      <Chip tone="ok">최신</Chip>
+    ) : null;
+
+  const safety = [job.lock && "동시 실행 금지", job.rollback && "실패 시 이전 버전으로 되돌리기"].filter(Boolean) as string[];
+  const cta = waitForBuild
+    ? "빌드 끝나길 기다리는 중…"
+    : needsApproval
+      ? "승인 요청"
+      : !ready.length
+        ? "배포할 서버가 없어요"
+        : changes === 1 && hasImage && resolved !== mainNow
+          ? `${resolved} 배포 · ${ready.length}대`
+          : changes > 1
+            ? `이미지 ${changes}개 배포 · ${ready.length}대`
+            : `서버 ${ready.length}대에 배포`;
+
   return (
     <>
       <ModalHead
-        title={opt.rollback ? "이전 버전으로 되돌릴까요?" : "배포하시겠습니까?"}
-        sub={job.name}
+        title={opt.rollback ? `${job.name} 되돌리기` : `${job.name} 배포`}
+        sub={
+          <span className="flex items-center gap-2 flex-wrap">
+            {job.protected ? (
+              <Chip icon="lock">
+                운영 보호
+              </Chip>
+            ) : (
+              <Chip>{job.inventory}</Chip>
+            )}
+            <span>
+              {needsApproval
+                ? "Owner나 Admin이 승인하면 실행돼요"
+                : job.protected
+                  ? "실제 사용자 트래픽에 반영돼요"
+                  : imageCount > 1
+                    ? `이미지 ${imageCount}개 중 ${changes}개가 바뀌어요`
+                    : imageCount === 0
+                      ? job.playbook.kind === "script"
+                        ? "이미지 없이 스크립트만 실행해요"
+                        : "이미지 없이 플레이북만 실행해요"
+                      : null}
+            </span>
+          </span>
+        }
         onClose={onClose}
       />
-      <ModalBody>
-        {needsApproval && (
-          <Hint className="flex items-center gap-1.5">
-            <Icon name="lock" className="size-3.5 flex-none text-warn" />
-            운영 보호 작업이에요. Owner나 Admin이 승인하면 실행돼요.
-          </Hint>
-        )}
+      <ModalBody className="pt-1">
         {hasImage && showBuild && latest && (
           <BuildPanel
             build={latest}
@@ -253,191 +326,201 @@ function ConfirmRun({
             onWait={setWaitForBuild}
           />
         )}
-        {hasImage ? (
-          <Field
-            label={
-              <span className="flex items-baseline gap-2 min-w-0 flex-wrap">
-                <span>{imageName(job.image!)}</span>
-                <span className="font-mono font-normal text-[12px] text-muted break-all">{job.image}</span>
+        {imageCount > 0 && (
+          <section className="flex flex-col gap-2">
+            <div className="flex items-center justify-between gap-2">
+              <h4 className="m-0 text-[12px] font-semibold text-muted">버전</h4>
+              <span className="flex items-center gap-1">
+                {activeVars.some((v) => v !== "") && !(hasImage && showBuild && latest?.active) && (
+                  <Button size="sm" variant={waitForBuild ? "primary" : "ghost"} onClick={() => setWaitForBuild(!waitForBuild)}>
+                    {waitForBuild ? "기다리는 중 · 취소" : "빌드 끝나면 배포"}
+                  </Button>
+                )}
+                {imageCount > 1 && behind && (
+                  <Button size="sm" variant="ghost" onClick={allLatest}>
+                    모두 최신으로
+                  </Button>
+                )}
               </span>
-            }
-            htmlFor="cTag"
-            error={!tagOk}
-            right={
-              custom && (
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  onClick={() => {
-                    setCustom(false);
-                    setTag("latest");
-                  }}
+            </div>
+            <div className="rounded-xl border border-line overflow-hidden divide-y divide-line">
+              {hasImage && (
+                <VersionRow
+                  name={imageName(job.image!)}
+                  imageRef={job.image!}
+                  now={mainNow}
+                  badge={badge(resolved, mainNow, latestTag)}
+                  error={!tagOk ? "태그는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)만 쓸 수 있어요." : undefined}
                 >
-                  목록에서 고르기
-                </Button>
-              )
-            }
-            hint={!tagOk ? "태그는 영문, 숫자, 점(.), 밑줄(_), 하이픈(-)만 쓸 수 있어요." : undefined}
-          >
-            <VersionLine newest={latestTag} now={job.tagNow}>
-            {custom ? (
-              <Input
-                id="cTag"
-                mono
-                value={tag}
-                onChange={(e) => setTag(e.target.value.trim())}
-                placeholder="예: v1.8.3"
-                autoComplete="off"
-                spellCheck={false}
-                autoFocus
-              />
-            ) : (
-              <Select
-                id="cTag"
-                mono
-                value={tag}
-                onChange={(e) => {
-                  if (e.target.value === CUSTOM_TAG) {
-                    setCustom(true);
-                    setTag("");
-                  } else setTag(e.target.value);
-                }}
-              >
-                <option value="latest">latest</option>
-                {tagOptions.map((t) => (
-                  <option key={t.name} value={t.name}>
-                    {t.name}
-                  </option>
-                ))}
-                <option value={CUSTOM_TAG}>직접 입력…</option>
-              </Select>
-            )}
-            </VersionLine>
-          </Field>
-        ) : (job.extraImages ?? []).length ? null : (
-          <Hint className="flex items-center gap-1.5">
-            <Icon name="info" className="size-3.5 flex-none text-accent" />
-            {job.playbook.kind === "script" ? "이미지 없이 스크립트만 실행해요." : "이미지 없이 플레이북만 실행해요."}
-          </Hint>
-        )}
-        {extras.length > 0 && (
-          <Field
-            label={hasImage ? "추가 이미지" : "이미지"}
-            right={
-              activeVars.some((v) => v !== "") && !(hasImage && showBuild && latest?.active) ? (
-                <Button size="sm" variant={waitForBuild ? "primary" : "default"} onClick={() => setWaitForBuild(!waitForBuild)}>
-                  {waitForBuild ? "기다리는 중 · 취소" : "빌드 끝나면 배포"}
-                </Button>
-              ) : undefined
-            }
-          >
-            <div className="flex flex-col gap-3">
-              {extras.map((x) => (
-                <div key={`${x.ref}|${x.var}`} className="flex flex-col gap-1.5 min-w-0">
-                  <span className="flex items-baseline gap-2 min-w-0 flex-wrap text-[13px]">
-                    <span className="font-medium">
-                      {x.var && extras.filter((o) => o.var === x.var).length === 1 ? x.var.replace(/_TAG$/, "").toLowerCase() : imageName(x.ref)}
+                  {custom ? (
+                    <span className="flex items-center gap-2">
+                      <Input
+                        id="cTag"
+                        mono
+                        aria-label="태그"
+                        value={tag}
+                        onChange={(e) => setTag(e.target.value.trim())}
+                        placeholder="예: v1.8.3"
+                        autoComplete="off"
+                        spellCheck={false}
+                        autoFocus
+                      />
+                      <Button
+                        size="sm"
+                        variant="ghost"
+                        onClick={() => {
+                          setCustom(false);
+                          setTag("latest");
+                        }}
+                      >
+                        목록에서 고르기
+                      </Button>
                     </span>
-                    <span className="font-mono text-[12px] text-muted break-all">{x.ref}</span>
-                    {jobBuilds?.[x.var || x.ref]?.active && <BuildBadge build={jobBuilds[x.var || x.ref]!} />}
-                  </span>
-                  {!x.var ? (
-                    <div className="w-[240px] max-w-full h-9 px-3 flex items-center rounded-lg border border-line bg-surface-2 font-mono text-[13px] text-muted" title="파일에 적힌 버전">
-                      {x.literal ?? "latest"}
-                    </div>
                   ) : (
-                    <div className="flex items-center gap-2">
-                      <VersionLine newest={x.latestTag} now={x.tagNow}>
-                        {customExtra[x.var] ? (
-                          <Input
-                            mono
-                            aria-label={`${x.var} 태그`}
-                            value={extraTags[x.var]}
-                            onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value.trim() })}
-                            placeholder="예: v1.8.3"
-                            autoComplete="off"
-                            spellCheck={false}
-                            autoFocus
-                          />
-                        ) : (
-                          <Select
-                            mono
-                            aria-label={`${x.var} 태그`}
-                            value={extraTags[x.var]}
-                            onChange={(e) => {
-                              if (e.target.value === CUSTOM_TAG) {
-                                setCustomExtra({ ...customExtra, [x.var]: true });
-                                setExtraTags({ ...extraTags, [x.var]: "" });
-                              } else setExtraTags({ ...extraTags, [x.var]: e.target.value });
-                            }}
-                          >
-                            {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
-                              <option key={t} value={t}>
-                                {t}
-                              </option>
-                            ))}
-                            <option value={CUSTOM_TAG}>직접 입력…</option>
-                          </Select>
-                        )}
-                      </VersionLine>
-                      {customExtra[x.var] && (
+                    <Select
+                      id="cTag"
+                      mono
+                      aria-label="태그"
+                      value={tag}
+                      onChange={(e) => {
+                        if (e.target.value === CUSTOM_TAG) {
+                          setCustom(true);
+                          setTag("");
+                        } else setTag(e.target.value);
+                      }}
+                    >
+                      <option value="latest">latest{latestTag ? ` (${latestTag})` : ""}</option>
+                      {tagOptions.map((t) => (
+                        <option key={t.name} value={t.name}>
+                          {t.name}
+                          {t.name === mainNow ? " · 지금" : ""}
+                        </option>
+                      ))}
+                      <option value={CUSTOM_TAG}>직접 입력…</option>
+                    </Select>
+                  )}
+                </VersionRow>
+              )}
+              {extras.map((x) => {
+                const k = `${x.ref}|${x.var}`;
+                const name = x.var && extras.filter((o) => o.var === x.var).length === 1 ? x.var.replace(/_TAG$/, "").toLowerCase() : imageName(x.ref);
+                const build = jobBuilds?.[x.var || x.ref];
+                if (!x.var) return null; // a fixed tag in the file: nothing to pick
+                const now = extraNow(x);
+                return (
+                  <VersionRow
+                    key={k}
+                    name={name}
+                    imageRef={x.ref}
+                    build={build?.active ? build : undefined}
+                    now={now}
+                    badge={badge(extraTags[x.var], now, x.latestTag)}
+                  >
+                    {customExtra[x.var] ? (
+                      <span className="flex items-center gap-2">
+                        <Input
+                          mono
+                          aria-label={`${x.var} 태그`}
+                          value={extraTags[x.var]}
+                          onChange={(e) => setExtraTags({ ...extraTags, [x.var]: e.target.value.trim() })}
+                          placeholder="예: v1.8.3"
+                          autoComplete="off"
+                          spellCheck={false}
+                          autoFocus
+                        />
                         <Button
                           size="sm"
                           variant="ghost"
                           onClick={() => {
                             setCustomExtra({ ...customExtra, [x.var]: false });
-                            setExtraTags({ ...extraTags, [x.var]: x.tagNow && x.tagNow !== "-" ? x.tagNow : x.defaultTag });
+                            setExtraTags({ ...extraTags, [x.var]: now ?? x.defaultTag });
                           }}
                         >
                           목록에서 고르기
                         </Button>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
+                      </span>
+                    ) : (
+                      <Select
+                        mono
+                        aria-label={`${x.var} 태그`}
+                        value={extraTags[x.var]}
+                        onChange={(e) => {
+                          if (e.target.value === CUSTOM_TAG) {
+                            setCustomExtra({ ...customExtra, [x.var]: true });
+                            setExtraTags({ ...extraTags, [x.var]: "" });
+                          } else setExtraTags({ ...extraTags, [x.var]: e.target.value });
+                        }}
+                      >
+                        {[...new Set([extraTags[x.var], "latest", ...(x.tags ?? [])])].map((t) => (
+                          <option key={t} value={t}>
+                            {t}
+                            {t === now ? " · 지금" : ""}
+                          </option>
+                        ))}
+                        <option value={CUSTOM_TAG}>직접 입력…</option>
+                      </Select>
+                    )}
+                  </VersionRow>
+                );
+              })}
             </div>
-          </Field>
+          </section>
         )}
-        <KV
-          items={[
-            ["배포 방법", <PlaybookLine job={job} />],
-            ["환경 변수", job.env ? <EnvLink name={job.env} /> : "없음"],
-            // Git playbook jobs only: the playbook variables it passes.
-            ...(job.playbook.kind === "git" || job.playbook.kind === "local"
-              ? ([
-                  ...((job.playVars?.length ?? 0) + (job.secretVarNames?.length ?? 0)
-                    ? [["플레이북 변수", `일반 ${job.playVars?.length ?? 0}개 · 비밀 ${job.secretVarNames?.length ?? 0}개`, "text-muted"]]
-                    : []),
-                ] as [string, string, string | undefined][])
-              : []),
-            ...(job.protected
-              ? ([["안전장치", [job.lock && "동시 실행 금지", job.rollback && "실패 시 이전 태그로 롤백"].filter(Boolean).join(" · "), "text-muted"]] as [string, string, string][])
-              : []),
-          ]}
-        />
-        <Field
-          label={
-            <>
-              배포 대상 <span className="text-muted font-normal">· {job.inventory}</span>
-            </>
-          }
-        >
-          <GroupSelect groups={job.groups} value={sel} onChange={setSel} />
-        </Field>
-        <div className="rounded-lg border border-line overflow-hidden">
-          {hosts.map((h) => (
-            <div key={h.name} className="flex items-center gap-3 px-4 py-2.5 border-b border-line last:border-b-0 animate-fade">
-              <Chip tone="accent" mono>
-                {h.group}
-              </Chip>
-              <div className="flex-1 font-medium truncate">{h.name}</div>
-              <span className="font-mono text-[12.5px] text-muted">{h.ip}</span>
-              {h.skip ? <Chip tone="warn">건너뜀 · {h.skip}</Chip> : <Chip tone="ok">배포</Chip>}
-            </div>
-          ))}
+        <section className="flex flex-col gap-2">
+          <h4 className="m-0 text-[12px] font-semibold text-muted">
+            배포 대상 <span className="font-medium">· {job.inventory} · {ready.length}대</span>
+          </h4>
+          {/* Servers by group, each a small "name ip" tile that wraps; a long list scrolls inside the box. */}
+          <div className="rounded-xl border border-line px-3.5 py-3 overflow-y-auto scroll-soft max-h-[232px] flex flex-col gap-3">
+            {hosts.length ? (
+              [...new Set(hosts.map((h) => h.group))].map((g) => (
+                <div key={g} className="flex flex-col gap-1.5">
+                  <span className="text-[11.5px] font-medium text-muted">{g}</span>
+                  <span className="flex flex-wrap gap-1.5">
+                    {hosts
+                      .filter((h) => h.group === g)
+                      .map((h) => (
+                        <span
+                          key={h.name}
+                          title={h.skip ? `건너뜀: ${h.skip}` : undefined}
+                          className={cx(
+                            "inline-flex items-baseline gap-1.5 rounded-md border px-2 py-1 text-[12.5px] leading-none whitespace-nowrap",
+                            h.skip ? "border-dashed border-line-strong text-muted" : "border-line bg-surface-2",
+                          )}
+                        >
+                          <span className={cx(h.skip && "line-through")}>{h.name}</span>
+                          <span className="font-mono text-[11.5px] text-muted">{h.ip}</span>
+                        </span>
+                      ))}
+                  </span>
+                </div>
+              ))
+            ) : (
+              <span className="text-[13px] text-muted">배포할 서버가 없어요</span>
+            )}
+          </div>
+          {hosts.some((h) => h.skip) && (
+            <span className="text-[12px] text-warn">건너뜀: {hosts.filter((h) => h.skip).map((h) => `${h.name} (${h.skip})`).join(", ")}</span>
+          )}
+        </section>
+        <div className="rounded-xl bg-surface-2 px-3.5 py-3">
+          <KV
+            labelWidth={76}
+            items={[
+              ["배포 방법", <PlaybookLine job={job} />],
+              ["환경 변수", job.env ? <EnvLink name={job.env} /> : "없음"],
+              // Git playbook jobs only: the playbook variables it passes.
+              ...(job.playbook.kind === "git" || job.playbook.kind === "local"
+                ? ([
+                    ...((job.playVars?.length ?? 0) + (job.secretVarNames?.length ?? 0)
+                      ? [["플레이북 변수", `일반 ${job.playVars?.length ?? 0}개 · 비밀 ${job.secretVarNames?.length ?? 0}개`, "text-muted"]]
+                      : []),
+                  ] as [string, string, string | undefined][])
+                : []),
+              ...(safety.length ? ([["안전장치", safety.join(" · ")]] as [string, string][]) : []),
+            ]}
+          />
         </div>
-        {changed && <Hint className="text-faint text-xs">이번 실행에만 적용돼요.</Hint>}
       </ModalBody>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
@@ -448,7 +531,7 @@ function ConfirmRun({
           onClick={() => go()}
           autoFocus
         >
-          {waitForBuild ? "빌드 끝나길 기다리는 중…" : needsApproval ? "승인 요청" : `서버 ${ready.length}대에 배포`}
+          {cta}
         </Button>
       </ModalFoot>
     </>
@@ -463,37 +546,45 @@ function imageName(ref: string) {
   return ref.slice(ref.lastIndexOf("/") + 1);
 }
 
-/** A version picker with what runs now and the newest build beside it, easy to tell apart. */
-function VersionLine({ newest, now, children }: { newest?: string | null; now?: string | null; children: React.ReactNode }) {
-  const running = now && now !== "-" ? now : null;
-  const tag = (label: string, cls: string) => <span className={cx("inline-block w-[30px] text-center rounded px-1 py-px text-[11px] font-semibold", cls)}>{label}</span>;
+function RowTitle({ name, imageRef, build, now }: { name: string; imageRef: string; build?: Build; now?: string | null }) {
   return (
-    <div className="flex items-center gap-3">
-      <div className="flex-1 min-w-[150px] max-w-[220px]">{children}</div>
-      <div className="flex flex-col gap-1 text-[12.5px] font-mono whitespace-nowrap min-w-0">
-        {running && newest && running === newest ? (
-          <span className="flex items-center gap-1.5 text-ok">
-            {tag("최신", "bg-ok-soft text-ok")}
-            {newest}
-            <span className="font-sans text-[11.5px]">떠 있음</span>
-          </span>
-        ) : (
-          <>
-            {running && (
-              <span className="flex items-center gap-1.5 text-muted">
-                {tag("지금", "bg-surface-2 border border-line text-muted")}
-                {running}
-              </span>
-            )}
-            {newest && (
-              <span className="flex items-center gap-1.5 text-primary font-semibold">
-                {tag("최신", "bg-primary-soft text-primary")}
-                {newest}
-              </span>
-            )}
-          </>
-        )}
+    <span className="flex items-center gap-1.5 min-w-0">
+      <span className="text-[13.5px] font-medium truncate">{name}</span>
+      <span title={imageRef} role="img" aria-label={`이미지 ${imageRef}`} className="inline-flex text-faint hover:text-muted cursor-help flex-none">
+        <Icon name="info" className="size-3.5" />
+      </span>
+      {now && <span className="ml-1 text-[11.5px] text-muted whitespace-nowrap font-mono" title="지금 떠 있는 버전">{now}</span>}
+      {build && <BuildBadge build={build} />}
+    </span>
+  );
+}
+
+/** One image in the deploy dialog: name and what runs now, then the version to deploy (a picker) with a badge. */
+function VersionRow({
+  name,
+  imageRef,
+  build,
+  now,
+  badge,
+  error,
+  children,
+}: {
+  name: string;
+  imageRef: string;
+  build?: Build;
+  now: string | null;
+  badge: React.ReactNode;
+  error?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="px-3.5 py-3 flex flex-col gap-1.5">
+      <RowTitle name={name} imageRef={imageRef} build={build} now={now} />
+      <div className="flex items-center gap-2 min-w-0">
+        <div className="w-[300px] max-w-full min-w-0">{children}</div>
+        {badge}
       </div>
+      {error && <span className="text-[12px] text-bad">{error}</span>}
     </div>
   );
 }

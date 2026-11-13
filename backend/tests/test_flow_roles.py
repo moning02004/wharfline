@@ -151,16 +151,24 @@ def test_owner_still_changes_protection(client, login):
 
 # ---------- approve / reject ----------
 
+def _last(client, job: dict) -> str:
+    """The job's 최근 실행 status as the job list shows it."""
+    return next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])["last"]["status"]
+
+
 def test_owner_approves_and_the_run_starts(client, login, prod_job):
     login(DEPLOYER)
     no = _run(client, prod_job).json()["no"]
+    assert _last(client, prod_job) == "approval"  # the list says 대기 while it waits
 
     login(OWNER)
     r = client.post(f"/api/runs/{no}/approve")
     assert r.status_code == 200, r.text
     assert r.json()["status"] == "run"
+    assert _last(client, prod_job) in ("run", "ok")  # 진행중 from the start (a simulated run may already be done)
     run = wait_run(client, no)
     assert run["status"] == "ok"
+    assert _last(client, prod_job) == "ok"
     assert run["requestedBy"] == DEPLOYER and run["decidedBy"] == OWNER and run["decidedAt"]
     assert any("승인: 정훈" in e.get("text", "") for e in run["events"])
     assert no not in [x["no"] for x in client.get("/api/dashboard").json()["pendingApprovals"]]
@@ -178,6 +186,7 @@ def test_admin_rejects(client, login, admin, prod_job):
     assert r.status_code == 200, r.text
     run = client.get(f"/api/runs/{no}").json()
     assert run["status"] == "rejected" and run["decidedBy"] == ADMIN and run["decidedByName"] == "관리자"
+    assert _last(client, prod_job) == "rejected"
     assert no not in runner.live
     assert client.post(f"/api/runs/{no}/approve").status_code == 400  # a rejected run can't be started
 

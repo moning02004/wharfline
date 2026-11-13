@@ -390,6 +390,13 @@ def pin_extra_tags(db: Session, job: dict, asked: dict[str, str] | None) -> dict
     return out
 
 
+def mark_job(db: Session, job_id: str, status: str) -> None:
+    """The job's 최근 실행 as a run changes: "run" when it starts, "approval" while it waits, "rejected"; _finish sets the end."""
+    job = db.get(m.Job, job_id)
+    if job:
+        job.last_status, job.last_time, job.last_duration, job.last_at = status, "방금", "-", time.time()
+
+
 def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str,
                status: str = "run", requested_by: str | None = None, extra_tags: dict[str, str] | None = None) -> m.Run:
     """Add the run row (not committed). Tags are pinned now, so an approval later deploys what was asked for."""
@@ -403,6 +410,7 @@ def create_run(db: Session, job: dict, groups: list[str], requested_tag: str, tr
                 status=status, by=s.actor_name(db), trigger=trigger, time="방금", started_at=time.time(), duration="-", steps=step_names,
                 requested_by=requested_by, extra_tags=extras or None, files_ver=job.get("filesVer"))
     db.add(rec)
+    mark_job(db, job["id"], status)
     db.flush()
     return rec
 
@@ -421,6 +429,7 @@ def launch(db: Session, rec: m.Run, job: dict, groups: list[str], requested_tag:
         plan = executor.build_plan(db, job, groups, rec.no, rec.tag, head)
         step_names = plan.steps
     rec.status, rec.time, rec.steps, rec.started_at = "run", "방금", step_names, time.time()
+    mark_job(db, job["id"], "run")
     db.commit()
 
     no = rec.no

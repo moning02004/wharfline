@@ -1013,6 +1013,7 @@ def reject(no: int, db: Session = Depends(get_db)):
     rec = pending(db, no)
     me = s.current_member(db)
     rec.status, rec.time = "rejected", "방금"
+    runner.mark_job(db, rec.job_id, "rejected")
     rec.decided_by, rec.decided_at = me.email, datetime.now(timezone.utc)
     s.log_act(db, "배포 거절", f"{rec.job} #{no} · {rec.tag} · 요청 {rec.by}", "warn")
     db.commit()
