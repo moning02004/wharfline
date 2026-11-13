@@ -83,8 +83,12 @@ def _strip_common_root(entries: list[tuple[str, bytes]]) -> list[tuple[str, byte
     return entries
 
 
-def parse_upload(name: str, data: bytes) -> dict:
-    """Read an uploaded file or zip. Returns files to keep, .env variables, dropped entries and warnings."""
+def parse_upload(name: str, data: bytes, playbook: bool = False) -> dict:
+    """Read an uploaded file or zip. Returns files to keep, .env variables, dropped entries and warnings.
+
+    playbook: an Ansible playbook set. A .env is left out instead of becoming environment variables,
+    and so is anything that looks like a private key (a zip or folder of a repo can carry one).
+    """
     if len(data) > MAX_UPLOAD_BYTES:
         raise HTTPException(400, "파일이 너무 커요. 5MB까지 올릴 수 있어요.")
     entries: list[tuple[str, bytes]] = []
@@ -107,11 +111,38 @@ def parse_upload(name: str, data: bytes) -> dict:
             if info.file_size > MAX_FILE_BYTES:
                 dropped.append({"path": info.filename, "reason": "512KB가 넘는 파일이에요"})
                 continue
-            entries.append((info.filename, zf.read(info)))
+            # Windows zip tools (PowerShell Compress-Archive) write "folder\file": use / so the folder is stripped
+            entries.append((info.filename.replace("\\", "/"), zf.read(info)))
         entries = _strip_common_root(entries)
     else:
         entries = [(name.replace("\\", "/").rsplit("/", 1)[-1], data)]
+    return _keep(entries, dropped, playbook)
 
+
+def parse_folder(entries: list[tuple[str, bytes]], playbook: bool = False) -> dict:
+    """A folder picked in the browser: (relative path, bytes) per file, each path starting with the folder name."""
+    if len(entries) > MAX_FILES * 2:
+        raise HTTPException(400, f"폴더 안의 파일이 너무 많아요. {MAX_FILES}개까지 올릴 수 있어요.")
+    if sum(len(b) for _, b in entries) > MAX_UPLOAD_BYTES:
+        raise HTTPException(400, "폴더가 너무 커요. 모두 합쳐 5MB까지 올릴 수 있어요.")
+    kept: list[tuple[str, bytes]] = []
+    dropped: list[dict[str, str]] = []
+    for raw, blob in entries:
+        parts = raw.replace("\\", "/").split("/")
+        if SKIP_PARTS & set(parts) or parts[-1] in SKIP_NAMES:
+            continue
+        if len(blob) > MAX_FILE_BYTES:
+            dropped.append({"path": raw, "reason": "512KB가 넘는 파일이에요"})
+            continue
+        kept.append((raw.replace("\\", "/"), blob))
+    return _keep(_strip_common_root(kept), dropped, playbook)
+
+
+PRIVATE_KEY = re.compile(r"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----")
+
+
+def _keep(entries: list[tuple[str, bytes]], dropped: list[dict[str, str]], playbook: bool) -> dict:
+    """The text files to keep from an upload, and what was left out and why."""
     files: list[dict] = []
     env: list[list[str]] = []
     warnings: list[dict[str, str]] = []
@@ -126,7 +157,13 @@ def parse_upload(name: str, data: bytes) -> dict:
         except UnicodeDecodeError:
             dropped.append({"path": path, "reason": "텍스트 파일만 올릴 수 있어요"})
             continue
+        if playbook and PRIVATE_KEY.search(text):
+            dropped.append({"path": path, "reason": "개인키로 보여서 올리지 않았어요"})
+            continue
         if is_env_file(path):
+            if playbook:
+                dropped.append({"path": path, "reason": ".env는 올리지 않아요 (비밀 값은 비밀 변수에 넣어요)"})
+                continue
             env += parse_env(text)
             dropped.append({"path": path, "reason": "환경 변수로 옮겼어요"})
             continue

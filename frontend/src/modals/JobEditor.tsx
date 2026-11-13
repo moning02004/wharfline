@@ -12,6 +12,7 @@ import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
 import { FileHistoryModal } from "./FileHistoryModal";
+import { PlaybookEditor } from "../pages/PlaybookEditor";
 import { Banner, Button, Check, Chip, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /* Same rules as the server (docs/deploy-simplify.md). */
@@ -356,6 +357,7 @@ export function EditJobPage() {
   const back = useBack(job ? `/jobs/${job.id}` : "/jobs");
   if (!job) return <>{gone}</>;
   if (!job.canEdit) return <EditorMissing text="이 배포 작업을 고칠 권한이 없어요." />;
+  if (job.playbook.kind === "upload") return <PlaybookEditor key={job.id} mode="edit" job={job} onClose={back} />;
   return <JobEditor key={job.id} mode="edit" job={job} onClose={back} initialGuide={false} />;
 }
 
@@ -377,6 +379,7 @@ export function CopyJobPage() {
     );
   }, [job, files]);
   if (!job) return <>{gone}</>;
+  if (job.playbook.kind === "upload") return <PlaybookEditor mode="copy" job={job} onClose={back} />;
   if (err) return <EditorMissing text={`파일을 불러오지 못했어요: ${err}`} />;
   if (files === null) return <Loading />;
   return <JobEditor mode="copy" job={{ ...job, files }} onClose={back} initialGuide={false} />;

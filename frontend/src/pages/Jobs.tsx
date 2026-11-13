@@ -5,7 +5,8 @@ import type { Job, Run } from "../lib/types";
 import { MoreMenu, type MenuItem } from "../components/Menu";
 import { ApprovalButtons, PlaybookLine, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
-import { Icon } from "../components/Icon";
+import { Icon, type IconName } from "../components/Icon";
+import { ModalBody, ModalHead } from "../components/Modal";
 import { EnvLink } from "../modals/EnvModals";
 import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { api, errMsg } from "../lib/api";
@@ -105,6 +106,12 @@ function DeployState({ status }: { status: Job["last"]["status"] }) {
 function methodLine(j: Job) {
   if (j.playbook.kind === "builtin") return "기본 플레이북";
   if (j.playbook.kind === "script") return j.playbook.path;
+  if (j.playbook.kind === "upload")
+    return (
+      <>
+        올린 플레이북 · <span className="font-mono">{j.playbook.path}</span>
+      </>
+    );
   return (
     <>
       {j.playbook.repo} · <span className="font-mono">{j.playbook.path}</span>
@@ -134,9 +141,59 @@ function ImageCell({ job: j }: { job: Job }) {
   );
 }
 
+/** 작업 추가: pick what to add, then go to its page. 배포 추가 is the deploy job editor as it was. */
+export function AddJobModal({ onClose }: { onClose: () => void }) {
+  const nav = useNavigate();
+  const go = (to: string) => {
+    onClose();
+    nav(to);
+  };
+  const choices: { to: string; icon: IconName; title: string; desc: string; eg: string }[] = [
+    {
+      to: "/jobs/new",
+      icon: "rocket",
+      title: "배포 추가",
+      desc: "이미지나 docker-compose 파일로 앱을 서버에 띄워요.",
+      eg: "예: API 서버, 웹 프런트, docker-compose.yml",
+    },
+    {
+      to: "/jobs/new-playbook",
+      icon: "book",
+      title: "플레이북 추가",
+      desc: "Ansible 플레이북을 올려 서버를 설치·설정해요. 필요한 값은 칸으로 물어봐요.",
+      eg: "예: stack.yml, 서버 초기 설정, nginx 설치",
+    },
+  ];
+  return (
+    <>
+      <ModalHead title="작업 추가" sub="무엇을 추가할지 골라 주세요." onClose={onClose} />
+      <ModalBody>
+        <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-3">
+          {choices.map((c, i) => (
+            <button
+              key={c.to}
+              type="button"
+              autoFocus={i === 0}
+              onClick={() => go(c.to)}
+              className="group flex flex-col gap-2 rounded-xl border border-line bg-surface p-4 text-left hover:border-accent/50 hover:bg-hover focus-visible:border-accent transition-colors"
+            >
+              <span className="grid place-items-center size-9 rounded-lg bg-accent/10 text-accent">
+                <Icon name={c.icon} className="size-[18px]" />
+              </span>
+              <span className="text-[14px] font-semibold">{c.title}</span>
+              <span className="text-[12.5px] text-muted">{c.desc}</span>
+              <span className="text-[12px] text-faint">{c.eg}</span>
+            </button>
+          ))}
+        </div>
+      </ModalBody>
+    </>
+  );
+}
+
 export function Jobs() {
   const data = useJobs();
-  const { can } = useApp();
+  const { can, openModal } = useApp();
   const { menuItems, runButton, rollbackButton } = useJobActions();
   const nav = useNavigate();
   if (!data) return <Loading />;
@@ -149,8 +206,8 @@ export function Jobs() {
             <Button icon="wand" onClick={() => nav("/jobs/new?guide=1")}>
               배포를 도와드릴까요?
             </Button>
-            <Button variant="primary" icon="plus" onClick={() => nav("/jobs/new")}>
-              새 배포 작업
+            <Button variant="primary" icon="plus" onClick={() => openModal((c) => <AddJobModal onClose={c} />)}>
+              작업 추가
             </Button>
           </>
         )}

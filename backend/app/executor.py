@@ -267,13 +267,20 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         return
 
     pb = job["playbook"]
-    repo = db.scalar(select(m.Repo).where(m.Repo.name == pb["repo"]))
-    if not repo:
-        raise PlanError(f"플레이북 레포 {pb['repo']}을(를) 찾을 수 없어요.")
     if not s.PLAYBOOK_PATH_RE.match(pb["path"] or ""):
         raise PlanError(f"플레이북 경로를 확인해 주세요: {pb['path']}")
     plan.book = pb["path"]
-    _plan_repo(db, plan, repo)
+    if pb["kind"] == "upload":  # the files were uploaded with the job; _fetch writes them to the temp folder
+        row = db.get(m.Job, job["id"])
+        plan.files = [dict(f) for f in (row.files if row else None) or []]
+        if not any(f["path"] == plan.book for f in plan.files):
+            raise PlanError(f"올린 파일에 {plan.book}이(가) 없어요. 작업을 편집해서 다시 올려 주세요.")
+        plan.repo = {"name": "", "kind": "upload", "url": "", "branch": "-", "auth": "-"}
+    else:
+        repo = db.scalar(select(m.Repo).where(m.Repo.name == pb["repo"]))
+        if not repo:
+            raise PlanError(f"플레이북 레포 {pb['repo']}을(를) 찾을 수 없어요.")
+        _plan_repo(db, plan, repo)
     xv: dict[str, Any] = runner.extra_vars(job, tag, bool(env))
     if plan.registries:
         main = next((r for r in plan.registries if job.get("image") and job["image"].startswith(r.host + "/")), plan.registries[0])
@@ -682,6 +689,50 @@ async def read_repo_file(repo: dict[str, Any], ref: str, path: str) -> tuple[str
         return content, head
 
 
+MAX_REPO_FILES = 400
+MAX_REPO_TOTAL = 4 * 1024 * 1024
+
+
+async def read_repo_files(repo: dict[str, Any], ref: str) -> tuple[list[dict[str, str]], str]:
+    """([{path, content}] of the text files, short commit) at a branch or tag: what the playbook form reads
+    to find the playbooks and their variables. Binary, large and .git files are skipped. Nothing is kept."""
+    with tempfile.TemporaryDirectory(prefix="wharfline-repo-") as d:
+        tmp = Path(d)
+        env = _base_env(tmp)
+        genv, _ = _git_env(repo, env, tmp)
+        dest = tmp / "src"
+        proc = await asyncio.create_subprocess_exec(
+            "git", "clone", "--depth", "1", "--single-branch", "--branch", ref, "--", repo["url"], str(dest),
+            cwd=str(tmp), env=genv, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT)
+        try:
+            said, _ = await asyncio.wait_for(proc.communicate(), GIT_READ_TIMEOUT)
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            raise RepoFileError(f"{GIT_READ_TIMEOUT:.0f}초 안에 저장소를 받지 못했어요.") from None
+        lines = said.decode(errors="replace").splitlines()
+        if proc.returncode != 0:
+            if GIT_MISSING_REF.search("\n".join(lines)):
+                raise RefNotFound(f"저장소에 {ref}가 없어요. 브랜치 이름을 확인해 주세요.")
+            raise RepoFileError(git_clone_hint(lines, repo["url"], ref, repo["auth"]))
+        out: list[dict[str, str]] = []
+        total = 0
+        for file in sorted(dest.rglob("*")):
+            rel = file.relative_to(dest).as_posix()
+            if rel.split("/", 1)[0] == ".git" or file.is_symlink() or not file.is_file():
+                continue
+            size = file.stat().st_size
+            if size > MAX_REPO_FILE or total + size > MAX_REPO_TOTAL or len(out) >= MAX_REPO_FILES:
+                continue
+            try:
+                out.append({"path": rel, "content": file.read_text(encoding="utf-8")})
+            except UnicodeDecodeError:
+                continue
+            total += size
+        _, head = await _capture(["git", "rev-parse", "--short", "HEAD"], dest, env)
+        return out, head
+
+
 # ---------- playbook jobs ----------
 
 async def _fetch(plan: Plan, out: Out, tmp: Path, env: dict[str, str]) -> Path | None:
@@ -690,6 +741,17 @@ async def _fetch(plan: Plan, out: Out, tmp: Path, env: dict[str, str]) -> Path |
         src = Path(repo["url"]) if Path(repo["url"]).is_dir() else BUILTIN_FALLBACK
         out.line("", f"Wharfline 기본 플레이북 {plan.book}: 이미지를 .env와 함께 컨테이너로 띄워요")
         shutil.copytree(src, dest)
+    elif repo["kind"] == "upload":
+        out.line("", f"올린 파일 {len(plan.files)}개 → 작업 폴더 (실행 후 삭제)")
+        dest.mkdir(mode=0o700)
+        for f in plan.files:
+            rel = bundles.clean_path(f["path"])
+            if not rel:
+                out.line("r", f"✘ 쓸 수 없는 파일 경로예요: {f['path']}")
+                return None
+            target = dest / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(f["content"], encoding="utf-8")
     elif repo["kind"] == "local":
         if not Path(repo["url"]).is_dir():
             out.line("r", f"✘ 로컬 경로가 없어요: {repo['url']} (backend 컨테이너 안의 경로여야 해요)")
