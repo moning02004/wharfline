@@ -241,10 +241,9 @@ export function Jobs() {
             <thead>
               <tr>
                 <th>작업</th>
-                <th>대상</th>
+                <th>생성자</th>
                 <th>상태</th>
                 <th>최근 배포</th>
-                <th>생성자</th>
                 <th className="text-right">
                   <span className="sr-only">동작</span>
                 </th>
@@ -272,12 +271,7 @@ export function Jobs() {
                       )}
                     </div>
                   </td>
-                  <td>
-                    <span>{j.inventory}</span>
-                    <span className="text-faint mx-1.5">·</span>
-                    <Chip mono>{j.targetLabel}</Chip>
-                    <span className="text-muted text-[12px] ml-1.5 tabular-nums">{j.targetHosts.length}대</span>
-                  </td>
+                  <td className="text-[13px] whitespace-nowrap">{j.createdByName ?? <span className="text-faint">-</span>}</td>
                   <td>
                     <DeployState status={j.last.status} />
                     <BuildLine job={j} />
@@ -293,7 +287,6 @@ export function Jobs() {
                       )}
                     </span>
                   </td>
-                  <td className="text-[13px] whitespace-nowrap">{j.createdByName ?? <span className="text-faint">-</span>}</td>
                   <td className="text-right" onClick={(e) => e.stopPropagation()}>
                     <span className="inline-flex gap-1">
                       {rollbackButton(j)}
