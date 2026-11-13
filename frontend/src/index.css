@@ -7,23 +7,24 @@
   and status shown as small colored dots.
 */
 :root {
-  --bg: #f4f4f5;
-  --canvas: #f5f6f8;
+  --bg: #f6f6f3;
+  --canvas: #f6f6f3;
   --surface: #ffffff;
-  --surface-2: #f8f8f9;
-  --hover: #f1f1f3;
-  --border: #e4e4e7;
-  --border-strong: #d4d4d8;
-  --fg: #18181b;
-  --muted: #52525b;
-  --faint: #a1a1aa;
-  --primary: #4f46e5;
+  --surface-2: #f7f7f4;
+  --hover: #f0f0eb;
+  --border: #ebebe6;
+  --border-strong: #dcdcd5;
+  --fg: #17181c;
+  --muted: #5f616a;
+  --faint: #8b8d94;
+  --primary: #17181c;
   --primary-fg: #ffffff;
-  --primary-soft: #eef0ff;
-  --accent: #4f46e5;
+  --primary-soft: #ededea;
+  --accent: #2563eb;
+  --mark: #e8590c; /* the active top tab's underline */
   --section: #7c3aed; /* violet: modal section line while filling, guide bubbles */
   --section-fg: #ffffff;
-  --accent-soft: #eef0ff;
+  --accent-soft: #e8efff;
   --on-accent: #ffffff;
   --ok: #16a34a;
   --warn: #ca8a04;
@@ -36,11 +37,11 @@
   --log-dim: #63636b;
   /* Elevation: a hairline ring plus soft layered shadows. Cards sit on 1, hover lifts to 2, menus and modals float on pop. */
   --elev-xs: 0 1px 2px rgba(16, 24, 40, 0.06);
-  --elev-1: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 1px 2px rgba(16, 24, 40, 0.04), 0 4px 12px -2px rgba(16, 24, 40, 0.06);
+  --elev-1: 0 1px 2px rgba(23, 24, 28, 0.05), 0 18px 40px -28px rgba(23, 24, 28, 0.35);
   --elev-2: 0 0 0 1px rgba(16, 24, 40, 0.07), 0 4px 8px -2px rgba(16, 24, 40, 0.07), 0 14px 28px -8px rgba(16, 24, 40, 0.14);
   --elev-pop: 0 0 0 1px rgba(16, 24, 40, 0.06), 0 12px 24px -6px rgba(16, 24, 40, 0.14), 0 32px 64px -12px rgba(16, 24, 40, 0.24);
-  --elev-bar: 0 1px 0 rgba(16, 24, 40, 0.06), 0 6px 20px -10px rgba(16, 24, 40, 0.18);
-  --elev-primary: 0 1px 2px rgba(67, 56, 202, 0.35), 0 6px 16px -4px rgba(79, 70, 229, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.2);
+  --elev-bar: 0 1px 0 rgba(23, 24, 28, 0.06), 0 10px 30px -22px rgba(23, 24, 28, 0.35);
+  --elev-primary: 0 10px 20px -10px rgba(23, 24, 28, 0.6);
   color-scheme: light;
 }
 
@@ -56,13 +57,14 @@
     --fg: #fafafa;
     --muted: #a1a1aa;
     --faint: #6b6b74;
-    --primary: #818cf8;
-    --primary-fg: #13122b;
-    --primary-soft: #1d1b3a;
-    --accent: #818cf8;
+    --primary: #f4f4f5;
+    --primary-fg: #17181c;
+    --primary-soft: #26262b;
+    --accent: #60a5fa;
+    --mark: #fb923c;
     --section: #a78bfa;
     --section-fg: #1e1036;
-    --accent-soft: #1d1b3a;
+    --accent-soft: #172033;
     --on-accent: #13122b;
     --ok: #22c55e;
     --warn: #eab308;
@@ -77,7 +79,7 @@
     --elev-2: 0 0 0 1px rgba(255, 255, 255, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 8px -2px rgba(0, 0, 0, 0.5), 0 18px 36px -10px rgba(0, 0, 0, 0.75);
     --elev-pop: 0 0 0 1px rgba(255, 255, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 24px 56px -12px rgba(0, 0, 0, 0.85);
     --elev-bar: 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px -12px rgba(0, 0, 0, 0.8);
-    --elev-primary: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 18px -6px rgba(129, 140, 248, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+    --elev-primary: 0 10px 22px -10px rgba(0, 0, 0, 0.8);
     color-scheme: dark;
   }
 }
@@ -93,13 +95,14 @@
   --fg: #fafafa;
   --muted: #a1a1aa;
   --faint: #6b6b74;
-  --primary: #818cf8;
-  --primary-fg: #13122b;
-  --primary-soft: #1d1b3a;
-  --accent: #818cf8;
-  --section: #a78bfa;
+  --primary: #f4f4f5;
+  --primary-fg: #17181c;
+  --primary-soft: #26262b;
+  --accent: #60a5fa;
+  --mark: #fb923c;
+    --section: #a78bfa;
   --section-fg: #1e1036;
-  --accent-soft: #1d1b3a;
+  --accent-soft: #172033;
   --on-accent: #13122b;
   --ok: #22c55e;
   --warn: #eab308;
@@ -114,7 +117,7 @@
   --elev-2: 0 0 0 1px rgba(255, 255, 255, 0.09), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 4px 8px -2px rgba(0, 0, 0, 0.5), 0 18px 36px -10px rgba(0, 0, 0, 0.75);
   --elev-pop: 0 0 0 1px rgba(255, 255, 255, 0.08), inset 0 1px 0 rgba(255, 255, 255, 0.05), 0 24px 56px -12px rgba(0, 0, 0, 0.85);
   --elev-bar: 0 1px 0 rgba(255, 255, 255, 0.06), 0 8px 24px -12px rgba(0, 0, 0, 0.8);
-  --elev-primary: 0 1px 2px rgba(0, 0, 0, 0.5), 0 6px 18px -6px rgba(129, 140, 248, 0.55), inset 0 1px 0 rgba(255, 255, 255, 0.25);
+  --elev-primary: 0 10px 22px -10px rgba(0, 0, 0, 0.8);
   color-scheme: dark;
 }
 
@@ -133,6 +136,7 @@
   --color-primary-fg: var(--primary-fg);
   --color-primary-soft: var(--primary-soft);
   --color-accent: var(--accent);
+  --color-mark: var(--mark);
   --color-accent-soft: var(--accent-soft);
   --color-on-accent: var(--on-accent);
   --color-ok: var(--ok);

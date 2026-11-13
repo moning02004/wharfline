@@ -11,6 +11,7 @@ import { EnvLink } from "../modals/EnvModals";
 import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { api, errMsg } from "../lib/api";
 import { since, stamp } from "../lib/time";
+import { jobView } from "../lib/jobViews";
 import { ConfirmDelete } from "./Resources";
 import { Button, Card, CardHeader, Chip, Empty, KV, Loading, PageHeader, Dot, StatusPill, TableWrap, cx } from "../components/ui";
 
@@ -241,14 +242,18 @@ export function AddJobModal({ onClose }: { onClose: () => void }) {
 
 export function Jobs() {
   const data = useJobs();
-  const { can, openModal } = useApp();
+  const { can, openModal, session } = useApp();
   const { menuItems, runButton, rollbackButton } = useJobActions();
   const nav = useNavigate();
+  const [params] = useSearchParams();
+  // A saved view from the side menu (/jobs?view=failed): the same test it counts with.
+  const view = jobView(params.get("view"));
   if (!data) return <Loading />;
+  const rows = data.filter((j) => view.test(j, session?.me.email));
 
   return (
     <>
-      <PageHeader title="배포 작업" desc="무엇을, 어느 서버에, 어떻게 배포할지 묶은 실행 단위예요. 작업을 누르면 설정과 실행 기록을 볼 수 있어요.">
+      <PageHeader title={view.label} desc="무엇을, 어느 서버에, 어떻게 배포할지 묶은 실행 단위예요. 작업을 누르면 설정과 실행 기록을 볼 수 있어요.">
         {can("job_create") && (
           <>
             <Button icon="wand" onClick={() => nav("/jobs/new?guide=1")}>
@@ -274,7 +279,14 @@ export function Jobs() {
               </tr>
             </thead>
             <tbody>
-              {data.map((j) => (
+              {rows.length === 0 && (
+                <tr>
+                  <td colSpan={6} className="!text-center text-muted py-10">
+                    이 보기에 맞는 작업이 없어요.
+                  </td>
+                </tr>
+              )}
+              {rows.map((j) => (
                 <tr key={j.id} className="click" onClick={() => nav(`/jobs/${encodeURIComponent(j.id)}`)}>
                   <td>
                     <Link to={`/jobs/${encodeURIComponent(j.id)}`} className="font-medium text-fg hover:underline" onClick={(e) => e.stopPropagation()}>

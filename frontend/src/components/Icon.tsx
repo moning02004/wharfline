@@ -76,6 +76,12 @@ const P = {
   ),
   plus: <path d="M12 5v14M5 12h14" />,
   check: <path d="M5 12l5 5 9-10" />,
+  search: (
+    <>
+      <circle cx="11" cy="11" r="7" />
+      <path d="M20 20l-3.5-3.5" />
+    </>
+  ),
   x: <path d="M6 6l12 12M18 6L6 18" />,
   eye: (
     <>

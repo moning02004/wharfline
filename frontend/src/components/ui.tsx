@@ -24,12 +24,12 @@ export const cx = (...c: (string | false | null | undefined)[]) => c.filter(Bool
 
 type BtnVariant = "default" | "primary" | "ghost" | "danger" | "dangerGhost";
 const btnBase =
-  "inline-flex items-center justify-center gap-1.5 rounded-lg font-medium whitespace-nowrap select-none " +
+  "inline-flex items-center justify-center gap-1.5 rounded-full font-medium whitespace-nowrap select-none " +
   "transition-[background,box-shadow,transform,color,border-color] duration-150 active:translate-y-px disabled:opacity-40 disabled:pointer-events-none";
 const btnVariants: Record<BtnVariant, string> = {
   default: "bg-surface text-fg border border-line-strong shadow-xs hover:bg-surface-2 hover:shadow-[var(--elev-xs),0_2px_6px_-2px_rgba(16,24,40,.08)]",
   primary:
-    "text-primary-fg border border-black/5 bg-[linear-gradient(180deg,color-mix(in_srgb,var(--primary)_88%,white),var(--primary))] shadow-primary hover:brightness-110 hover:-translate-y-px active:shadow-xs",
+    "text-primary-fg bg-primary shadow-primary font-semibold hover:opacity-90 hover:-translate-y-px active:shadow-xs",
   ghost: "text-muted hover:text-fg hover:bg-hover",
   danger: "bg-surface text-bad border border-line-strong shadow-xs hover:bg-bad-soft hover:border-bad/40",
   dangerGhost: "text-bad hover:bg-bad-soft",
@@ -66,7 +66,7 @@ export function Card({ className, children, hover }: { className?: string; child
   return (
     <div
       className={cx(
-        "bg-surface rounded-xl shadow-soft min-w-0 overflow-hidden", // clip table headers to the rounded corners
+        "bg-surface rounded-[18px] shadow-soft min-w-0 overflow-hidden", // clip table headers to the rounded corners
         hover && "transition-[box-shadow,transform] duration-200 ease-(--ease-soft) hover:shadow-lift hover:-translate-y-0.5",
         className,
       )}
@@ -92,7 +92,7 @@ export function PageHeader({ title, desc, children }: { title: ReactNode; desc?:
   return (
     <div className="flex items-end justify-between gap-4 flex-wrap">
       <div className="min-w-0">
-        <h1 className="m-0 text-[22px] font-semibold tracking-[-0.025em] leading-tight">{title}</h1>
+        <h1 className="m-0 text-[28px] font-extrabold tracking-[-0.03em] leading-tight">{title}</h1>
         {desc && <p className="mt-1.5 text-muted max-w-[72ch] text-[13px] leading-relaxed">{desc}</p>}
       </div>
       {children && <div className="flex items-center gap-2 flex-wrap">{children}</div>}
