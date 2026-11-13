@@ -209,8 +209,6 @@
   .tbl tr.click { cursor: pointer; }
   .tbl tr.click:hover td { background: var(--surface-2); }
   .tbl.center td, .tbl.center th { text-align: center; }
-  /* faint lines between columns */
-  .tbl.grid-lines td + td, .tbl.grid-lines th + th { border-left: 1px solid color-mix(in srgb, var(--border) 55%, transparent); }
   .tbl.center td:first-child, .tbl.center th:first-child { text-align: left; }
   .scroll-soft { scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
 }

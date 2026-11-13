@@ -292,11 +292,56 @@ function ImportMembersModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+/** Owner or Admin: rename a member (themselves included). The server allows no one else. */
+function RenameModal({ member, onClose }: { member: { email: string; name: string }; onClose: () => void }) {
+  const { session, setSession, toast, refresh } = useApp();
+  const [name, setName] = useState(member.name);
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+  const clean = name.trim().split(/\s+/).join(" ");
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setBusy(true);
+    setErr("");
+    try {
+      await api.put(`/members/${encodeURIComponent(member.email)}/name`, { name: clean });
+      if (member.email === session?.me.email) setSession(await api.get<Session>("/auth/me"));
+      refresh();
+      toast(`이름을 ${clean}(으)로 바꿨어요`);
+      onClose();
+    } catch (e) {
+      setErr(errMsg(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <ModalHead title="이름 바꾸기" sub={member.email} onClose={onClose} />
+      <form id="renameForm" onSubmit={submit} className="contents">
+        <ModalBody>
+          <Field label="이름" htmlFor="renameName" hint="배포 작업의 생성자, 실행한 사람 등 곳곳에 이 이름으로 보여요. 64자까지 돼요.">
+            <Input id="renameName" autoFocus maxLength={64} placeholder="예: 브랜드마케팅2팀 이미지 대리" value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          {err && <p className="m-0 text-bad text-[12.5px]">{err}</p>}
+        </ModalBody>
+      </form>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" type="submit" form="renameForm" disabled={busy || !clean || clean === member.name}>
+          바꾸기
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
 function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: Group[]; canEdit: boolean }) {
   const { session, setSession, viewAs, setViewAs, toast, refresh, reloadAccess, openModal } = useApp();
   const [q, setQ] = useState("");
   const [groupFilter, setGroupFilter] = useState("");
   const isOwner = session?.me.role === "Owner";
+  const canRename = (session?.me.role === "Owner" || session?.me.role === "Admin") && !viewAs;
 
   const shown = members.filter((u) => {
     const text = `${u.name} ${u.email} ${u.role} ${groups.filter((g) => u.groups.includes(g.id)).map((g) => g.name).join(" ")}`.toLowerCase();
@@ -390,6 +435,11 @@ function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: G
                   </span>
                 </td>
                 <td className="text-right whitespace-nowrap">
+                  {canRename && (
+                    <Button size="sm" variant="ghost" icon="edit" onClick={() => openModal((c) => <RenameModal member={u} onClose={c} />)}>
+                      이름 바꾸기
+                    </Button>
+                  )}
                   {isOwner && u.email !== session?.me.email && (
                     <>
                       <Button size="sm" variant="ghost" icon="eye" onClick={() => preview(u)} disabled={viewAs?.email === u.email}>
@@ -563,6 +613,13 @@ export function Security() {
             <CardHeader title="로그인">
               {session.tfa ? <Dot tone="ok">2단계 인증 사용 중</Dot> : <Dot tone="warn">비밀번호만 사용</Dot>}
             </CardHeader>
+            {(session.me.role === "Owner" || session.me.role === "Admin") && (
+              <ListItem icon="users" title="이름" sub={session.me.name}>
+                <Button size="sm" onClick={() => openModal((c) => <RenameModal member={{ email: session.me.email, name: session.me.name }} onClose={c} />)}>
+                  바꾸기
+                </Button>
+              </ListItem>
+            )}
             <ListItem icon="lock" title="비밀번호" sub="바꾸면 이 기기를 뺀 다른 기기는 모두 로그아웃돼요.">
               <Button size="sm" onClick={() => openModal((c) => <PasswordModal onClose={c} />)}>
                 바꾸기

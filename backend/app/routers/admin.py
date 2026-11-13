@@ -55,6 +55,36 @@ def set_role(email: str, body: RoleIn, db: Session = Depends(get_db)):
     return member.to_dict()
 
 
+class NameIn(BaseModel):
+    name: str
+
+
+NAME_MAX = 64  # e.g. "브랜드마케팅2팀 이미지 대리"
+
+
+@router.put("/members/{email}/name")
+def set_name(email: str, body: NameIn, db: Session = Depends(get_db)):
+    """Owner or Admin: rename any member, themselves included. Others can't change names, not even their own."""
+    me = s.current_member(db)
+    if not me:
+        raise HTTPException(401, "login_required")
+    if me.role not in ("Owner", "Admin"):
+        raise HTTPException(403, "Owner나 Admin만 이름을 바꿀 수 있어요.")
+    member = db.get(m.Member, email)
+    if not member:
+        raise HTTPException(404, "멤버를 찾을 수 없어요.")
+    name = " ".join(body.name.split())  # trim, and one space between words
+    if not name:
+        raise HTTPException(400, "이름을 적어 주세요.")
+    if len(name) > NAME_MAX:
+        raise HTTPException(400, f"이름은 {NAME_MAX}자까지예요.")
+    if name != member.name:
+        s.log_act(db, "이름 변경", f"{member.email} · {member.name} → {name}")
+        member.name = name
+        db.commit()
+    return member.to_dict()
+
+
 class MemberGroupsIn(BaseModel):
     groups: list[str]
 

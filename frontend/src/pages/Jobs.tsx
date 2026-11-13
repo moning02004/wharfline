@@ -131,7 +131,7 @@ function BuildLine({ job }: { job: Job }) {
   const color = { accent: "text-accent", ok: "text-ok", bad: "text-bad" }[tone];
   const dot = { accent: "bg-accent animate-pulse-dot", ok: "bg-ok", bad: "bg-bad" }[tone];
   return (
-    <div className={cx("mt-1 flex items-center gap-1.5 text-[11.5px] whitespace-nowrap", color)} title={title}>
+    <div className={cx("mt-1 flex items-center justify-center gap-1.5 text-[11.5px] whitespace-nowrap", color)} title={title}>
       <span className={cx("size-1.5 rounded-full flex-none", dot)} />
       {text}
     </div>
@@ -151,7 +151,7 @@ function JobFlags({ job: j }: { job: Job }) {
     },
   ];
   return (
-    <span className="inline-flex flex-col items-start gap-1">
+    <span className="inline-flex flex-col items-center gap-1">
       {flags.map((f) => (
         <span key={f.label} title={f.title} aria-label={`${f.label} ${f.on ? "켜짐" : "꺼짐"}`}>
           <Chip tone={f.on ? f.tone : "neutral"} icon={f.icon} className={f.on ? undefined : "opacity-40"}>
@@ -262,15 +262,15 @@ export function Jobs() {
       </PageHeader>
       <Card>
         <TableWrap>
-          <table className="tbl grid-lines">
+          <table className="tbl center">
             <thead>
               <tr>
-                <th>작업</th>
-                <th className="w-px">생성자</th>
-                <th className="w-px">권한</th>
-                <th className="w-px">상태</th>
-                <th className="w-px">최근 배포</th>
-                <th className="w-px text-right">실행</th>
+                <th className="w-[26%]">작업</th>
+                <th>생성자</th>
+                <th>권한</th>
+                <th>상태</th>
+                <th>최근 배포</th>
+                <th>실행</th>
               </tr>
             </thead>
             <tbody>
@@ -284,7 +284,7 @@ export function Jobs() {
                   <td className="text-[13px] !whitespace-normal">
                     {/* Names can be long ("브랜드마케팅2팀 이미지 대리"): wrap at spaces, two lines at most, full name on hover */}
                     {j.createdByName ? (
-                      <span className="w-max max-w-[104px] break-keep line-clamp-2 leading-[1.35]" title={j.createdByName}>
+                      <span className="mx-auto w-max max-w-[104px] break-keep line-clamp-2 leading-[1.35]" title={j.createdByName}>
                         {j.createdByName}
                       </span>
                     ) : (
@@ -303,8 +303,9 @@ export function Jobs() {
                       {j.last.status === "warn" ? "-" : <span title={`${stamp(j.last.at)} · ${j.last.duration}`}>{since(j.last.at, j.last.time)}</span>}
                     </span>
                   </td>
-                  <td className="text-right" onClick={(e) => e.stopPropagation()}>
-                    <span className="inline-flex gap-1">
+                  <td className="text-center" onClick={(e) => e.stopPropagation()}>
+                    {/* a fixed width keeps 배포하기 and ⋮ in the same place on every row, with or without 이전 배포 */}
+                    <span className="inline-flex justify-end gap-1 w-[220px]">
                       {rollbackButton(j)}
                       {runButton(j)}
                       {menuItems(j, { withRollback: false }).length > 0 && <MoreMenu label={`${j.name} 메뉴`} items={menuItems(j, { withRollback: false })} />}
