@@ -150,8 +150,9 @@
   --shadow-pop: var(--elev-pop);
   --shadow-bar: var(--elev-bar);
   --shadow-primary: var(--elev-primary);
-  --font-sans: "Geist", "IBM Plex Sans KR", system-ui, -apple-system, "Apple SD Gothic Neo", sans-serif;
-  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  /* Mac system fonts first (SF Pro, Apple SD Gothic Neo); Pretendard looks the same on Windows and Linux. */
+  --font-sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard Variable", Pretendard, "Segoe UI", "Malgun Gothic", sans-serif;
+  --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Geist Mono", Consolas, monospace;
   --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
   --animate-fade: fade 0.15s ease-out;
   --animate-rise: rise 0.18s var(--ease-soft);

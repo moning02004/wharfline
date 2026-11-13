@@ -303,9 +303,9 @@ export function Jobs() {
                       {j.last.status === "warn" ? "-" : <span title={`${stamp(j.last.at)} · ${j.last.duration}`}>{since(j.last.at, j.last.time)}</span>}
                     </span>
                   </td>
-                  <td className="text-center" onClick={(e) => e.stopPropagation()}>
-                    {/* a fixed width keeps 배포하기 and ⋮ in the same place on every row, with or without 이전 배포 */}
-                    <span className="inline-flex justify-end gap-1 w-[220px]">
+                  <td className="!text-right" onClick={(e) => e.stopPropagation()}>
+                    {/* header centered, buttons on the right: 배포하기 and ⋮ line up on every row */}
+                    <span className="inline-flex gap-1">
                       {rollbackButton(j)}
                       {runButton(j)}
                       {menuItems(j, { withRollback: false }).length > 0 && <MoreMenu label={`${j.name} 메뉴`} items={menuItems(j, { withRollback: false })} />}
