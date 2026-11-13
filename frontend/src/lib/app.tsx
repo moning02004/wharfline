@@ -84,8 +84,10 @@ interface AppCtx {
   toast: (msg: string, tone?: ToastTone) => void;
   openModal: (render: ModalRender, size?: ModalSize, onClose?: () => void) => void;
   closeModal: () => void;
-  /** Bumped after any mutation so pages refetch. */
+  /** Bumped after any mutation, and when the server says data changed (/api/events), so pages refetch. */
   version: number;
+  /** The change stream is connected: polls only re-render (for "N초째"), the stream brings new data. */
+  live: boolean;
   refresh: () => void;
   runAction: (fn: () => Promise<unknown>, ok?: string) => Promise<boolean>;
 }
@@ -148,6 +150,60 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const refresh = useCallback(() => setVersion((v) => v + 1), []);
+
+  // Webhooks, runs and other members' edits arrive as notices; the page refetches through the normal API.
+  // Notices close together refetch once; a hidden tab refetches when it is shown again.
+  const [live, setLive] = useState(false);
+  useEffect(() => {
+    if (!session?.loggedIn || typeof EventSource === "undefined") return;
+    let es: EventSource | null = null;
+    let timer = 0;
+    let retry = 0;
+    let missed = false;
+    const kick = () => {
+      if (document.hidden) {
+        missed = true;
+        return;
+      }
+      clearTimeout(timer);
+      timer = window.setTimeout(refresh, 250);
+    };
+    const open = () => {
+      es = new EventSource("/api/events");
+      es.onopen = () => setLive(true);
+      es.onmessage = (e) => {
+        try {
+          if ((JSON.parse(e.data) as { topics?: string[] }).topics?.length) kick();
+        } catch {
+          /* not a notice */
+        }
+      };
+      es.onerror = () => {
+        setLive(false);
+        // The browser reconnects by itself after a dropped connection; a refused one (signed out, server down) is
+        // closed for good, so try again later.
+        if (es?.readyState === EventSource.CLOSED) {
+          es.close();
+          retry = window.setTimeout(open, 15000);
+        }
+      };
+    };
+    const onShow = () => {
+      if (!document.hidden && missed) {
+        missed = false;
+        refresh();
+      }
+    };
+    open();
+    document.addEventListener("visibilitychange", onShow);
+    return () => {
+      document.removeEventListener("visibilitychange", onShow);
+      clearTimeout(timer);
+      clearTimeout(retry);
+      es?.close();
+      setLive(false);
+    };
+  }, [session?.loggedIn, session?.me?.email, refresh]);
 
   const setViewAs = useCallback(
     (m: Member | null) => {
@@ -226,9 +282,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value = useMemo<AppCtx>(
     () => ({
       session, setSession, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, menus: access.menus, reloadAccess, canSee, can,
-      toast, openModal, closeModal, version, refresh, runAction,
+      toast, openModal, closeModal, version, live, refresh, runAction,
     }),
-    [session, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, access, reloadAccess, canSee, can, toast, openModal, closeModal, version, refresh, runAction],
+    [session, sudoActive, endSudo, withSudo, viewAs, setViewAs, role, access, reloadAccess, canSee, can, toast, openModal, closeModal, version, live, refresh, runAction],
   );
 
   return (
@@ -258,18 +314,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
   );
 }
 
-/** Fetch helper that refetches whenever the app version bumps, and every `pollMs` while it is set. */
+/** Fetch helper that refetches whenever the app version bumps. While `pollMs` is set it refetches that often, or,
+ * with the change stream connected (new data comes through it), only re-renders so times like "N초째" move. */
 export function useApi<T>(path: string | null, pollMs = 0) {
-  const { version } = useApp();
+  const { version, live } = useApp();
   const [data, setData] = useState<T | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [local, setLocal] = useState(0);
+  const [, setTick] = useState(0);
   const reload = useCallback(() => setLocal((x) => x + 1), []);
   useEffect(() => {
     if (!path || !pollMs) return;
-    const t = setInterval(reload, pollMs);
+    const t = setInterval(live ? () => setTick((x) => x + 1) : reload, live ? Math.min(pollMs, 1000) : pollMs);
     return () => clearInterval(t);
-  }, [path, pollMs, reload]);
+  }, [path, pollMs, live, reload]);
   useEffect(() => {
     if (!path) return;
     let alive = true;

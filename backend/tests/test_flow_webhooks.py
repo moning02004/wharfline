@@ -184,3 +184,13 @@ def test_a_known_tag_can_be_deleted(client, login, hook_job):
     r = client.delete("/api/images/tags", params={"ref": IMAGE, "tag": "v9.9.9-typo"})
     assert r.status_code == 200 and "v9.9.9-typo" not in [t["name"] for t in r.json()["tags"]]
     assert client.delete("/api/images/tags", params={"ref": IMAGE, "tag": "v9.9.9-typo"}).status_code == 404
+
+
+def test_webhook_build_is_announced_to_open_pages(client, login, secret, hook_job):
+    from app import events
+
+    seq = events.current()
+    send_hook(client, secret, "workflow_run", run_payload(8001, "in_progress"))
+    new, topics = events.since(seq)
+    assert new > seq and "builds" in topics
+    send_hook(client, secret, "workflow_run", run_payload(8001, "completed", "success"))

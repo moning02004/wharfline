@@ -6,13 +6,14 @@ import re
 import time
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .. import bundles
+from .. import events
 from .. import executor
 from .. import githooks
 from .. import models as m
@@ -1112,6 +1113,39 @@ async def stream_run(no: int, since: int = 0):
             if run["done"]:
                 break
             await asyncio.sleep(0.1)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+EVENTS_TICK = 0.5  # how often a stream looks for new notices
+EVENTS_KEEPALIVE = 20.0  # a comment line so proxies keep the connection and a closed tab is noticed
+
+
+@router.get("/events")
+async def stream_events(request: Request, since: int | None = None):
+    """Change notices for open pages: `data: {"seq": n, "topics": ["jobs", …]}` when a webhook, run or edit changes
+    data. Pages refetch through the normal API. The first message gives the current number; a page that reconnects
+    passes it back as `since` (or EventSource's Last-Event-ID) and hears what it missed."""
+    last_id = request.headers.get("last-event-id")
+    seq = since if since is not None else int(last_id) if last_id and last_id.isdigit() else None
+
+    async def gen():
+        nonlocal seq
+        if seq is None:
+            seq = events.current()
+            yield f"id: {seq}\ndata: {json.dumps({'seq': seq, 'topics': []})}\n\n"
+        quiet = 0.0
+        while not await request.is_disconnected():
+            new, topics = events.since(seq)
+            if topics:
+                seq = new
+                quiet = 0.0
+                yield f"id: {seq}\ndata: {json.dumps({'seq': seq, 'topics': sorted(topics)})}\n\n"
+            elif quiet >= EVENTS_KEEPALIVE:
+                quiet = 0.0
+                yield ": keepalive\n\n"
+            await asyncio.sleep(EVENTS_TICK)
+            quiet += EVENTS_TICK
 
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
