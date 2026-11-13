@@ -163,6 +163,36 @@ function JobFlags({ job: j }: { job: Job }) {
   );
 }
 
+/** One server per line (name and address); a long list shows the first few and 더보기 opens the rest. */
+function HostLines({ hosts }: { hosts: Job["targetHosts"] }) {
+  const [open, setOpen] = useState(false);
+  const FIRST = 3;
+  if (!hosts.length) return <span className="text-faint">-</span>;
+  const shown = open ? hosts : hosts.slice(0, FIRST);
+  return (
+    <span className="flex flex-col gap-1">
+      {shown.map((h) => (
+        <span key={`${h.name}-${h.ip}`} className="flex items-baseline gap-2 min-w-0">
+          <span className="font-mono text-[12.5px]">
+            {h.ip}
+            {h.port !== 22 ? `:${h.port}` : ""}
+          </span>
+          <span className="text-[12px] text-faint truncate">
+            {h.name !== h.ip ? `${h.name} · ` : ""}
+            {h.group}
+            {h.skip ? ` · ${h.skip}` : ""}
+          </span>
+        </span>
+      ))}
+      {hosts.length > FIRST && (
+        <button type="button" className="self-start text-[12.5px] text-muted hover:text-fg" onClick={() => setOpen(!open)}>
+          {open ? "접기" : `더보기 +${hosts.length - FIRST}`}
+        </button>
+      )}
+    </span>
+  );
+}
+
 function DeployState({ status }: { status: Job["last"]["status"] }) {
   return status === "warn" ? <span className="text-faint text-[12.5px]">배포 전</span> : <StatusPill status={status} />;
 }
@@ -497,7 +527,7 @@ export function JobDetail() {
                     <Chip mono>{j.targetLabel}</Chip>
                   </>,
                 ],
-                ["서버", <span className="font-mono text-[12.5px]">{j.targetHosts.map((h) => h.ip).join(", ") || "-"}</span>],
+                ["서버", <HostLines hosts={j.targetHosts} />, "!whitespace-normal"],
                 ...(j.servicePath ? ([["배포 폴더", <span className="font-mono text-[12.5px]">{j.servicePath}</span>]] as [string, React.ReactNode][]) : []),
                 ...(j.filesVer
                   ? ([
