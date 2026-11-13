@@ -138,6 +138,31 @@ function BuildLine({ job }: { job: Job }) {
   );
 }
 
+/** 권한 column: both switches always shown, colored when on and faded when off, so rows line up. */
+function JobFlags({ job: j }: { job: Job }) {
+  const flags: { on: boolean; tone: "warn" | "accent"; icon: IconName; label: string; title: string }[] = [
+    { on: j.protected, tone: "warn", icon: "lock", label: "승인 필요", title: j.protected ? "Owner·Admin이 아니면 승인을 받아야 배포돼요" : "승인 없이 배포돼요" },
+    {
+      on: j.hook,
+      tone: "accent",
+      icon: "refresh",
+      label: "자동 배포",
+      title: j.hook ? `새 태그가 올라오면 바로 배포 (${j.hookRule || "모든 태그"})` : "자동 배포 꺼짐 · 직접 실행만",
+    },
+  ];
+  return (
+    <span className="inline-flex gap-1.5">
+      {flags.map((f) => (
+        <span key={f.label} title={f.title} aria-label={`${f.label} ${f.on ? "켜짐" : "꺼짐"}`}>
+          <Chip tone={f.on ? f.tone : "neutral"} icon={f.icon} className={f.on ? undefined : "opacity-40"}>
+            {f.label}
+          </Chip>
+        </span>
+      ))}
+    </span>
+  );
+}
+
 function DeployState({ status }: { status: Job["last"]["status"] }) {
   return status === "warn" ? <span className="text-faint text-[12.5px]">배포 전</span> : <StatusPill status={status} />;
 }
@@ -242,6 +267,7 @@ export function Jobs() {
               <tr>
                 <th>작업</th>
                 <th>생성자</th>
+                <th>권한</th>
                 <th>상태</th>
                 <th>최근 배포</th>
                 <th className="text-right">
@@ -253,25 +279,14 @@ export function Jobs() {
               {data.map((j) => (
                 <tr key={j.id} className="click" onClick={() => nav(`/jobs/${encodeURIComponent(j.id)}`)}>
                   <td>
-                    <div className="flex items-center gap-2">
-                      <Link to={`/jobs/${encodeURIComponent(j.id)}`} className="font-medium text-fg hover:underline" onClick={(e) => e.stopPropagation()}>
-                        {j.name}
-                      </Link>
-                      {j.protected && (
-                        <Chip tone="warn" icon="lock">
-                          보호됨
-                        </Chip>
-                      )}
-                      {j.hook && (
-                        <span title={`새 태그가 올라오면 바로 배포 (${j.hookRule || "모든 태그"})`}>
-                          <Chip tone="accent" icon="refresh">
-                            자동 배포
-                          </Chip>
-                        </span>
-                      )}
-                    </div>
+                    <Link to={`/jobs/${encodeURIComponent(j.id)}`} className="font-medium text-fg hover:underline" onClick={(e) => e.stopPropagation()}>
+                      {j.name}
+                    </Link>
                   </td>
                   <td className="text-[13px] whitespace-nowrap">{j.createdByName ?? <span className="text-faint">-</span>}</td>
+                  <td>
+                    <JobFlags job={j} />
+                  </td>
                   <td>
                     <DeployState status={j.last.status} />
                     <BuildLine job={j} />
@@ -339,7 +354,7 @@ export function JobDetail() {
             {j.name}
             {j.protected && (
               <Chip tone="warn" icon="lock">
-                보호됨
+                승인 필요
               </Chip>
             )}
           </span>
