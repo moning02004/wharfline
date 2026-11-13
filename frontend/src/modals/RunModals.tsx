@@ -29,6 +29,12 @@ export function PlaybookLine({ job }: { job: Job }) {
         <Chip>기본 플레이북</Chip> <span className="font-mono text-muted text-[12.5px]">{pb.path}</span>
       </>
     );
+  if (pb.kind === "upload")
+    return (
+      <>
+        <Chip>올린 플레이북</Chip> <span className="font-mono text-muted text-[12.5px]">{pb.path}</span>
+      </>
+    );
   return (
     <>
       {pb.repo} <span className="text-faint">·</span> <span className="font-mono text-muted text-[12.5px]">{pb.path}</span>
@@ -404,7 +410,7 @@ function ConfirmRun({
             ["배포 방법", <PlaybookLine job={job} />],
             ["환경 변수", job.env ? <EnvLink name={job.env} /> : "없음"],
             // Git playbook jobs only: the playbook variables it passes.
-            ...(job.playbook.kind === "git" || job.playbook.kind === "local"
+            ...(job.playbook.kind === "git" || job.playbook.kind === "local" || job.playbook.kind === "upload"
               ? ([
                   ...((job.playVars?.length ?? 0) + (job.secretVarNames?.length ?? 0)
                     ? [["플레이북 변수", `일반 ${job.playVars?.length ?? 0}개 · 비밀 ${job.secretVarNames?.length ?? 0}개`, "text-muted"]]

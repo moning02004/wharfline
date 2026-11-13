@@ -39,6 +39,8 @@ def method_label(job: dict) -> str:
     pb = job["playbook"]
     if job.get("script") is not None:
         return f"SSH 스크립트 ({len(job['script'])}단계)"
+    if pb["kind"] == "upload":
+        return f"올린 플레이북 {pb['path']}"
     return f"기본 플레이북 {pb['path']}" if pb["kind"] == "builtin" else f"플레이북 {pb['repo']} / {pb['path']}"
 
 
@@ -258,8 +260,11 @@ def build_script(db: Session, job: dict, groups: list[str], no: int, tag: str, t
             out.append(("g" if st == "ok" else "y", f"{st}: [{h['name']}]" + (suffix(h) if suffix else "")))
         return out
 
-    if repo["kind"] == "builtin":
-        fetch: list[Line] = [("", f"Wharfline 기본 플레이북 {book}: 이미지를 .env와 함께 컨테이너로 띄워요")]
+    if pb["kind"] == "upload":
+        row = db.get(m.Job, job["id"])
+        fetch: list[Line] = [("", f"올린 파일 {len((row.files if row else None) or [])}개 → 작업 폴더 (실행 후 삭제)")]
+    elif repo["kind"] == "builtin":
+        fetch = [("", f"Wharfline 기본 플레이북 {book}: 이미지를 .env와 함께 컨테이너로 띄워요")]
     elif repo["kind"] == "local":
         fetch = [("", f"로컬 경로: {repo['url']}"), ("", "작업 폴더로 읽기 전용 복사 (실행 후 삭제)")]
     else:

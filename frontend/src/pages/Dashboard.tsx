@@ -5,6 +5,7 @@ import type { IconName } from "../components/Icon";
 import { since, stamp } from "../lib/time";
 import { ApprovalButtons, shortImage, useRun } from "../modals/RunModals";
 import { BuildBadge } from "../components/BuildBadge";
+import { AddJobModal } from "./Jobs";
 import { Button, Card, CardHeader, Chip, Dot, ListItem, Loading, PageHeader, StatusPill, TableWrap } from "../components/ui";
 
 const ALERT_ICON: Record<DashboardAlert["kind"], IconName> = {
@@ -18,7 +19,7 @@ const ALERT_ICON: Record<DashboardAlert["kind"], IconName> = {
 /** Dashboard: 바로 실행 on top, then 최근 실행 | 알림. */
 export default function Dashboard() {
   const { data } = useApi<D>("/dashboard");
-  const { can } = useApp();
+  const { can, openModal } = useApp();
   const { confirm, openLog } = useRun();
   const nav = useNavigate();
   if (!data) return <Loading />;
@@ -27,8 +28,8 @@ export default function Dashboard() {
     <>
       <PageHeader title={`안녕하세요, ${data.me.name}님`}>
         {can("job_create") && (
-          <Button variant="primary" icon="plus" onClick={() => nav("/jobs/new")}>
-            새 배포 작업
+          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <AddJobModal onClose={c} />)}>
+            작업 추가
           </Button>
         )}
       </PageHeader>

@@ -65,9 +65,35 @@ export interface ImageTag {
   pushed: string;
 }
 
+/** A variable a playbook reads but never sets: what the playbook form asks for (POST /playbooks/inspect). */
+export interface PlayVarInfo {
+  name: string;
+  required: boolean;
+  /** Likely a password, token or key: typed into a hidden field and stored encrypted. */
+  secret: boolean;
+  /** The playbook's own default (`| default('…')`), used when the field is left empty. */
+  default: string | null;
+  /** Read as yes/no (`| bool`): shown as a switch. */
+  bool: boolean;
+  /** From the playbook's comments. */
+  desc: string;
+}
+
+export interface PlaybookInfo {
+  book: string;
+  plays: { name: string; hosts?: string; become?: boolean; import?: string }[];
+  vars: PlayVarInfo[];
+  /** Variables Wharfline passes by itself (image_ref, env_src…). */
+  auto: string[];
+  notes: string[];
+  /** Files the playbook copies or templates that are not in the upload. */
+  warnings: string[];
+}
+
 export interface JobPlaybook {
   repo: string;
-  kind: "git" | "local" | "builtin" | "script";
+  /** upload: a playbook uploaded with its files (Job.files), path is the playbook among them. */
+  kind: "git" | "local" | "builtin" | "script" | "upload";
   url: string;
   branch: string;
   path: string;
