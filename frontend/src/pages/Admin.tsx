@@ -208,46 +208,49 @@ interface ImportResult {
   applied: boolean;
 }
 
-const IMPORT_EXAMPLE = `| 그룹 | 계정 |
-|---|---|
-| ifdo | hong@ermore.co.kr |
-| ifdo | kim@ermore.co.kr |`;
+const IMPORT_EXAMPLE = `marketing2 user1@a.com
+marketing2 user2@a.com
+ifdo hong@ermore.co.kr`;
 
-/** Owner only: add accounts and group memberships from a "| 그룹 | 계정 |" table (.txt). */
+/** Owner only: add accounts and group memberships from "그룹 계정" lines (typed, pasted or a .txt). */
 function ImportMembersModal({ onClose }: { onClose: () => void }) {
   const { toast, withSudo, refresh, reloadAccess } = useApp();
   const [text, setText] = useState("");
-  const [preview, setPreview] = useState<{ text: string; result: ImportResult } | null>(null);
+  const [checked, setChecked] = useState<{ text: string; result: ImportResult } | null>(null);
   const [busy, setBusy] = useState(false);
-  const fresh = preview && preview.text === text ? preview.result : null;
+  const fresh = checked && checked.text === text ? checked.result : null;
 
   const readFile = async (f: File | undefined) => {
     if (!f) return;
     if (f.size > 1024 * 1024) return toast("파일이 너무 커요 (최대 1MB)", "error");
     setText(await f.text());
   };
-  const check = async () => {
+  /** Check the lines first (no password needed); add only when every line reads as 그룹 계정. */
+  const add = async () => {
     setBusy(true);
+    let r: ImportResult;
     try {
-      setPreview({ text, result: await api.post<ImportResult>("/members/import", { text }) });
+      r = await api.post<ImportResult>("/members/import", { text });
     } catch (e) {
-      toast(errMsg(e), "error");
+      return toast(errMsg(e), "error");
     } finally {
       setBusy(false);
     }
-  };
-  const apply = () =>
+    setChecked({ text, result: r });
+    if (r.errors.length) return;
+    if (!r.newMembers.length && !r.joins) return toast("모두 이미 그룹에 들어 있어요. 추가할 게 없어요.");
     withSudo("멤버 일괄 추가", async () => {
-      const r = await api.post<ImportResult>("/members/import", { text, apply: true });
-      toast(`새 멤버 ${r.newMembers.length}명, 새 그룹 ${r.newGroups.length}개를 추가했어요`);
+      const done = await api.post<ImportResult>("/members/import", { text, apply: true });
+      toast(`새 멤버 ${done.newMembers.length}명, 새 그룹 ${done.newGroups.length}개, 그룹 추가 ${done.joins}건을 반영했어요`);
       refresh();
       reloadAccess();
       onClose();
     });
+  };
 
   return (
     <>
-      <ModalHead title="멤버 일괄 추가" sub="| 그룹 | 계정 | 표를 .txt 로 올리거나 붙여 넣어요." onClose={onClose} />
+      <ModalHead title="멤버 일괄 추가" sub="한 줄에 하나씩 그룹 계정 순서로 적어요. .txt 파일을 올려도 돼요." onClose={onClose} />
       <ModalBody>
         <Banner icon="info">
           새 계정은 <b>Viewer</b>, 비밀번호 <b className="font-mono">0000</b> 으로 만들어지고 처음 로그인할 때 새 비밀번호를 정해요. 이미 있는 계정은 역할과 비밀번호를 그대로 두고 그룹만 더해요. 없는 그룹은 새로 만들어요(작업·실행 기록·보안 메뉴만 보여요. 그룹 탭에서 넓혀 주세요).
@@ -255,8 +258,8 @@ function ImportMembersModal({ onClose }: { onClose: () => void }) {
         <Field label=".txt 파일" htmlFor="impFile">
           <input id="impFile" type="file" accept=".txt,.md,text/plain" className="text-[13px]" onChange={(e) => readFile(e.target.files?.[0])} />
         </Field>
-        <Field label="내용" htmlFor="impText">
-          <Textarea id="impText" rows={8} className="font-mono" placeholder={IMPORT_EXAMPLE} value={text} onChange={(e) => setText(e.target.value)} />
+        <Field label="그룹 계정" htmlFor="impText">
+          <Textarea id="impText" rows={10} className="font-mono" placeholder={IMPORT_EXAMPLE} value={text} onChange={(e) => setText(e.target.value)} />
         </Field>
         {fresh && (
           <div className="flex flex-col gap-2 text-[13px]">
@@ -281,15 +284,7 @@ function ImportMembersModal({ onClose }: { onClose: () => void }) {
       </ModalBody>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
-        <Button onClick={check} disabled={!text.trim() || busy}>
-          미리 보기
-        </Button>
-        <Button
-          variant="primary"
-          onClick={apply}
-          disabled={!fresh || fresh.errors.length > 0 || (!fresh.newMembers.length && !fresh.joins)}
-          title={!fresh ? "먼저 미리 보기로 확인해 주세요" : undefined}
-        >
+        <Button variant="primary" onClick={add} disabled={!text.trim() || busy}>
           추가하기
         </Button>
       </ModalFoot>

@@ -73,18 +73,19 @@ def set_member_groups(email: str, body: MemberGroupsIn, db: Session = Depends(ge
     return member.to_dict()
 
 
-# ---------- bulk add: a "| 그룹 | 계정 |" table ----------
+# ---------- bulk add: one "그룹 계정" per line (a "| 그룹 | 계정 |" table works too) ----------
 
 IMPORT_PASSWORD = "0000"  # everyone added in bulk starts here and must pick a new password at the first login
 IMPORT_MAX_ROWS = 1000
 NEW_GROUP_MENUS = ["jobs", "runs", "security"]  # a group made by the import; the Owner widens it afterwards
 _EMAIL_RE = re.compile(r"^[^@\s|]+@[^@\s|]+\.[^@\s|]+$")
 _SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
+_PLAIN_RE = re.compile(r"^(.*?)[\s,]+([^\s,]+)$")  # "그룹 계정", split at the last space, tab or comma
 _HEADERS = ({"그룹", "group"}, {"계정", "이메일", "account", "email"})
 
 
 def parse_member_table(text: str) -> tuple[list[tuple[int, str, str]], list[dict]]:
-    """Rows (line, group, email) and errors from a Markdown table with the columns 그룹 and 계정."""
+    """Rows (line, group, email) and errors from lines "그룹 계정" or a Markdown table with the columns 그룹 and 계정."""
     rows: list[tuple[int, str, str]] = []
     errors: list[dict] = []
     for n, raw in enumerate(text.splitlines(), 1):
@@ -95,12 +96,16 @@ def parse_member_table(text: str) -> tuple[list[tuple[int, str, str]], list[dict
         def bad(reason: str) -> None:
             errors.append({"line": n, "text": line[:200], "reason": reason})
 
-        if not line.startswith("|"):
-            bad("| 그룹 | 계정 | 형식으로 적어 주세요.")
-            continue
-        cells = [c.strip() for c in line.strip("|").split("|")]
-        if all(_SEPARATOR_RE.match(c) for c in cells):
-            continue
+        if line.startswith("|"):
+            cells = [c.strip() for c in line.strip("|").split("|")]
+            if all(_SEPARATOR_RE.match(c) for c in cells):
+                continue
+        else:  # "marketing2 user1@a.com": the last word is the account, everything before it the group
+            parts = _PLAIN_RE.match(line)
+            if not parts:
+                bad("그룹 계정 형식으로 적어 주세요. 예: marketing2 user1@a.com")
+                continue
+            cells = [parts[1].strip(), parts[2]]
         if len(cells) == 2 and cells[0].lower() in _HEADERS[0] and cells[1].lower() in _HEADERS[1]:
             continue
         if len(cells) != 2:
@@ -133,7 +138,7 @@ def import_members(body: ImportIn, db: Session = Depends(get_db)):
         raise HTTPException(403, "sudo_required")
     rows, errors = parse_member_table(body.text)
     if not rows and not errors:
-        errors.append({"line": 0, "text": "", "reason": "올릴 줄이 없어요. | 그룹 | 계정 | 표로 적어 주세요."})
+        errors.append({"line": 0, "text": "", "reason": "추가할 줄이 없어요. 한 줄에 하나씩 그룹 계정으로 적어 주세요."})
 
     groups = {g.name.lower(): g for g in db.scalars(select(m.Group))}
     new_groups: list[str] = []

@@ -1,4 +1,4 @@
-"""Bulk add from a "| 그룹 | 계정 |" table: Owner only, new accounts are Viewers on 0000 who must change it."""
+"""Bulk add from "그룹 계정" lines (or a "| 그룹 | 계정 |" table): Owner only, new accounts are Viewers on 0000 who must change it."""
 
 import uuid
 
@@ -14,6 +14,14 @@ def test_parse_member_table():
     rows, errors = parse_member_table(_table(("ifdo", "Hong@Ermore.co.kr"), ("배치팀", "kim@ermore.co.kr")) + "\n\n그냥 줄\n| a |\n| x | not-an-email |")
     assert [(g, e) for _, g, e in rows] == [("ifdo", "hong@ermore.co.kr"), ("배치팀", "kim@ermore.co.kr")]
     assert [x["line"] for x in errors] == [6, 7, 8]
+
+
+def test_parse_plain_lines():
+    text = "그룹 계정\nmarketing2 user1@a.com\nmarketing2\tUser2@A.com\nViewer 기본 user3@a.com\nops, user4@a.com\nuser5@a.com\n| x | y@a.com |"
+    rows, errors = parse_member_table(text)
+    assert [(g, e) for _, g, e in rows] == [
+        ("marketing2", "user1@a.com"), ("marketing2", "user2@a.com"), ("Viewer 기본", "user3@a.com"), ("ops", "user4@a.com"), ("x", "y@a.com")]
+    assert [x["line"] for x in errors] == [6]  # an account with no group
 
 
 def test_preview_then_apply(client, login):
