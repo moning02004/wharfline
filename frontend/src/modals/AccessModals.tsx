@@ -57,6 +57,7 @@ export function GroupFields({ draft, set, repos, members, disabled, autoFocus }:
   const { openModal } = useApp();
   const choices = [...new Set([...repos, ...draft.repos])].sort();
   const byEmail = new Map(members.map((u) => [u.email, u]));
+  const isOwner = (email: string) => byEmail.get(email)?.role === "Owner";
   const toggle = (key: "menus", v: string, on: boolean) =>
     set({ ...draft, [key]: on ? [...draft[key], v] : draft[key].filter((x) => x !== v) });
 
@@ -136,14 +137,11 @@ export function GroupFields({ draft, set, repos, members, disabled, autoFocus }:
                   sub="눌러서 옮기거나 반대편으로 끌어다 놓아요. 이름이나 이메일로 찾을 수 있어요."
                   leftLabel="전체 멤버"
                   rightLabel="이 그룹의 멤버"
-                  items={members.map((u) => ({
-                    id: u.email,
-                    label: u.name,
-                    text: `${u.name} ${u.email}`,
-                    desc: `${u.email} · ${u.role === "Owner" ? "Owner · 그룹과 관계없이 전체" : `${u.role} · 그룹 ${u.groups.length}개`}`,
-                  }))}
-                  selected={draft.members}
-                  onApply={(ids) => set({ ...draft, members: ids })}
+                  items={members
+                    .filter((u) => u.role !== "Owner") // Owners see everything whatever their groups
+                    .map((u) => ({ id: u.email, label: u.name, text: `${u.name} ${u.email}`, desc: `${u.email} · ${u.role} · 그룹 ${u.groups.length}개` }))}
+                  selected={draft.members.filter((e) => !isOwner(e))}
+                  onApply={(ids) => set({ ...draft, members: [...draft.members.filter(isOwner), ...ids] })}
                   onClose={c}
                 />
               ),
