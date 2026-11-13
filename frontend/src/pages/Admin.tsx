@@ -4,7 +4,7 @@ import { api, errMsg } from "../lib/api";
 import { ROLES, useApi, useApp } from "../lib/app";
 import type { Activity as Act, DeviceSession, Group, Login, Member, NotifyChannel, NotifyConfig, NotifyEvent, NotifySecretKey, NotifySettings, Policy, Role, Session } from "../lib/types";
 import { CodesModal, DisableTfaModal, PasswordModal, ResetPasswordModal, TfaSetupModal } from "../modals/SecurityModals";
-import { draftOf, effectiveAccess, GroupDetail, GroupModal, GroupPicker } from "../modals/AccessModals";
+import { buildsLabel, draftOf, effectiveAccess, GroupDetail, GroupModal, GroupPicker } from "../modals/AccessModals";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Icon } from "../components/Icon";
 import { Banner, Button, Card, CardHeader, Check, Chip, cx, Dot, Field, Hint, Input, ListItem, Loading, PageHeader, Seg, Select, StatusPill, Switch, TableWrap, Textarea } from "../components/ui";
@@ -423,7 +423,6 @@ function GroupsTab({ members, gd, canEdit, selected, onSelect, onNew }: {
   onNew: () => void;
 }) {
   const group = gd.groups.find((g) => g.id === selected) ?? gd.groups[0];
-  const nameOf = (email: string) => members.find((m) => m.email === email)?.name ?? email;
 
   if (!gd.groups.length)
     return (
@@ -457,7 +456,7 @@ function GroupsTab({ members, gd, canEdit, selected, onSelect, onNew }: {
               >
                 <div className={cx("text-[13px] font-medium truncate", active && "text-primary")}>{g.name}</div>
                 <div className="text-[11.5px] text-muted truncate">
-                  {g.members.length ? g.members.map(nameOf).join(", ") : "멤버 없음"} · 메뉴 {g.menus.length}
+                  멤버 {g.members.length}명 · 메뉴 {g.menus.length} · {buildsLabel(g, true)}
                 </div>
               </button>
             );

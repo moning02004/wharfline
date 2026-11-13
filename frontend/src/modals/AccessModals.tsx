@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { api, errMsg } from "../lib/api";
 import { ROUTES, useApp } from "../lib/app";
 import type { Group, Member } from "../lib/types";
@@ -10,9 +10,11 @@ const REPO_RE = /^[^/\s]+\/[^/\s]+$/;
 // 배포 알림 is Owner-only (the server has no such menu), so groups never grant it.
 export const GROUP_MENUS = ROUTES.filter((r) => r.id !== "dashboard" && r.id !== "notify");
 
-export function buildsLabel(g: Group): string {
+/** `short`: just the count, for tight lists. */
+export function buildsLabel(g: Group, short = false): string {
   if (g.allBuilds) return "모든 빌드";
   if (!g.repos.length) return "빌드 없음";
+  if (short) return `빌드 ${g.repos.length}개`;
   return g.repos.length <= 2 ? `빌드: ${g.repos.join(", ")}` : `빌드: ${g.repos.slice(0, 2).join(", ")} 외 ${g.repos.length - 2}개`;
 }
 
@@ -52,19 +54,11 @@ export function GroupFields({ draft, set, repos, members, disabled, autoFocus }:
   disabled?: boolean;
   autoFocus?: boolean;
 }) {
-  const [extra, setExtra] = useState("");
-  const [err, setErr] = useState("");
+  const { openModal } = useApp();
   const choices = [...new Set([...repos, ...draft.repos])].sort();
-  const toggle = (key: "menus" | "repos" | "members", v: string, on: boolean) =>
+  const byEmail = new Map(members.map((u) => [u.email, u]));
+  const toggle = (key: "menus", v: string, on: boolean) =>
     set({ ...draft, [key]: on ? [...draft[key], v] : draft[key].filter((x) => x !== v) });
-
-  const addRepo = () => {
-    const r = extra.trim().toLowerCase().replace(/\.git$/, "");
-    if (!REPO_RE.test(r)) return setErr("레포는 owner/name 형식으로 넣어 주세요. 예: acme/batch-worker");
-    if (!draft.repos.includes(r)) set({ ...draft, repos: [...draft.repos, r] });
-    setExtra("");
-    setErr("");
-  };
 
   return (
     <fieldset disabled={disabled} className="contents">
@@ -95,55 +89,264 @@ export function GroupFields({ draft, set, repos, members, disabled, autoFocus }:
           {draft.allBuilds ? (
             <p className="m-0 text-muted text-[12.5px]">나중에 연결되는 레포의 빌드도 모두 보여요.</p>
           ) : (
-            <>
-              {choices.length ? (
-                <div className="grid grid-cols-2 gap-x-3">
-                  {choices.map((r) => (
-                    <Check key={r} checked={draft.repos.includes(r)} onChange={(v) => toggle("repos", r, v)} title={<span className="font-mono text-[12.5px]">{r}</span>} />
-                  ))}
-                </div>
-              ) : (
-                <p className="m-0 text-muted text-[12.5px]">아직 연결된 빌드 레포가 없어요. 아래에 직접 넣을 수 있어요.</p>
-              )}
-              <div className="flex gap-1.5">
-                <Input
-                  mono
-                  placeholder="owner/name"
-                  aria-label="레포 추가"
-                  value={extra}
-                  onChange={(e) => setExtra(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter") {
-                      e.preventDefault();
-                      addRepo();
-                    }
-                  }}
-                />
-                <Button icon="plus" onClick={addRepo}>
-                  추가
-                </Button>
-              </div>
-              {!draft.repos.length && <p className="m-0 text-warn text-[12.5px]">레포를 고르지 않으면 이 그룹으로는 빌드가 하나도 보이지 않아요.</p>}
-            </>
+            <Picked
+              count={`레포 ${draft.repos.length}개`}
+              empty={<span className="text-warn">레포를 고르지 않으면 이 그룹으로는 빌드가 하나도 보이지 않아요.</span>}
+              chips={draft.repos.map((r) => ({ id: r, label: r }))}
+              mono
+              button="빌드 고르기"
+              onOpen={() =>
+                openModal(
+                  (c) => (
+                    <TransferModal
+                      title="볼 수 있는 빌드"
+                      sub="왼쪽에서 눌러 이 그룹에 주고, 오른쪽에서 눌러 빼요. 목록에 없는 레포는 검색 칸에 owner/name 으로 적어 추가해요."
+                      leftLabel="빌드 레포"
+                      rightLabel="이 그룹이 보는 빌드"
+                      items={choices.map((r) => ({ id: r, label: r, text: r }))}
+                      mono
+                      selected={draft.repos}
+                      custom={(q) => {
+                        const r = q.trim().toLowerCase().replace(/\.git$/, "");
+                        return REPO_RE.test(r) ? r : null;
+                      }}
+                      onApply={(ids) => set({ ...draft, repos: ids })}
+                      onClose={c}
+                    />
+                  ),
+                  "md",
+                )
+              }
+            />
           )}
-          <ErrorText>{err}</ErrorText>
         </div>
       </Field>
 
-      <Field label={<>멤버 <span className="text-faint font-normal">· {draft.members.length}명 · 한 멤버가 여러 그룹에 속할 수 있어요</span></>}>
-        <div className="grid grid-cols-2 gap-x-3">
-          {members.map((u) => (
-            <Check
-              key={u.email}
-              checked={draft.members.includes(u.email)}
-              onChange={(v) => toggle("members", u.email, v)}
-              title={u.name}
-              desc={u.role === "Owner" ? "Owner · 그룹과 관계없이 전체" : `${u.role} · 다른 그룹 ${u.groups.length}개`}
-            />
-          ))}
-        </div>
+      <Field label={<>멤버 <span className="text-faint font-normal">· 한 멤버가 여러 그룹에 속할 수 있어요</span></>}>
+        <Picked
+          count={`${draft.members.length}명`}
+          empty="아직 멤버가 없어요."
+          chips={draft.members.map((e) => ({ id: e, label: byEmail.get(e)?.name ?? e, title: e }))}
+          button="멤버 고르기"
+          onOpen={() =>
+            openModal(
+              (c) => (
+                <TransferModal
+                  title="그룹 멤버"
+                  sub="왼쪽에서 눌러 이 그룹에 넣고, 오른쪽에서 눌러 빼요. 이름이나 이메일로 찾을 수 있어요."
+                  leftLabel="전체 멤버"
+                  rightLabel="이 그룹의 멤버"
+                  items={members.map((u) => ({
+                    id: u.email,
+                    label: u.name,
+                    text: `${u.name} ${u.email}`,
+                    desc: `${u.email} · ${u.role === "Owner" ? "Owner · 그룹과 관계없이 전체" : `${u.role} · 그룹 ${u.groups.length}개`}`,
+                  }))}
+                  selected={draft.members}
+                  onApply={(ids) => set({ ...draft, members: ids })}
+                  onClose={c}
+                />
+              ),
+              "md",
+            )
+          }
+        />
       </Field>
     </fieldset>
+  );
+}
+
+/** What a group was given, as chips in a small scrolling box, with the button that opens the picker. */
+function Picked({ count, empty, chips, mono, button, onOpen }: {
+  count: string;
+  empty: ReactNode;
+  chips: { id: string; label: string; title?: string }[];
+  mono?: boolean;
+  button: string;
+  onOpen: () => void;
+}) {
+  return (
+    <div className="rounded-lg border border-line">
+      <div className="flex items-center gap-2 px-3 h-10 border-b border-line bg-surface-2 rounded-t-lg">
+        <span className="text-[12.5px] text-muted tabular-nums">{count}</span>
+        <Button size="sm" className="ml-auto" icon="edit" onClick={onOpen}>
+          {button}
+        </Button>
+      </div>
+      <div className="p-2.5 max-h-[132px] overflow-auto scroll-soft">
+        {chips.length ? (
+          <div className="flex flex-wrap gap-1.5">
+            {chips.map((c) => (
+              <span
+                key={c.id}
+                title={c.title}
+                className={cx("inline-flex items-center h-[22px] px-2 rounded-md bg-primary-soft text-primary text-[12px] font-medium", mono && "font-mono text-[11.5px]")}
+              >
+                {c.label}
+              </span>
+            ))}
+          </div>
+        ) : (
+          <p className="m-0 text-[12.5px] text-muted">{empty}</p>
+        )}
+      </div>
+    </div>
+  );
+}
+
+interface TransferItem {
+  id: string;
+  label: string;
+  text: string; // what the search matches
+  desc?: string;
+}
+
+const LIST_CAP = 300; // longer lists ask for a search instead of rendering every row
+
+/** Two lists: everything on the left, what is given on the right. Click a row to move it; 적용 hands back the ids.
+ *  `custom` turns a search the left list doesn't contain into a new id (e.g. a repo typed as owner/name). */
+export function TransferModal({ title, sub, leftLabel, rightLabel, items, mono, selected, custom, onApply, onClose }: {
+  title: string;
+  sub: string;
+  leftLabel: string;
+  rightLabel: string;
+  items: TransferItem[];
+  mono?: boolean;
+  selected: string[];
+  custom?: (q: string) => string | null;
+  onApply: (ids: string[]) => void;
+  onClose: () => void;
+}) {
+  const [picked, setPicked] = useState<string[]>(selected);
+  const [extra, setExtra] = useState<TransferItem[]>([]);
+  const [qa, setQa] = useState("");
+  const [qb, setQb] = useState("");
+  const plain = (id: string): TransferItem => ({ id, label: id, text: id });
+  const all: TransferItem[] = [...items, ...extra, ...selected.filter((id) => !items.some((x) => x.id === id)).map(plain)];
+  const byId = new Map(all.map((x) => [x.id, x]));
+  const on = new Set(picked);
+  const match = (x: TransferItem, q: string) => x.text.toLowerCase().includes(q.trim().toLowerCase());
+  const left = all.filter((x) => !on.has(x.id) && match(x, qa));
+  const right = picked.map((id) => byId.get(id) ?? plain(id)).filter((x) => match(x, qb));
+  const newId = custom && qa.trim() ? custom(qa) : null;
+  const canAdd = newId !== null && !byId.has(newId);
+  const added = picked.filter((id) => !selected.includes(id)).length;
+  const removed = selected.filter((id) => !on.has(id)).length;
+
+  const add = (ids: string[]) => setPicked((p) => [...p, ...ids.filter((id) => !p.includes(id))]);
+  const drop = (ids: string[]) => setPicked((p) => p.filter((id) => !ids.includes(id)));
+  const addCustom = () => {
+    if (!canAdd || !newId) return;
+    setExtra((e) => [...e, { id: newId, label: newId, text: newId }]);
+    add([newId]);
+    setQa("");
+  };
+
+  const pane = (side: "left" | "right") => {
+    const rows = side === "left" ? left : right;
+    const q = side === "left" ? qa : qb;
+    const setQ = side === "left" ? setQa : setQb;
+    const total = side === "left" ? all.length - picked.length : picked.length;
+    return (
+      <div className="flex flex-col min-h-0 rounded-xl border border-line overflow-hidden">
+        <div className="flex items-center gap-2 px-3 h-10 border-b border-line bg-surface-2">
+          <span className="text-[12.5px] font-semibold">{side === "left" ? leftLabel : rightLabel}</span>
+          <span className="text-[11.5px] text-faint tabular-nums">{total}</span>
+          <Button
+            size="sm"
+            variant="ghost"
+            className="ml-auto"
+            disabled={!rows.length}
+            onClick={() => (side === "left" ? add : drop)(rows.map((r) => r.id))}
+          >
+            {side === "left" ? (q ? "찾은 것 모두 추가" : "모두 추가") : q ? "찾은 것 모두 빼기" : "모두 빼기"}
+          </Button>
+        </div>
+        <div className="p-2 border-b border-line">
+          <Input
+            mono={mono && side === "left" && !!custom}
+            placeholder={side === "left" ? (custom ? "찾기 또는 owner/name 입력" : "이름이나 이메일로 찾기") : "찾기"}
+            aria-label={`${side === "left" ? leftLabel : rightLabel} 찾기`}
+            value={q}
+            autoFocus={side === "left"}
+            onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key !== "Enter") return;
+              e.preventDefault();
+              if (side === "left" && canAdd) addCustom();
+              else if (rows.length === 1) (side === "left" ? add : drop)([rows[0].id]);
+            }}
+          />
+        </div>
+        <ul className="m-0 p-1.5 list-none h-[320px] overflow-auto scroll-soft">
+          {side === "left" && canAdd && (
+            <li>
+              <button type="button" onClick={addCustom} className="w-full flex items-center gap-2 px-2.5 py-2 rounded-lg text-left text-primary hover:bg-hover">
+                <Icon name="plus" className="size-3.5 flex-none" />
+                <span className="font-mono text-[12.5px] truncate">{newId}</span>
+                <span className="ml-auto text-[11.5px] text-faint flex-none">새로 추가</span>
+              </button>
+            </li>
+          )}
+          {rows.slice(0, LIST_CAP).map((x) => (
+            <li key={x.id}>
+              <button
+                type="button"
+                onClick={() => (side === "left" ? add : drop)([x.id])}
+                className="group w-full flex items-center gap-2 px-2.5 py-1.5 rounded-lg text-left hover:bg-hover"
+                title={side === "left" ? "눌러서 추가" : "눌러서 빼기"}
+              >
+                <span className="min-w-0 flex-1">
+                  <span className={cx("block truncate text-[13px]", mono && "font-mono text-[12.5px]")}>{x.label}</span>
+                  {x.desc && <span className="block truncate text-[11.5px] text-muted">{x.desc}</span>}
+                </span>
+                <Icon
+                  name={side === "left" ? "plus" : "x"}
+                  className={cx("size-3.5 flex-none opacity-0 group-hover:opacity-100", side === "left" ? "text-primary" : "text-bad")}
+                />
+              </button>
+            </li>
+          ))}
+          {rows.length > LIST_CAP && <li className="px-2.5 py-2 text-[12px] text-faint">{rows.length - LIST_CAP}개 더 있어요. 찾기로 좁혀 주세요.</li>}
+          {!rows.length && !(side === "left" && canAdd) && (
+            <li className="px-2.5 py-6 text-center text-[12.5px] text-muted">
+              {q ? "맞는 항목이 없어요." : side === "left" ? "모두 추가했어요." : "아직 아무것도 없어요. 왼쪽에서 골라 주세요."}
+            </li>
+          )}
+        </ul>
+      </div>
+    );
+  };
+
+  return (
+    <>
+      <ModalHead title={title} sub={sub} onClose={onClose} />
+      <ModalBody>
+        <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-3">
+          {pane("left")}
+          {pane("right")}
+        </div>
+      </ModalBody>
+      <ModalFoot>
+        {(added > 0 || removed > 0) && (
+          <span className="mr-auto text-[12px] text-muted tabular-nums">
+            {added > 0 && `${added}개 추가`}
+            {added > 0 && removed > 0 && " · "}
+            {removed > 0 && `${removed}개 빼기`}
+          </span>
+        )}
+        <Button onClick={onClose}>취소</Button>
+        <Button
+          variant="primary"
+          onClick={() => {
+            onApply(picked);
+            onClose();
+          }}
+        >
+          적용
+        </Button>
+      </ModalFoot>
+    </>
   );
 }
 
