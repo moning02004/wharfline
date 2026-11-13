@@ -484,7 +484,8 @@ export function Field({ label, hint, htmlFor, children, right, error }: { label?
               {label}
             </label>
           )}
-          {right}
+          {/* a button here must not make this row taller than a plain label, so fields side by side line up */}
+          {right && <span className="-my-1.5 flex items-center">{right}</span>}
         </div>
       )}
       {children}
