@@ -359,7 +359,7 @@ export function Jobs() {
         </div>
         <span className="flex-1" />
         <Select aria-label="정렬" className="w-[140px]" value={sort} onChange={(e) => setSort(e.target.value as JobSort)}>
-          <option value="deployed">최근 배포순</option>
+          <option value="deployed">마지막 실행순</option>
           <option value="created">최근 생성순</option>
           <option value="name">이름순</option>
         </Select>
@@ -420,7 +420,7 @@ export function Jobs() {
                   <th className="w-[30%]">작업</th>
                   <th>권한</th>
                   <th>상태</th>
-                  <th>최근 배포</th>
+                  <th>마지막 실행</th>
                   <th>실행</th>
                 </tr>
               </thead>
