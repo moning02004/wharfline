@@ -41,25 +41,31 @@ export default function Dashboard() {
           </Button>
         </CardHeader>
         {data.jobs.length ? (
-          data.jobs.map((j) => (
-            <ListItem
-              key={j.id}
-              title={j.name}
-              sub={
-                <span className="font-mono text-xs">
-                  {shortImage(j) ?? j.playbook.path} → {j.targetLabel} ({j.targetHosts.length}대)
-                </span>
-              }
-            >
-              <BuildBadge build={j.build} />
-                            {(j.extraImages ?? []).map((x) => (x.build ? <BuildBadge key={x.var || x.ref} build={x.build} /> : null))}
-              {can("run") && (
-                <Button size="sm" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>
-                  {j.protected && !can("run_protected") ? "승인 요청" : "실행"}
-                </Button>
-              )}
-            </ListItem>
-          ))
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(250px,1fr))] gap-3 p-4">
+            {data.jobs.map((j) => (
+              <div key={j.id} className="flex flex-col gap-2.5 p-3.5 rounded-2xl bg-surface-2 shadow-[inset_0_0_0_1px_var(--border)] min-w-0">
+                <div className="min-w-0">
+                  <b className="block text-[14px] font-semibold truncate" title={j.name}>
+                    {j.name}
+                  </b>
+                  <span className="block mt-0.5 font-mono text-[11.5px] text-muted truncate" title={`${shortImage(j) ?? j.playbook.path} → ${j.targetLabel}`}>
+                    {shortImage(j) ?? j.playbook.path} → {j.targetLabel} ({j.targetHosts.length}대)
+                  </span>
+                </div>
+                {(j.build || (j.extraImages ?? []).some((x) => x.build)) && (
+                  <span className="flex flex-wrap gap-1">
+                    <BuildBadge build={j.build} />
+                    {(j.extraImages ?? []).map((x) => (x.build ? <BuildBadge key={x.var || x.ref} build={x.build} /> : null))}
+                  </span>
+                )}
+                {can("run") && (
+                  <Button size="sm" className="mt-auto self-start" icon={j.protected && !can("run_protected") ? "lock" : "play"} onClick={() => confirm(j)}>
+                    {j.protected && !can("run_protected") ? "승인 요청" : "실행"}
+                  </Button>
+                )}
+              </div>
+            ))}
+          </div>
         ) : (
           <p className="m-0 px-4 py-6 text-center text-muted">아직 배포 작업이 없어요.</p>
         )}

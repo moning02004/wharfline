@@ -12,7 +12,7 @@ import { FileHistoryModal } from "../modals/FileHistoryModal";
 import { api, errMsg } from "../lib/api";
 import { since, stamp } from "../lib/time";
 import { ConfirmDelete } from "./Resources";
-import { Button, Byline, Card, CardHeader, Chip, Empty, KV, Loading, PageHeader, Dot, StatusPill, TableWrap, cx } from "../components/ui";
+import { Button, Byline, Card, CardHeader, Chip, Empty, Input, KV, Loading, PageHeader, Dot, Seg, Select, StatusPill, TableWrap, cx } from "../components/ui";
 
 /** The job list, refreshed every few seconds while a CI build or a deploy is in progress. */
 function useJobs() {
@@ -239,13 +239,74 @@ export function AddJobModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+type JobSort = "deployed" | "created" | "name";
+type JobLayout = "table" | "cards";
+
+/** A per-browser preference (view, sort); falls back when storage is unavailable. */
+function useStored<T extends string>(key: string, fallback: T, allowed: readonly T[]): [T, (v: T) => void] {
+  const [v, setV] = useState<T>(() => {
+    try {
+      const got = localStorage.getItem(key) as T | null;
+      return got && allowed.includes(got) ? got : fallback;
+    } catch {
+      return fallback;
+    }
+  });
+  const set = (next: T) => {
+    setV(next);
+    try {
+      localStorage.setItem(key, next);
+    } catch {
+      /* storage unavailable */
+    }
+  };
+  return [v, set];
+}
+
 export function Jobs() {
   const data = useJobs();
   const { can, openModal } = useApp();
   const { menuItems, runButton, rollbackButton } = useJobActions();
   const nav = useNavigate();
+  const [q, setQ] = useState("");
+  const [sort, setSort] = useStored<JobSort>("wharfline-jobs-sort", "deployed", ["deployed", "created", "name"]);
+  const [layout, setLayout] = useStored<JobLayout>("wharfline-jobs-layout", "table", ["table", "cards"]);
   if (!data) return <Loading />;
-  const rows = data;
+
+  const needle = q.trim().toLowerCase();
+  const found = data.filter(
+    (j) =>
+      !needle ||
+      [j.name, j.createdByName ?? "", j.image ?? "", j.inventory].some((t) => t.toLowerCase().includes(needle)),
+  );
+  // The API lists jobs in the order they were made.
+  const order = new Map(data.map((j, i) => [j.id, i]));
+  // When the last deploy ended, in epoch seconds; older records only keep text like "12분 전" or "어제".
+  const deployedAt = (j: Job): number => {
+    if (j.last.status === "warn") return -1;
+    if (j.last.at) return j.last.at;
+    const t = j.last.time ?? "";
+    const n = parseInt(t, 10) || 1;
+    const ago = t === "방금" ? 0 : t.includes("분") ? n * 60 : t.includes("시간") ? n * 3600 : t === "어제" ? 86400 : t.includes("일") ? n * 86400 : null;
+    return ago === null ? 0 : Date.now() / 1000 - ago;
+  };
+  const rows = [...found].sort((a, b) =>
+    sort === "name"
+      ? a.name.localeCompare(b.name, "ko")
+      : sort === "created"
+        ? (order.get(b.id) ?? 0) - (order.get(a.id) ?? 0)
+        : deployedAt(b) - deployedAt(a),
+  );
+  const actions = (j: Job) => (
+    <span className="inline-flex gap-1" onClick={(e) => e.stopPropagation()}>
+      {rollbackButton(j)}
+      {runButton(j)}
+      {menuItems(j, { withRollback: false }).length > 0 && <MoreMenu label={`${j.name} 메뉴`} items={menuItems(j, { withRollback: false })} />}
+    </span>
+  );
+  const when = (j: Job) =>
+    j.last.status === "warn" ? "-" : <span title={`${stamp(j.last.at)} · ${j.last.duration}`}>{since(j.last.at, j.last.time)}</span>;
+  const empty = needle ? "찾는 작업이 없어요." : "아직 배포 작업이 없어요.";
 
   return (
     <>
@@ -261,61 +322,112 @@ export function Jobs() {
           </>
         )}
       </PageHeader>
-      <Card>
-        <TableWrap>
-          <table className="tbl center">
-            <thead>
-              <tr>
-                <th className="w-[30%]">작업</th>
-                <th>권한</th>
-                <th>상태</th>
-                <th>최근 배포</th>
-                <th>실행</th>
-              </tr>
-            </thead>
-            <tbody>
-              {rows.length === 0 && (
-                <tr>
-                  <td colSpan={5} className="!text-center text-muted py-10">
-                    아직 배포 작업이 없어요.
-                  </td>
-                </tr>
-              )}
-              {rows.map((j) => (
-                <tr key={j.id} className="click" onClick={() => nav(`/jobs/${encodeURIComponent(j.id)}`)}>
-                  <td>
-                    <Link to={`/jobs/${encodeURIComponent(j.id)}`} className="font-medium text-fg hover:underline" onClick={(e) => e.stopPropagation()}>
-                      {j.name}
-                    </Link>
-                    <Byline label="생성자" name={j.createdByName} />
-                  </td>
-                  <td>
-                    <JobFlags job={j} />
-                  </td>
-                  <td>
+      <div className="flex flex-wrap items-center gap-2">
+        <div className="relative flex-1 min-w-[220px] max-w-[380px]">
+          <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-faint pointer-events-none" />
+          <Input aria-label="배포 작업 검색" placeholder="작업, 생성자, 이미지, 인벤토리로 찾기" className="pl-8" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <span className="flex-1" />
+        <Select aria-label="정렬" className="w-[140px]" value={sort} onChange={(e) => setSort(e.target.value as JobSort)}>
+          <option value="deployed">최근 배포순</option>
+          <option value="created">최근 생성순</option>
+          <option value="name">이름순</option>
+        </Select>
+        <Seg
+          options={[
+            { value: "table", label: "표" },
+            { value: "cards", label: "카드" },
+          ]}
+          value={layout}
+          onChange={setLayout}
+        />
+      </div>
+      {layout === "cards" ? (
+        rows.length ? (
+          <div className="grid grid-cols-[repeat(auto-fill,minmax(300px,1fr))] gap-3">
+            {rows.map((j) => (
+              <Card key={j.id} hover className="!overflow-visible">
+                <div className="flex flex-col gap-3 p-4 cursor-pointer h-full" onClick={() => nav(`/jobs/${encodeURIComponent(j.id)}`)}>
+                  <div className="flex items-start gap-2">
+                    <div className="flex-1 min-w-0">
+                      <Link to={`/jobs/${encodeURIComponent(j.id)}`} className="font-semibold text-[14.5px] text-fg hover:underline break-keep" onClick={(e) => e.stopPropagation()}>
+                        {j.name}
+                      </Link>
+                      <Byline label="생성자" name={j.createdByName} />
+                    </div>
                     <DeployState status={j.last.status} />
-                    <BuildLine job={j} />
-                  </td>
-                  <td>
-                    <span className="text-muted text-[12px] tabular-nums">
-                      {j.last.status === "warn" ? "-" : <span title={`${stamp(j.last.at)} · ${j.last.duration}`}>{since(j.last.at, j.last.time)}</span>}
+                  </div>
+                  <div className="flex flex-col gap-1 text-[12.5px] text-muted">
+                    <span className="truncate">
+                      <ImageCell job={j} />
                     </span>
-                  </td>
-                  <td className="!text-right" onClick={(e) => e.stopPropagation()}>
-                    {/* header centered, buttons on the right: 배포하기 and ⋮ line up on every row */}
-                    <span className="inline-flex gap-1">
-                      {rollbackButton(j)}
-                      {runButton(j)}
-                      {menuItems(j, { withRollback: false }).length > 0 && <MoreMenu label={`${j.name} 메뉴`} items={menuItems(j, { withRollback: false })} />}
+                    <span>
+                      {j.inventory} · {j.targets.length ? j.targets.join(", ") : "전체"} · {when(j)}
                     </span>
-                  </td>
+                  </div>
+                  {(j.protected || j.hook) && (
+                    <span className="flex gap-1.5">
+                      {j.protected && <Chip tone="warn" icon="lock">승인 필요</Chip>}
+                      {j.hook && <Chip tone="accent" icon="refresh">자동 배포</Chip>}
+                    </span>
+                  )}
+                  <div className="mt-auto pt-1 flex justify-end">{actions(j)}</div>
+                </div>
+              </Card>
+            ))}
+          </div>
+        ) : (
+          <Card>
+            <Empty>{empty}</Empty>
+          </Card>
+        )
+      ) : (
+        <Card>
+          <TableWrap>
+            <table className="tbl center">
+              <thead>
+                <tr>
+                  <th className="w-[30%]">작업</th>
+                  <th>권한</th>
+                  <th>상태</th>
+                  <th>최근 배포</th>
+                  <th>실행</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-          {!data.length && <Empty>아직 배포 작업이 없어요. 새 배포 작업을 만들어 보세요.</Empty>}
-        </TableWrap>
-      </Card>
+              </thead>
+              <tbody>
+                {rows.length === 0 && (
+                  <tr>
+                    <td colSpan={5} className="!text-center text-muted py-10">
+                      {empty}
+                    </td>
+                  </tr>
+                )}
+                {rows.map((j) => (
+                  <tr key={j.id} className="click" onClick={() => nav(`/jobs/${encodeURIComponent(j.id)}`)}>
+                    <td>
+                      <Link to={`/jobs/${encodeURIComponent(j.id)}`} className="font-medium text-fg hover:underline" onClick={(e) => e.stopPropagation()}>
+                        {j.name}
+                      </Link>
+                      <Byline label="생성자" name={j.createdByName} />
+                    </td>
+                    <td>
+                      <JobFlags job={j} />
+                    </td>
+                    <td>
+                      <DeployState status={j.last.status} />
+                      <BuildLine job={j} />
+                    </td>
+                    <td>
+                      <span className="text-muted text-[12px] tabular-nums">{when(j)}</span>
+                    </td>
+                    <td className="!text-right">{actions(j)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </TableWrap>
+        </Card>
+      )}
     </>
   );
 }
