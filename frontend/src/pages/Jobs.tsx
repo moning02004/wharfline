@@ -281,7 +281,16 @@ export function Jobs() {
                       {j.name}
                     </Link>
                   </td>
-                  <td className="text-[13px] whitespace-nowrap">{j.createdByName ?? <span className="text-faint">-</span>}</td>
+                  <td className="text-[13px] !whitespace-normal">
+                    {/* Names can be long ("브랜드마케팅2팀 이미지 대리"): wrap at spaces, two lines at most, full name on hover */}
+                    {j.createdByName ? (
+                      <span className="w-max max-w-[104px] break-keep line-clamp-2 leading-[1.35]" title={j.createdByName}>
+                        {j.createdByName}
+                      </span>
+                    ) : (
+                      <span className="text-faint">-</span>
+                    )}
+                  </td>
                   <td>
                     <JobFlags job={j} />
                   </td>
