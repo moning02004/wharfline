@@ -60,6 +60,9 @@ def test_passwords_and_recovery_codes():
 def test_policy_strings():
     assert authn.session_limits({"session": "8시간 (활동 없으면 30분)"}) == (8 * 3600, 30 * 60)
     assert authn.session_limits({"session": "12시간 (활동 없으면 1시간)"}) == (12 * 3600, 3600)
+    # No idle part: signed in for the whole lifetime. Nothing set: 6 hours.
+    assert authn.session_limits({"session": "6시간"}) == (6 * 3600, 6 * 3600)
+    assert authn.session_limits({}) == (6 * 3600, 6 * 3600)
     assert authn.lockout_rule({"lockout": "10회 실패 시 1시간 잠금"}) == (10, 3600)
     assert authn.lockout_rule({}) == (5, 15 * 60)
 

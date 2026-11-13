@@ -12,7 +12,7 @@ from pydantic import BaseModel
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from .. import githooks
+from .. import envhook, githooks
 from .. import models as m
 from .. import runner
 from .. import store as s
@@ -100,6 +100,29 @@ async def git_hook(request: Request, db: Session = Depends(get_db)):
     except ValueError as e:
         raise HTTPException(400, "invalid JSON") from e
     return {"ok": True, "provider": provider, **process(db, provider, event, payload)}
+
+
+@hooks.post("/env")
+async def env_hook(request: Request, db: Session = Depends(get_db)):
+    """A project's .env, sent with the uploader's Gitea login; stored as `<repo name>-env` (envhook.py)."""
+    body = await request.body()
+    if len(body) > envhook.MAX_BODY:
+        raise HTTPException(413, ".env 가 너무 커요 (최대 256KB).")
+    auth = request.headers.get("authorization", "")
+    if not auth:
+        raise HTTPException(401, "Gitea 로그인 정보(Authorization 헤더)가 필요해요.")
+    base = envhook.gitea_url()
+    if not base:
+        raise HTTPException(503, "이 Wharfline 에는 WHARFLINE_GITEA_URL 이 설정되지 않았어요.")
+    try:
+        repo, vars_ = envhook.parse(json.loads(body))
+        s.validate_vars(vars_)
+        login = await asyncio.to_thread(envhook.check_push, base, auth, repo)
+    except ValueError as e:
+        raise HTTPException(400, "JSON 으로 보내 주세요.") from e
+    except envhook.Rejected as e:
+        raise HTTPException(e.status, e.detail) from e
+    return {"ok": True, **envhook.save(db, envhook.env_name(repo), vars_, login)}
 
 
 # ---------- settings ----------

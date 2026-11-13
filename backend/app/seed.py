@@ -155,7 +155,7 @@ groups: list[dict] = [
 policy: dict[str, Any] = {
     "enforce2fa": False,  # 2FA is optional; members turn it on under 보안
     "sudoMinutes": 5,
-    "session": "8시간 (활동 없으면 30분)",
+    "session": "6시간",  # stays signed in for 6 hours, active or not
     "lockout": "5회 실패 시 15분 잠금",
     "allowIps": "211.234.10.0/24\n121.165.44.2",
 }

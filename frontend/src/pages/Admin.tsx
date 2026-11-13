@@ -161,9 +161,9 @@ export function Members() {
           <Button variant="primary" icon="plus" onClick={newGroup}>
             그룹 만들기
           </Button>
-        ) : tab === "members" ? (
-          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <InviteNote onClose={c} />)}>
-            멤버 초대
+        ) : tab === "members" && canEdit ? (
+          <Button variant="primary" icon="plus" onClick={() => openModal((c) => <ImportMembersModal onClose={c} />, "md")}>
+            멤버 일괄 추가
           </Button>
         ) : null}
       </PageHeader>
@@ -198,16 +198,99 @@ export function Members() {
   );
 }
 
-function InviteNote({ onClose }: { onClose: () => void }) {
+interface ImportResult {
+  rows: number;
+  newMembers: string[];
+  existingMembers: string[];
+  newGroups: string[];
+  joins: number;
+  errors: { line: number; text: string; reason: string }[];
+  applied: boolean;
+}
+
+const IMPORT_EXAMPLE = `| 그룹 | 계정 |
+|---|---|
+| ifdo | hong@ermore.co.kr |
+| ifdo | kim@ermore.co.kr |`;
+
+/** Owner only: add accounts and group memberships from a "| 그룹 | 계정 |" table (.txt). */
+function ImportMembersModal({ onClose }: { onClose: () => void }) {
+  const { toast, withSudo, refresh, reloadAccess } = useApp();
+  const [text, setText] = useState("");
+  const [preview, setPreview] = useState<{ text: string; result: ImportResult } | null>(null);
+  const [busy, setBusy] = useState(false);
+  const fresh = preview && preview.text === text ? preview.result : null;
+
+  const readFile = async (f: File | undefined) => {
+    if (!f) return;
+    if (f.size > 1024 * 1024) return toast("파일이 너무 커요 (최대 1MB)", "error");
+    setText(await f.text());
+  };
+  const check = async () => {
+    setBusy(true);
+    try {
+      setPreview({ text, result: await api.post<ImportResult>("/members/import", { text }) });
+    } catch (e) {
+      toast(errMsg(e), "error");
+    } finally {
+      setBusy(false);
+    }
+  };
+  const apply = () =>
+    withSudo("멤버 일괄 추가", async () => {
+      const r = await api.post<ImportResult>("/members/import", { text, apply: true });
+      toast(`새 멤버 ${r.newMembers.length}명, 새 그룹 ${r.newGroups.length}개를 추가했어요`);
+      refresh();
+      reloadAccess();
+      onClose();
+    });
+
   return (
     <>
-      <ModalHead title="멤버 초대" sub="초대 메일은 24시간 동안 유효한 일회용 링크로 보내져요." onClose={onClose} />
+      <ModalHead title="멤버 일괄 추가" sub="| 그룹 | 계정 | 표를 .txt 로 올리거나 붙여 넣어요." onClose={onClose} />
       <ModalBody>
-        <p className="m-0 text-muted">초대한 멤버는 처음 로그인할 때 2단계 인증을 설정하고, 여기서 역할과 그룹을 정해 주면 돼요.</p>
+        <Banner icon="info">
+          새 계정은 <b>Viewer</b>, 비밀번호 <b className="font-mono">0000</b> 으로 만들어지고 처음 로그인할 때 새 비밀번호를 정해요. 이미 있는 계정은 역할과 비밀번호를 그대로 두고 그룹만 더해요. 없는 그룹은 새로 만들어요(작업·실행 기록·보안 메뉴만 보여요. 그룹 탭에서 넓혀 주세요).
+        </Banner>
+        <Field label=".txt 파일" htmlFor="impFile">
+          <input id="impFile" type="file" accept=".txt,.md,text/plain" className="text-[13px]" onChange={(e) => readFile(e.target.files?.[0])} />
+        </Field>
+        <Field label="내용" htmlFor="impText">
+          <Textarea id="impText" rows={8} className="font-mono" placeholder={IMPORT_EXAMPLE} value={text} onChange={(e) => setText(e.target.value)} />
+        </Field>
+        {fresh && (
+          <div className="flex flex-col gap-2 text-[13px]">
+            <div className="flex gap-2 flex-wrap">
+              <Chip tone="ok">새 멤버 {fresh.newMembers.length}명</Chip>
+              <Chip>이미 있음 {fresh.existingMembers.length}명</Chip>
+              <Chip tone="ok">새 그룹 {fresh.newGroups.length}개</Chip>
+              <Chip>그룹 추가 {fresh.joins}건</Chip>
+              {fresh.errors.length > 0 && <Chip tone="bad">틀린 줄 {fresh.errors.length}개</Chip>}
+            </div>
+            {fresh.newGroups.length > 0 && <p className="m-0 text-muted">새 그룹: {fresh.newGroups.join(", ")}</p>}
+            {fresh.newMembers.length > 0 && <p className="m-0 text-muted break-all">새 멤버: {fresh.newMembers.join(", ")}</p>}
+            {fresh.errors.map((x, i) => (
+              <p key={i} className="m-0 text-bad">
+                {x.line > 0 && <span className="font-mono">{x.line}줄 </span>}
+                {x.reason}
+                {x.text && <span className="font-mono text-faint"> · {x.text}</span>}
+              </p>
+            ))}
+          </div>
+        )}
       </ModalBody>
       <ModalFoot>
-        <Button variant="primary" onClick={onClose}>
-          확인
+        <Button onClick={onClose}>취소</Button>
+        <Button onClick={check} disabled={!text.trim() || busy}>
+          미리 보기
+        </Button>
+        <Button
+          variant="primary"
+          onClick={apply}
+          disabled={!fresh || fresh.errors.length > 0 || (!fresh.newMembers.length && !fresh.joins)}
+          title={!fresh ? "먼저 미리 보기로 확인해 주세요" : undefined}
+        >
+          추가하기
         </Button>
       </ModalFoot>
     </>
@@ -571,6 +654,7 @@ export function Security() {
             </Field>
             <Field label="세션 만료" htmlFor="p3">
               <Select id="p3" value={p.session} onChange={(e) => setP({ ...p, session: e.target.value })}>
+                <option>6시간</option>
                 <option>8시간 (활동 없으면 30분)</option>
                 <option>12시간 (활동 없으면 1시간)</option>
               </Select>

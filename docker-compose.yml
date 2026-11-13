@@ -28,6 +28,8 @@ services:
       WHARFLINE_SEED_PASSWORD: ${WHARFLINE_SEED_PASSWORD:-wharfline}
       # 1 behind HTTPS: the session cookie gets the Secure flag.
       WHARFLINE_COOKIE_SECURE: ${WHARFLINE_COOKIE_SECURE:-0}
+      # Gitea that checks .env uploads (POST /api/hooks/env). Empty: uploads are refused.
+      WHARFLINE_GITEA_URL: ${WHARFLINE_GITEA_URL:-}
     secrets: [master_keys]
     depends_on:
       db:

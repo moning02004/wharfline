@@ -191,12 +191,19 @@ def _seconds(n: str, unit: str) -> int:
     return int(n) * (3600 if unit == "시간" else 60)
 
 
+SESSION_DEFAULT = "6시간"
+
+
 def session_limits(policy: dict) -> tuple[int, int]:
-    """(absolute lifetime, idle timeout) in seconds, from e.g. "8시간 (활동 없으면 30분)"."""
-    text = str(policy.get("session") or "")
+    """(absolute lifetime, idle timeout) in seconds, from e.g. "6시간" or "8시간 (활동 없으면 30분)".
+
+    Without an idle part the session simply lasts the whole lifetime.
+    """
+    text = str(policy.get("session") or SESSION_DEFAULT)
     absolute = re.search(r"^\s*(\d+)\s*(시간|분)", text)
     idle = re.search(r"활동 없으면\s*(\d+)\s*(시간|분)", text)
-    return (_seconds(*absolute.groups()) if absolute else 8 * 3600, _seconds(*idle.groups()) if idle else 30 * 60)
+    total = _seconds(*absolute.groups()) if absolute else 6 * 3600
+    return total, min(total, _seconds(*idle.groups())) if idle else total
 
 
 def lockout_rule(policy: dict) -> tuple[int, int]:

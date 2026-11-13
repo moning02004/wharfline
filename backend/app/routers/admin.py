@@ -73,6 +73,113 @@ def set_member_groups(email: str, body: MemberGroupsIn, db: Session = Depends(ge
     return member.to_dict()
 
 
+# ---------- bulk add: a "| 그룹 | 계정 |" table ----------
+
+IMPORT_PASSWORD = "0000"  # everyone added in bulk starts here and must pick a new password at the first login
+IMPORT_MAX_ROWS = 1000
+NEW_GROUP_MENUS = ["jobs", "runs", "security"]  # a group made by the import; the Owner widens it afterwards
+_EMAIL_RE = re.compile(r"^[^@\s|]+@[^@\s|]+\.[^@\s|]+$")
+_SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
+_HEADERS = ({"그룹", "group"}, {"계정", "이메일", "account", "email"})
+
+
+def parse_member_table(text: str) -> tuple[list[tuple[int, str, str]], list[dict]]:
+    """Rows (line, group, email) and errors from a Markdown table with the columns 그룹 and 계정."""
+    rows: list[tuple[int, str, str]] = []
+    errors: list[dict] = []
+    for n, raw in enumerate(text.splitlines(), 1):
+        line = raw.strip()
+        if not line:
+            continue
+
+        def bad(reason: str) -> None:
+            errors.append({"line": n, "text": line[:200], "reason": reason})
+
+        if not line.startswith("|"):
+            bad("| 그룹 | 계정 | 형식으로 적어 주세요.")
+            continue
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if all(_SEPARATOR_RE.match(c) for c in cells):
+            continue
+        if len(cells) == 2 and cells[0].lower() in _HEADERS[0] and cells[1].lower() in _HEADERS[1]:
+            continue
+        if len(cells) != 2:
+            bad(f"칸이 {len(cells)}개예요. 그룹과 계정 두 칸만 적어 주세요.")
+            continue
+        group, email = cells[0], cells[1].lower()
+        if not group:
+            bad("그룹이 비어 있어요.")
+        elif len(group) > 64:
+            bad("그룹 이름은 64자까지예요.")
+        elif not _EMAIL_RE.match(email) or len(email) > 255:
+            bad(f"계정은 이메일로 적어 주세요: {cells[1] or '(빈 칸)'}")
+        else:
+            rows.append((n, group, email))
+    if len(rows) > IMPORT_MAX_ROWS:
+        errors.append({"line": 0, "text": "", "reason": f"한 번에 {IMPORT_MAX_ROWS}줄까지 올릴 수 있어요."})
+    return rows, errors
+
+
+class ImportIn(BaseModel):
+    text: str
+    apply: bool = False  # false: only show what would happen
+
+
+@router.post("/members/import", dependencies=[Depends(require_owner)])
+def import_members(body: ImportIn, db: Session = Depends(get_db)):
+    """Owner only. New accounts are Viewers with the password 0000 and must change it at the first login;
+    existing accounts keep their role and password and only join the listed groups. Missing groups are created."""
+    if body.apply and not s.sudo_active(db):
+        raise HTTPException(403, "sudo_required")
+    rows, errors = parse_member_table(body.text)
+    if not rows and not errors:
+        errors.append({"line": 0, "text": "", "reason": "올릴 줄이 없어요. | 그룹 | 계정 | 표로 적어 주세요."})
+
+    groups = {g.name.lower(): g for g in db.scalars(select(m.Group))}
+    new_groups: list[str] = []
+    new_keys: set[str] = set()
+    new_members: list[str] = []
+    existing: list[str] = []
+    joins: list[tuple[str, str]] = []  # (group name key, email)
+    for _, group, email in rows:
+        key = group.lower()
+        if key not in groups and key not in new_keys:
+            new_groups.append(group)
+            new_keys.add(key)
+        if email not in new_members and email not in existing:
+            (existing if db.get(m.Member, email) else new_members).append(email)
+        g = groups.get(key)
+        if (key, email) not in joins and not (g and any(x.email == email for x in g.members)):
+            joins.append((key, email))
+
+    out = {"rows": len(rows), "newMembers": new_members, "existingMembers": existing, "newGroups": new_groups,
+           "joins": len(joins), "errors": errors, "applied": False}
+    if not body.apply:
+        return out
+    if errors:
+        raise HTTPException(400, "틀린 줄을 고친 뒤 다시 올려 주세요.")
+
+    base = s.new_id("g")
+    for i, name in enumerate(new_groups):
+        g = m.Group(id=f"{base}{i}", name=name, menus=list(NEW_GROUP_MENUS), all_builds=False, repos=[])
+        db.add(g)
+        groups[name.lower()] = g
+    temp_hash = authn.hash_password(IMPORT_PASSWORD)  # one bcrypt for the whole upload
+    for email in new_members:
+        db.add(m.Member(email=email, name=email.split("@", 1)[0], role="Viewer", tfa=False, last="-",
+                        password_hash=temp_hash, must_change_password=True))
+    db.flush()
+    for key, email in joins:
+        member = db.get(m.Member, email)
+        g = groups[key]
+        if g not in member.groups:
+            member.groups.append(g)
+    s.log_act(db, "멤버 일괄 추가", f"새 멤버 {len(new_members)}명 · 기존 멤버 {len(existing)}명 · 새 그룹 {len(new_groups)}개 · 그룹 추가 {len(joins)}건",
+              "warn" if new_members else "ok")
+    db.commit()
+    return {**out, "applied": True}
+
+
 # ---------- groups: which menus and builds their members see ----------
 
 @router.get("/access")
