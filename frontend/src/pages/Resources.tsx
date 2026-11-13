@@ -6,7 +6,8 @@ import type { Build, GitProvider, Image, ImageUsage, Inventory as Inv, Key, Regi
 import { HostKeyModal, NewHostModal, NewImageModal, NewInventoryModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, Card, CardHeader, Chip, Dot, ErrorText, Field, Input, Loading, PageHeader, Seg, Select, TableWrap, Textarea } from "../components/ui";
+import { Banner, Button, Card, CardHeader, Chip, Dot, ErrorText, Field, Input, KV, Loading, PageHeader, Seg, Select, TableWrap, Textarea } from "../components/ui";
+import { MoreMenu, type MenuItem } from "../components/Menu";
 import { PROVIDER_NAME } from "../components/BuildBadge";
 
 const Mono = ({ children }: { children: React.ReactNode }) => <span className="font-mono">{children}</span>;
@@ -55,12 +56,11 @@ export function Registries() {
   const { data } = useApi<{ registries: Registry[]; images: Image[] }>("/registries");
   const { openModal, can } = useApp();
   const git = useApi<GitSettings>("/integrations/git").data;
-  const [picked, setProvider] = useState<GitProvider | null>(null);
-  const provider = picked ?? lastSeenProvider(git) ?? "gitea";
+  const provider = lastSeenProvider(git) ?? "gitea";
   if (!data) return <Loading />;
   return (
     <>
-      <PageHeader title="이미지 레지스트리" desc="배포할 도커 이미지와, 이미지를 받아 올 곳이에요. 공개 이미지(postgres, nginx 등)는 레지스트리 없이 바로 받아요. 레지스트리는 비공개 이미지를 받을 토큰이 필요할 때만 추가하세요. GitHub, GitLab, Gitea 레지스트리를 지원하고, 이미지 주소의 호스트로 알아서 골라요.">
+      <PageHeader title="이미지 레지스트리" desc="비공개 이미지를 받을 곳과, 배포에 쓰는 이미지예요.">
         {can("resources") && (
           <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewRegistryModal onClose={c} />)}>
             레지스트리 추가
@@ -109,6 +109,18 @@ export function Registries() {
         </TableWrap>
       </Card>
       <ImagesCard images={data.images} registries={data.registries} provider={provider} />
+    </>
+  );
+}
+
+/** 웹훅: the address and secret Git hosts post CI builds and image pushes to. */
+export function Webhooks() {
+  const git = useApi<GitSettings>("/integrations/git").data;
+  const [picked, setProvider] = useState<GitProvider | null>(null);
+  const provider = picked ?? lastSeenProvider(git) ?? "gitea";
+  return (
+    <>
+      <PageHeader title="웹훅" desc="CI 빌드와 새 이미지 알림을 받아요." />
       <GitCard settings={git} provider={provider} onProvider={setProvider} />
     </>
   );
@@ -117,13 +129,6 @@ export function Registries() {
 function ImagesCard({ images, registries, provider }: { images: Image[]; registries: Registry[]; provider: GitProvider }) {
   const { runAction, toast, openModal, can, withSudo, refresh } = useApp();
   const manage = can("resources");
-  const [editing, setEditing] = useState<string | null>(null);
-  const [repo, setRepo] = useState("");
-
-  const save = async (ref: string) => {
-    const ok = await runAction(() => api.put("/images/source", { ref, sourceRepo: repo }), repo ? "빌드 레포를 연결했어요" : "연결을 풀었어요");
-    if (ok) setEditing(null);
-  };
   const test = (ref: string, fail: boolean) =>
     runAction(() => api.post("/integrations/git/test", { ref, fail, provider }), fail ? "실패하는 시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요." : "시험 빌드를 보냈어요. 배포 작업 화면에서 확인해 보세요.").catch(() => toast("시험 빌드를 보내지 못했어요"));
 
@@ -143,19 +148,31 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
           })
         }
       >
-        <span className="font-mono font-medium">{i.ref}</span>와(과) Wharfline이 알던 태그 {i.tags.length}개를 지워요. 레지스트리에 있는 이미지는 그대로예요. 다시 쓰려면 배포 작업에
-        적거나 이미지 추가로 넣으면 돼요.
+        <span className="font-mono font-medium">{i.ref}</span>와(과) 태그 {i.tags.length}개를 Wharfline에서 지워요. 레지스트리의 이미지는 그대로예요.
       </ConfirmDelete>
     ));
 
+  const items = (i: Image): MenuItem[] => [
+    ...(i.tags.length ? [{ label: `태그 ${i.tags.length}개`, icon: "list" as const, onClick: () => showTags(i) }] : []),
+    ...(manage
+      ? [
+          { label: i.sourceRepo ? `빌드 레포 · ${i.sourceRepo}` : "빌드 레포 연결", icon: "git" as const, onClick: () => openModal((c) => <SourceRepoModal image={i} onClose={c} />) },
+          ...(i.sourceRepo
+            ? [
+                { label: "시험 빌드", icon: "play" as const, onClick: () => test(i.ref, false), title: `${PROVIDER_NAME[provider]} 형식으로 보내요` },
+                { label: "실패 시험", icon: "alert" as const, onClick: () => test(i.ref, true) },
+              ]
+            : []),
+          { label: "삭제", icon: "trash" as const, danger: true, disabled: i.usedBy.length > 0, title: i.usedBy.length ? "배포 작업에서 쓰고 있어 지울 수 없어요" : undefined, onClick: () => del(i) },
+        ]
+      : []),
+  ];
+
   return (
     <Card>
-      <CardHeader
-        title="이미지"
-        sub="배포 작업에 이미지를 적으면 여기에 저절로 들어와요. 빌드 레포 연결은 선택이에요. 연결하면 Git 호스트(Gitea, GitHub, GitLab)에서 빌드하는 동안 배포 작업에 '빌드 중'이 보이고 새 태그가 들어와요."
-      >
+      <CardHeader title="이미지">
         {manage && (
-          <Button icon="plus" onClick={() => openModal((c) => <NewImageModal registries={registries} onClose={c} />)}>
+          <Button size="sm" icon="plus" onClick={() => openModal((c) => <NewImageModal registries={registries} onClose={c} />)}>
             이미지 추가
           </Button>
         )}
@@ -165,9 +182,7 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
           <thead>
             <tr>
               <th>이미지</th>
-              <th>받는 곳</th>
               <th>최신 태그</th>
-              <th>빌드 레포</th>
               <th>쓰는 작업</th>
               <th />
             </tr>
@@ -175,8 +190,8 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
           <tbody>
             {!images.length && (
               <tr>
-                <td colSpan={6} className="text-center text-muted py-6">
-                  아직 이미지가 없어요. 배포 작업에 이미지를 적거나 이미지 추가로 넣어 보세요.
+                <td colSpan={4} className="!text-center text-muted py-6">
+                  아직 이미지가 없어요.
                 </td>
               </tr>
             )}
@@ -186,94 +201,18 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
                 <tr key={i.ref}>
                   <td className="font-mono">{i.ref}</td>
                   <td>
-                    {(() => {
-                      const r = registries.find((x) => x.id === i.registry);
-                      if (!r) return <span className="text-faint">공개 · 로그인 없이</span>;
-                      return (
-                        <span title={r.hasSecret ? "이 레지스트리의 토큰으로 로그인해서 받아요" : "토큰이 없어 로그인 없이 받아요"}>
-                          <span className="font-mono text-[12.5px]">
-                            {r.host}/{r.namespace}
-                          </span>
-                          {!r.hasSecret && <span className="text-faint text-[12px]"> · 토큰 없음</span>}
-                        </span>
-                      );
-                    })()}
-                  </td>
-                  <td>
                     <span className="font-mono">{t?.name ?? "-"}</span> <span className="text-faint text-[12px]">{t?.pushed}</span>
-                    {i.tags.length > 0 && (
-                      <button type="button" className="ml-1.5 text-[12px] text-accent hover:underline" onClick={() => showTags(i)}>
-                        태그 {i.tags.length}개
-                      </button>
-                    )}
-                  </td>
-                  <td>
-                    {editing === i.ref ? (
-                      <form
-                        className="flex items-center gap-1.5"
-                        onSubmit={(e) => {
-                          e.preventDefault();
-                          save(i.ref);
-                        }}
-                      >
-                        <Input mono autoFocus className="!h-7 w-[200px]" placeholder="owner/name" value={repo} onChange={(e) => setRepo(e.target.value)} aria-label="빌드 레포" />
-                        <Button size="sm" variant="primary" type="submit">
-                          저장
-                        </Button>
-                        <Button size="sm" variant="ghost" onClick={() => setEditing(null)}>
-                          취소
-                        </Button>
-                      </form>
-                    ) : !manage ? (
-                      <span className="font-mono text-[12.5px]">{i.sourceRepo ?? <span className="font-sans text-faint">없음</span>}</span>
-                    ) : (
-                      <button
-                        type="button"
-                        className="font-mono text-[12.5px] rounded px-1 -mx-1 hover:bg-hover"
-                        onClick={() => {
-                          setRepo(i.sourceRepo ?? "");
-                          setEditing(i.ref);
-                        }}
-                      >
-                        {i.sourceRepo ?? <span className="font-sans text-accent">+ 연결</span>}
-                      </button>
-                    )}
                   </td>
                   <td>
                     {i.usedBy.length ? (
-                      <Button size="sm" variant="ghost" onClick={() => openModal((c) => <ImageUsageModal image={i} onClose={c} />, "md")}>
-                        자세히
-                      </Button>
+                      <button type="button" className="link text-fg" onClick={() => openModal((c) => <ImageUsageModal image={i} onClose={c} />, "md")}>
+                        {i.usedBy.length}개
+                      </button>
                     ) : (
                       <span className="text-faint">없음</span>
                     )}
                   </td>
-                  <td className="text-right">
-                    {manage && (
-                      <span className="inline-flex gap-1">
-                        {i.sourceRepo && (
-                          <>
-                            <Button size="sm" variant="ghost" onClick={() => test(i.ref, false)} title={`${PROVIDER_NAME[provider]} 형식으로 보내요`}>
-                              시험 빌드
-                            </Button>
-                            <Button size="sm" variant="dangerGhost" onClick={() => test(i.ref, true)}>
-                              실패 시험
-                            </Button>
-                          </>
-                        )}
-                        <Button
-                          size="sm"
-                          variant="ghost"
-                          iconOnly
-                          icon="trash"
-                          aria-label={`${i.ref} 이미지 삭제`}
-                          title={i.usedBy.length ? "배포 작업에서 쓰고 있어 지울 수 없어요" : "이미지 삭제"}
-                          disabled={i.usedBy.length > 0}
-                          onClick={() => del(i)}
-                        />
-                      </span>
-                    )}
-                  </td>
+                  <td className="text-right">{items(i).length > 0 && <MoreMenu items={items(i)} />}</td>
                 </tr>
               );
             })}
@@ -281,6 +220,35 @@ function ImagesCard({ images, registries, provider }: { images: Image[]; registr
         </table>
       </TableWrap>
     </Card>
+  );
+}
+
+/** Link an image to the Git repo that builds it, so builds show beside its jobs. Usually learned from the first push. */
+function SourceRepoModal({ image, onClose }: { image: Image; onClose: () => void }) {
+  const { runAction } = useApp();
+  const [repo, setRepo] = useState(image.sourceRepo ?? "");
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const ok = await runAction(() => api.put("/images/source", { ref: image.ref, sourceRepo: repo.trim() }), repo.trim() ? "빌드 레포를 연결했어요" : "연결을 풀었어요");
+    if (ok) onClose();
+  };
+  return (
+    <>
+      <ModalHead title="빌드 레포" sub={image.ref} onClose={onClose} />
+      <form id="srcRepo" onSubmit={save} className="contents">
+        <ModalBody>
+          <Field label="이 이미지를 빌드하는 저장소" htmlFor="srcRepoIn" hint="연결하면 배포 작업에 빌드 진행이 보여요. 첫 이미지 푸시 때 저절로 연결돼요.">
+            <Input id="srcRepoIn" mono autoFocus placeholder="owner/name" value={repo} onChange={(e) => setRepo(e.target.value)} />
+          </Field>
+        </ModalBody>
+      </form>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" type="submit" form="srcRepo">
+          저장
+        </Button>
+      </ModalFoot>
+    </>
   );
 }
 
@@ -382,7 +350,7 @@ function GitCard({ settings, provider, onProvider }: { settings: GitSettings | n
 
   return (
     <Card>
-      <CardHeader title="Git 연동" sub="Gitea, GitHub, GitLab의 CI 빌드 진행과 새 이미지 푸시를 실시간으로 받아요.">
+      <CardHeader title="Git 연동">
         {settings?.secretSet ? <Dot tone="ok">연결 준비됨</Dot> : <Dot tone="warn">비밀값 필요</Dot>}
       </CardHeader>
       <div className="grid grid-cols-[minmax(0,1fr)] lg:grid-cols-2 gap-x-8 gap-y-5 p-4">
@@ -447,7 +415,7 @@ function GitCard({ settings, provider, onProvider }: { settings: GitSettings | n
               <li key={`${provider}-${i}`}>{step}</li>
             ))}
             <li>
-              위 이미지 표에서 이미지마다 <B>빌드 레포</B>({provider === "gitlab" ? "group/project" : "owner/name"})를 연결하면 끝이에요. 자동 배포가 켜진 작업은{" "}
+              <B>빌드 레포</B>는 첫 이미지 푸시 때 저절로 연결돼요. 바꾸려면 이미지 레지스트리의 ⋮ 메뉴에서 해요. 자동 배포가 켜진 작업은{" "}
               <Mono>v</Mono>로 시작하는 새 태그가 올라오면 바로 배포돼요.
             </li>
             <li className="text-faint">
@@ -523,7 +491,7 @@ export function Repos() {
         title="플레이북 레포"
         desc={
           <>
-            배포 작업이 실행하는 Ansible 플레이북이 있는 곳이에요. 따로 연결하지 않아도 돼요. 배포 작업을 만들 때 Git 주소를 넣으면 여기에 저절로 들어오고, 같은 주소와 브랜치는 다시 써요. 비공개 저장소에 쓰는 SSH 키나 토큰은 <Link to="/keys" className="link text-fg">키 저장소</Link>에서 가져와요.
+            배포 작업이 쓰는 Ansible 플레이북 저장소예요. 작업을 만들 때 저절로 들어와요.
           </>
         }
       />
@@ -838,7 +806,7 @@ export function Inventory() {
     <>
       <PageHeader
         title="인벤토리"
-        desc="배포 대상 서버 묶음이에요. 서버마다 그룹을 정해 두면 배포 작업에서 그룹만 골라 보낼 수 있어요. 처음 연결할 때 호스트 키 지문을 저장하고, 이후 바뀌면 배포를 막아요."
+        desc="배포할 서버 묶음이에요."
       >
         {manage && (
           <>
@@ -850,26 +818,17 @@ export function Inventory() {
       </PageHeader>
       {data.map((inv) => {
         const sharedWith = data.filter((o) => o.id !== inv.id && o.key === inv.key).map((o) => o.name);
-        const gm: Record<string, number> = {};
-        inv.hosts.forEach((h) => (gm[h.group] = (gm[h.group] ?? 0) + 1));
         return (
           <Card key={inv.id}>
             <CardHeader
               title={
                 <span className="flex items-center gap-2 flex-wrap">
                   {inv.name}
-                  <span className="inline-flex items-center gap-1 text-xs text-muted font-mono font-normal" title="배포 사용자 · SSH 키">
-                    <Icon name="users" className="size-[13px]" />
-                    {inv.user}
-                    <Icon name="key" className="size-[13px] ml-1.5" />
+                  <span className="inline-flex items-center gap-1 text-xs text-muted font-mono font-normal" title="SSH 키">
+                    <Icon name="key" className="size-[13px]" />
                     {inv.key}
                   </span>
                   {sharedWith.length > 0 && <SharedKeyChip others={sharedWith} />}
-                  {Object.entries(gm).map(([g, n]) => (
-                    <Chip key={g}>
-                      {g} · {n}
-                    </Chip>
-                  ))}
                 </span>
               }
             >
@@ -959,19 +918,16 @@ export function Keys() {
 
   return (
     <>
-      <PageHeader title="키 저장소" desc="서버 접속용 SSH 키, Git 저장소(HTTPS)용 액세스 토큰, 서버 로그인 비밀번호를 저장해요. 모두 암호화해 저장하고, 저장한 뒤에는 화면에 다시 보여주지 않아요.">
+      <PageHeader title="키 저장소" desc="SSH 키, 액세스 토큰, 서버 비밀번호를 암호화해 저장해요.">
         {manage && (
           <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} />)}>
             키 추가
           </Button>
         )}
       </PageHeader>
-      <Banner icon="info" title="비공개 키와 토큰은 내려받거나 열람할 수 없어요">
-        SSH 키는 공개 키와 지문만, 토큰은 계정과 끝 4자리만, 로그인 비밀번호는 계정만 볼 수 있어요. 키를 잃어버렸다면 새로 만들고 서버의 authorized_keys를 바꾸는 쪽이 안전해요.
-      </Banner>
       {data.some((k) => k.sharedAcrossInventories) && (
         <Banner tone="warn" icon="alert" title="여러 인벤토리가 같은 SSH 키를 써요">
-          키 하나가 새면 그 키를 쓰는 모든 환경이 함께 열려요. production과 staging처럼 환경마다 키를 따로 만들어 쓰세요.
+          환경마다 키를 따로 쓰는 게 안전해요.
         </Banner>
       )}
       <AccessFromCard />
@@ -982,30 +938,23 @@ export function Keys() {
               <tr>
                 <th>이름</th>
                 <th>종류</th>
-                <th>지문 / 계정</th>
-                <th>사용 중</th>
+                <th>쓰는 곳</th>
                 <th>마지막 사용</th>
-                <th>만든 사람</th>
                 <th />
               </tr>
             </thead>
             <tbody>
               {data.map((k) => (
-                <tr key={k.id}>
+                <tr key={k.id} className="click" onClick={() => openModal((c) => <KeyDetailModal k={k} manage={manage} onDelete={() => del(k)} onClose={c} />)}>
                   <td className="font-medium">{k.name}</td>
                   <td>
                     <Chip>{k.type}</Chip>
                   </td>
-                  <td className="font-mono text-muted">{k.fingerprint}</td>
-                  <td className="tabular-nums">
+                  <td>
                     {k.kind === "ssh" && k.inventories?.length ? (
-                      <span className="flex flex-wrap items-center gap-1.5">
-                        {k.inventories.map((n) => (
-                          <Chip key={n} mono>
-                            {n}
-                          </Chip>
-                        ))}
-                        {k.sharedAcrossInventories && <SharedKeyChip />}
+                      <span className="inline-flex items-center gap-1.5">
+                        <span className="font-mono text-[12.5px]">{k.inventories.join(", ")}</span>
+                        {k.sharedAcrossInventories && <Icon name="alert" className="size-3.5 text-warn" />}
                       </span>
                     ) : k.usedCount ? (
                       `${keyUser(k)} ${k.usedCount}곳`
@@ -1014,22 +963,10 @@ export function Keys() {
                     )}
                   </td>
                   <td className="text-muted">{k.lastUsed}</td>
-                  <td className="text-muted">
-                    {k.createdBy} · {k.createdAt}
-                  </td>
                   <td className="text-right">
-                    <span className="inline-flex gap-1">
-                      {k.kind === "ssh" && (
-                        <Button size="sm" variant="ghost" onClick={() => openModal((c) => <PubKeyModal k={k} onClose={c} />)}>
-                          공개 키
-                        </Button>
-                      )}
-                      {manage && (
-                        <Button size="sm" variant="dangerGhost" onClick={() => del(k)}>
-                          삭제
-                        </Button>
-                      )}
-                    </span>
+                    <Button size="sm" variant="ghost">
+                      자세히
+                    </Button>
                   </td>
                 </tr>
               ))}
@@ -1037,6 +974,65 @@ export function Keys() {
           </table>
         </TableWrap>
       </Card>
+    </>
+  );
+}
+
+/** A key's details: what it is, where it's used, who made it; SSH keys show their public key. */
+function KeyDetailModal({ k, manage, onDelete, onClose }: { k: Key; manage: boolean; onDelete: () => void; onClose: () => void }) {
+  const { openModal } = useApp();
+  const where =
+    k.kind === "ssh" && k.inventories?.length ? `인벤토리 ${k.inventories.join(", ")}` : k.usedCount ? `${keyUser(k)} ${k.usedCount}곳` : "아직 안 써요";
+  return (
+    <>
+      <ModalHead title={k.name} sub={k.type} onClose={onClose} />
+      <ModalBody>
+        <KV
+          labelWidth={92}
+          items={[
+            [k.kind === "ssh" ? "지문" : "계정", <span className="break-all">{k.fingerprint}</span>, "font-mono text-[12.5px] !whitespace-normal"],
+            ["쓰는 곳", where],
+            ["마지막 사용", k.lastUsed],
+            ["만든 사람", `${k.createdBy} · ${k.createdAt}`],
+          ]}
+        />
+        {k.sharedAcrossInventories && (
+          <Banner tone="warn" icon="alert" title="여러 인벤토리가 이 키를 써요">
+            환경마다 키를 따로 쓰는 게 안전해요.
+          </Banner>
+        )}
+      </ModalBody>
+      <ModalFoot between>
+        {manage ? (
+          <Button
+            variant="dangerGhost"
+            icon="trash"
+            onClick={() => {
+              onClose();
+              onDelete();
+            }}
+          >
+            삭제
+          </Button>
+        ) : (
+          <span />
+        )}
+        <div className="flex gap-2">
+          {k.kind === "ssh" && (
+            <Button
+              onClick={() => {
+                onClose();
+                openModal((c) => <PubKeyModal k={k} onClose={c} />);
+              }}
+            >
+              공개 키 보기
+            </Button>
+          )}
+          <Button variant="primary" onClick={onClose}>
+            닫기
+          </Button>
+        </div>
+      </ModalFoot>
     </>
   );
 }
@@ -1073,7 +1069,7 @@ function AccessFromCard() {
             {data.addresses.length ? <Chip tone="ok">설정됨</Chip> : <Chip tone="warn">비어 있음</Chip>}
           </span>
         }
-        sub="Wharfline이 서버에 접속할 때 나가는 IP예요. 공개 키 줄에 from=으로 붙어서, 키가 새어도 이 주소 밖에서는 못 써요."
+        sub="공개 키에 from=으로 붙어, 이 주소에서만 접속돼요."
       >
         {canEdit && !editing && (
           <Button size="sm" icon="edit" onClick={() => setText(data.addresses.join("\n"))}>
@@ -1106,7 +1102,7 @@ function AccessFromCard() {
           </span>
         ) : (
           <span className="text-muted text-[13px]">
-            아직 없어요. 지금 서버에 넣는 공개 키는 어디서든 접속을 받아요.{canEdit ? "" : " Owner나 Admin이 넣을 수 있어요."}
+            아직 없어요. 지금은 어디서든 접속을 받아요.
           </span>
         )}
       </div>

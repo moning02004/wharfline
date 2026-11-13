@@ -365,7 +365,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
       <BackLink onClick={onClose} />
       <PageHeader
         title={title}
-        desc="Ansible 플레이북을 올리면 필요한 값을 찾아 입력칸으로 보여 드려요. 플레이북을 몰라도 칸만 채우면 서버에 배포할 수 있어요."
+        desc="플레이북을 올리면 필요한 값을 입력칸으로 보여 드려요."
       />
 
       <div className="flex flex-col gap-5 max-w-[880px]">

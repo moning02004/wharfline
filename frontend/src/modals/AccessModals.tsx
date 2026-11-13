@@ -8,7 +8,7 @@ import { Button, Check, ErrorText, Field, Input, Seg, cx } from "../components/u
 
 const REPO_RE = /^[^/\s]+\/[^/\s]+$/;
 // 배포 알림 is Owner-only (the server has no such menu), so groups never grant it.
-export const GROUP_MENUS = ROUTES.filter((r) => r.id !== "dashboard" && r.id !== "notify");
+export const GROUP_MENUS = ROUTES.filter((r) => r.id !== "dashboard" && r.id !== "notify" && r.id !== "webhooks"); // 웹훅 follows 이미지 레지스트리
 
 /** `short`: just the count, for tight lists. */
 export function buildsLabel(g: Group, short = false): string {

@@ -21,6 +21,7 @@ export const ROUTES = [
   { id: "runs", path: "/runs", label: "실행 기록", icon: "history", grp: "배포" },
   { id: "registries", path: "/registries", label: "이미지 레지스트리", icon: "box", grp: "리소스" },
   { id: "repos", path: "/repos", label: "플레이북 레포", icon: "git", grp: "리소스" },
+  { id: "webhooks", path: "/webhooks", label: "웹훅", icon: "bell", grp: "리소스" },
   { id: "inventory", path: "/inventory", label: "인벤토리", icon: "server", grp: "리소스" },
   { id: "keys", path: "/keys", label: "키 저장소", icon: "key", grp: "리소스" },
   { id: "envs", path: "/envs", label: "환경 변수", icon: "file", grp: "리소스" },
@@ -261,7 +262,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const role: Role = viewAs?.role ?? access.role ?? session?.me?.role ?? "Viewer";
-  const canSee = useCallback((id: string) => id === "dashboard" || access.menus === null || access.menus.includes(id), [access]);
+  // 웹훅 came out of the registry page: whoever sees registries sees it.
+  const canSee = useCallback(
+    (id: string) => id === "dashboard" || access.menus === null || access.menus.includes(id === "webhooks" ? "registries" : id),
+    [access],
+  );
   const can = useCallback((action: Action) => roleCan(role, action), [role]);
 
   const runAction = useCallback(

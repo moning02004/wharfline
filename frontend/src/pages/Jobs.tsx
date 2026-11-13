@@ -253,7 +253,7 @@ export function Jobs() {
 
   return (
     <>
-      <PageHeader title={view.label} desc="무엇을, 어느 서버에, 어떻게 배포할지 묶은 실행 단위예요. 작업을 누르면 설정과 실행 기록을 볼 수 있어요.">
+      <PageHeader title={view.label} desc="무엇을, 어디에, 어떻게 배포할지 묶은 단위예요.">
         {can("job_create") && (
           <>
             <Button icon="wand" onClick={() => nav("/jobs/new?guide=1")}>
@@ -626,8 +626,8 @@ export function Runs() {
         title="실행 기록"
         desc={
           waiting
-            ? `승인 대기 ${waiting}건이 있어요. 운영 보호 작업은 Owner나 Admin이 승인해야 실행돼요.`
-            : "모든 실행의 로그는 90일 동안 보관돼요. 로그 속 비밀 값은 저장 전에 가려져요."
+            ? `승인 대기 ${waiting}건이 있어요.`
+            : "로그는 90일 보관하고, 비밀 값은 가려서 저장해요."
         }
       />
       {jobId && (

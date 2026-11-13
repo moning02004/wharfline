@@ -21,7 +21,7 @@ export function Activity() {
 
   return (
     <>
-      <PageHeader title="활동 기록" desc="누가 언제 무엇을 했는지 모두 남아요. 기록은 앞 항목의 해시를 이어 붙여 저장하므로 중간에 지우거나 고치면 드러나요.">
+      <PageHeader title="활동 기록" desc="누가 언제 무엇을 했는지 남아요.">
         <Dot>기록 {act.total.toLocaleString()}건</Dot>
       </PageHeader>
       <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -156,7 +156,7 @@ export function Members() {
 
   return (
     <>
-      <PageHeader title="멤버와 권한" desc="역할은 할 수 있는 일을, 그룹은 보이는 메뉴와 빌드를 정해요. 한 멤버가 여러 그룹에 속하면 그 그룹들의 메뉴와 빌드를 모두 합쳐서 봐요.">
+      <PageHeader title="멤버와 권한" desc="역할은 할 수 있는 일을, 그룹은 보이는 메뉴와 빌드를 정해요.">
         {tab === "groups" && canEdit ? (
           <Button variant="primary" icon="plus" onClick={newGroup}>
             그룹 만들기

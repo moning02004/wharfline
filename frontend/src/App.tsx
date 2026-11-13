@@ -5,7 +5,7 @@ import Dashboard from "./pages/Dashboard";
 import { JobDetail, Jobs, Runs } from "./pages/Jobs";
 import { CopyJobPage, EditJobPage, NewJobPage } from "./modals/JobEditor";
 import { NewPlaybookPage } from "./pages/PlaybookEditor";
-import { Inventory, Keys, Registries, Repos } from "./pages/Resources";
+import { Inventory, Keys, Registries, Repos, Webhooks } from "./pages/Resources";
 import Envs from "./pages/Envs";
 import { Activity, Members, Notify, Security } from "./pages/Admin";
 import Notes from "./pages/Notes";
@@ -28,6 +28,7 @@ export default function App() {
         <Route path="/jobs/:id/copy" element={<CopyJobPage />} />
         <Route path="/runs" element={<Runs />} />
         <Route path="/registries" element={<Registries />} />
+        <Route path="/webhooks" element={<Webhooks />} />
         <Route path="/repos" element={<Repos />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/keys" element={<Keys />} />
