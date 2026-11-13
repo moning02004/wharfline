@@ -195,7 +195,13 @@ def can(member: m.Member | None, action: str) -> bool:
 
 def can_edit(member: m.Member | None, job: m.Job) -> bool:
     """Owner/Admin always; Viewer never; others if they made the job or are listed as an editor (directly or by group)."""
-    if member is None or member.role == "Viewer":
+    return member is not None and member.role != "Viewer" and can_see_job(member, job)
+
+
+def can_see_job(member: m.Member | None, job: m.Job) -> bool:
+    """Owner/Admin see every job; anyone else only jobs they made or are listed on as an editor (directly or by
+    group), whatever their role. Hidden jobs and their runs are left out of lists and answer 404 when asked by id."""
+    if member is None:
         return False
     if member.role in ("Owner", "Admin"):
         return True
@@ -206,6 +212,13 @@ def can_edit(member: m.Member | None, job: m.Job) -> bool:
         return True
     groups = set(editors.get("groups") or [])
     return any(g.id in groups for g in member.groups)
+
+
+def visible_job_ids(db: Session, member: m.Member | None) -> set[str] | None:
+    """Ids of the jobs `member` may see; None means every job (Owner/Admin, who also see runs of deleted jobs)."""
+    if member is not None and member.role in ("Owner", "Admin"):
+        return None
+    return {j.id for j in db.scalars(select(m.Job)) if can_see_job(member, j)}
 
 
 # ---------- lookups (dict-shaped) ----------

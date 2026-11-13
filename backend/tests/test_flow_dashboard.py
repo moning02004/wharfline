@@ -79,8 +79,8 @@ def test_failed_run_shows_until_a_later_success(client, login, dash_job):
     failed = [a for a in _alerts(client) if a["kind"] == "failed" and a.get("run") == no]
     assert failed and failed[0]["tone"] == "bad" and "dash · job" in failed[0]["title"] and "1.27" in failed[0]["sub"]
 
-    login(VIEWER)  # runs are visible to everyone with the runs menu
-    assert any(a.get("run") == no for a in _alerts(client))
+    login(VIEWER)  # the Owner's job isn't shared with the Viewer, so neither is its failure
+    assert not any(a.get("run") == no for a in _alerts(client))
 
     login(OWNER)
     _add_run(dash_job, "ok")

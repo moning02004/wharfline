@@ -40,4 +40,4 @@ def test_toggle_auto_deploy(client, login):
     assert client.put(f"/api/jobs/{j2['id']}/hook", json={"on": True}).status_code == 400
 
     login(DEPLOYER)
-    assert client.put(f"/api/jobs/{job['id']}/hook", json={"on": True}).status_code == 403
+    assert client.put(f"/api/jobs/{job['id']}/hook", json={"on": True}).status_code == 404  # not shared with her: hidden

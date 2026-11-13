@@ -73,8 +73,37 @@ def run_view(rec: m.Run, names: dict[str, str]) -> dict:
     return d
 
 
-def all_jobs(db: Session) -> list[m.Job]:
-    return list(db.scalars(select(m.Job).order_by(m.Job.ord)))
+def all_jobs(db: Session, who: m.Member | None) -> list[m.Job]:
+    """The jobs `who` may see (store.can_see_job), in list order."""
+    return [j for j in db.scalars(select(m.Job).order_by(m.Job.ord)) if s.can_see_job(who, j)]
+
+
+NO_JOB = "작업을 찾을 수 없어요."
+NO_RUN = "실행 기록을 찾을 수 없어요."
+
+
+def seen_job(db: Session, job_id: str, who: m.Member | None) -> m.Job:
+    """The job, or 404 when it is missing or hidden from `who`: a hidden job looks the same as a missing one."""
+    job = db.get(m.Job, job_id)
+    if not job or not s.can_see_job(who, job):
+        raise HTTPException(404, NO_JOB)
+    return job
+
+
+def runs_query(db: Session, who: m.Member | None):
+    """select(Run) limited to runs of jobs `who` may see."""
+    ids = s.visible_job_ids(db, who)
+    q = select(m.Run)
+    return q if ids is None else q.where(m.Run.job_id.in_(ids))
+
+
+def seen_run(db: Session, no: int, who: m.Member | None) -> m.Run:
+    """The run, or 404 when it is missing or belongs to a job hidden from `who` (or a deleted job, for non-Admins)."""
+    rec = db.get(m.Run, no)
+    ids = s.visible_job_ids(db, who) if rec else set()
+    if not rec or (ids is not None and rec.job_id not in ids):
+        raise HTTPException(404, NO_RUN)
+    return rec
 
 
 ALERT_LIMIT = 8  # the dashboard's 알림 card shows this many, then "+N"
@@ -109,7 +138,7 @@ def dashboard_alerts(db: Session, who: m.Member | None, hosts: list[m.Host], nam
                             "sub": f"{h.inventory.name} · {h.ip} · 확인 전까지 배포가 막혀요", "to": "/inventory"})
 
     if sees("jobs") or sees("runs"):
-        jobs = {j.id for j in db.scalars(select(m.Job))}
+        jobs = {j.id for j in all_jobs(db, who)}
         cutoff = time.time() - FAILED_DAYS * 86400
         seen: set[str] = set()
         recent = db.scalars(select(m.Run).where(m.Run.started_at >= cutoff, m.Run.status.notin_(("approval", "rejected")))
@@ -168,16 +197,17 @@ def dashboard(db: Session = Depends(get_db), who: m.Member | None = Depends(view
         },
         "alerts": alerts[:ALERT_LIMIT],
         "alertsMore": max(0, len(alerts) - ALERT_LIMIT),
-        "recentRuns": [run_view(r, names) for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()).limit(5))],
-        "pendingApprovals": [run_view(r, names) for r in db.scalars(select(m.Run).where(m.Run.status == "approval").order_by(m.Run.no))],
-        "jobs": [job_view(db, j, scope, who) for j in all_jobs(db)],
+        "recentRuns": [run_view(r, names) for r in db.scalars(runs_query(db, who).order_by(m.Run.no.desc()).limit(5))],
+        "pendingApprovals": [run_view(r, names) for r in db.scalars(runs_query(db, who).where(m.Run.status == "approval").order_by(m.Run.no))],
+        "jobs": [job_view(db, j, scope, who) for j in all_jobs(db, who)],
     }
 
 
 @router.get("/jobs")
 def list_jobs(db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
               who: m.Member | None = Depends(viewer)):
-    return [job_view(db, j, scope, who) for j in all_jobs(db)]
+    """Only the jobs the viewer may see (store.can_see_job)."""
+    return [job_view(db, j, scope, who) for j in all_jobs(db, who)]
 
 
 class PlaybookIn(BaseModel):
@@ -611,7 +641,7 @@ def resolve_play_vars(db: Session, me: m.Member | None, body: JobIn, job: m.Job 
         base = current
         if copy_from:
             src = db.get(m.Job, copy_from)
-            if not src:
+            if not src or not s.can_see_job(s.current_member(db), src):
                 raise HTTPException(400, "복제할 작업을 찾을 수 없어요.")
             src_row = db.get(m.JobSecretVars, src.id)
             base = src_row.get_vars() if src_row else []
@@ -705,10 +735,8 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
 @router.put("/jobs/{job_id}", dependencies=[Depends(require("job_edit"))])
 def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
                who: m.Member | None = Depends(viewer)):
-    job = db.get(m.Job, job_id)
-    if not job:
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
     me = s.current_member(db)
+    job = seen_job(db, job_id, me)
     if not s.can_edit(me, job):  # the signed-in member, never the X-View-As preview
         raise HTTPException(403, NO_EDIT)
     if body.envMode == "paste" and not s.can(me, "env"):
@@ -796,10 +824,8 @@ def delete_job(job_id: str, db: Session = Depends(get_db)):
 
     Nothing on the servers changes: running containers keep running.
     """
-    job = db.get(m.Job, job_id)
-    if not job:
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
     me = s.current_member(db)
+    job = seen_job(db, job_id, me)
     if not s.can_edit(me, job) or (job.protected and not s.can(me, "run_protected")):
         raise HTTPException(403, NO_EDIT)
     busy = db.scalar(select(m.Run.no).where(m.Run.job_id == job.id, m.Run.status.in_(("run", "approval"))).limit(1))
@@ -848,10 +874,8 @@ class HookIn(BaseModel):
 def set_hook(job_id: str, body: HookIn, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
              who: m.Member | None = Depends(viewer)):
     """Turn 자동 배포 on or off without opening the job form (e.g. during maintenance)."""
-    job = db.get(m.Job, job_id)
-    if not job:
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
     me = s.current_member(db)
+    job = seen_job(db, job_id, me)
     if not s.can_edit(me, job) or not s.can(me, "run_protected"):  # Deployers can't change 자동 배포
         raise HTTPException(403, NO_EDIT)
     if body.on and not job.image and not job.extra_images:
@@ -872,9 +896,7 @@ class RunIn(BaseModel):
 
 @router.post("/jobs/{job_id}/runs", dependencies=[Depends(require("run"))])
 async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # async: the runner schedules a task on the event loop
-    job = db.get(m.Job, job_id)
-    if not job:
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    job = seen_job(db, job_id, s.current_member(db))
     j = job.to_dict()
     hosts = [h for h in s.target_hosts(s.inv_of(db, j), body.groups) if not s.host_skip(h)]
     if not hosts:
@@ -1003,11 +1025,9 @@ async def git_playbooks(body: PlaybookGitIn, db: Session = Depends(get_db)):
 
 
 @router.get("/jobs/{job_id}/files")
-def job_files(job_id: str, ver: int | None = None, db: Session = Depends(get_db)):
+def job_files(job_id: str, ver: int | None = None, db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
     """The job's file bundle with contents: the current one, or an earlier version (?ver=3)."""
-    job = db.get(m.Job, job_id)
-    if not job:
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    job = seen_job(db, job_id, who)
     files = job.files or []
     if ver is not None and ver != job.files_ver:
         v = db.scalar(select(m.JobFileVersion).where(m.JobFileVersion.job_id == job_id, m.JobFileVersion.ver == ver))
@@ -1019,11 +1039,10 @@ def job_files(job_id: str, ver: int | None = None, db: Session = Depends(get_db)
 
 
 @router.get("/jobs/{job_id}/builds")
-def job_builds(job_id: str, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
+def job_builds(job_id: str, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
+               who: m.Member | None = Depends(viewer)):
     """The current CI build of every tracked image (githooks.current_build): {"": main image's, VAR: an extra image's} (null when none)."""
-    job = db.get(m.Job, job_id)
-    if not job:
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    job = seen_job(db, job_id, who)
     refs = ([("", job.image)] if job.image else []) + [(x["var"] or x["ref"], x["ref"]) for x in job.extra_images or []]
     out = {}
     for var, ref in refs:
@@ -1032,12 +1051,11 @@ def job_builds(job_id: str, db: Session = Depends(get_db), scope: set[str] | Non
 
 
 @router.get("/jobs/{job_id}/images")
-def job_images(job_id: str, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
+def job_images(job_id: str, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
+               who: m.Member | None = Depends(viewer)):
     """이미지 빌드 on the job page: each image the job follows, the tags Wharfline collected (newest first, each with the
     build that pushed it when known) and the image's recent CI builds. Builds only from repos the viewer may see."""
-    job = db.get(m.Job, job_id)
-    if not job:
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    job = seen_job(db, job_id, who)
     items = ([{"ref": job.image, "var": "", "tagNow": job.tag_now, "literal": None}] if job.image else []) + [
         {"ref": x["ref"], "var": x.get("var") or "", "tagNow": x.get("tagNow") or "-", "literal": x.get("literal")}
         for x in job.extra_images or []]
@@ -1059,25 +1077,24 @@ def job_images(job_id: str, db: Session = Depends(get_db), scope: set[str] | Non
 
 
 @router.get("/jobs/{job_id}/files/history")
-def job_files_history(job_id: str, db: Session = Depends(get_db)):
+def job_files_history(job_id: str, db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
     """Every saved version of the job's files, newest first: who, when, what changed."""
-    if not db.get(m.Job, job_id):
-        raise HTTPException(404, "작업을 찾을 수 없어요.")
+    seen_job(db, job_id, who)
     rows = db.scalars(select(m.JobFileVersion).where(m.JobFileVersion.job_id == job_id).order_by(m.JobFileVersion.ver.desc()))
     return [v.summary() for v in rows]
 
 
 @router.get("/runs")
-def list_runs(db: Session = Depends(get_db)):
+def list_runs(db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
+    """Runs of the jobs the viewer may see."""
     names = member_names(db)
-    return [run_view(r, names) for r in db.scalars(select(m.Run).order_by(m.Run.no.desc()))]
+    return [run_view(r, names) for r in db.scalars(runs_query(db, who).order_by(m.Run.no.desc()))]
 
 
 @router.get("/runs/{no}")
-def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope)):
-    rec = db.get(m.Run, no)
-    if not rec:
-        raise HTTPException(404, "실행 기록을 찾을 수 없어요.")
+def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Depends(build_scope),
+            who: m.Member | None = Depends(viewer)):
+    rec = seen_run(db, no, who)
     job = db.get(m.Job, rec.job_id)
     base = run_view(rec, member_names(db))
     if job:
@@ -1098,7 +1115,9 @@ def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Dep
 
 
 @router.get("/runs/{no}/stream")
-async def stream_run(no: int, since: int = 0):
+async def stream_run(no: int, since: int = 0, db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
+    seen_run(db, no, who)
+    db.close()  # the stream can stay open for minutes; don't hold a connection for it
     if no not in runner.live:
         raise HTTPException(404, "실행 중인 기록이 아니에요.")
 
@@ -1152,6 +1171,7 @@ async def stream_events(request: Request, since: int | None = None):
 
 @router.post("/runs/{no}/cancel", dependencies=[Depends(require("run"))])
 def cancel(no: int, db: Session = Depends(get_db)):
+    seen_run(db, no, s.current_member(db))
     if not runner.cancel_run(no, s.actor_name(db)):
         raise HTTPException(400, "이미 끝난 실행이에요.")
     return {"ok": True}
@@ -1160,7 +1180,7 @@ def cancel(no: int, db: Session = Depends(get_db)):
 def pending(db: Session, no: int) -> m.Run:
     rec = db.get(m.Run, no, with_for_update=True)  # two Admins deciding at once: only one wins
     if not rec:
-        raise HTTPException(404, "실행 기록을 찾을 수 없어요.")
+        raise HTTPException(404, NO_RUN)
     if rec.status != "approval":
         raise HTTPException(400, "승인 대기 중인 실행이 아니에요.")
     return rec

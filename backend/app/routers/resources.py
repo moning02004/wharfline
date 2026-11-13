@@ -11,7 +11,7 @@ from .. import models as m
 from .. import serverinit, sshaccess, sshcheck, sshkeys
 from .. import store as s
 from ..db import get_db
-from ..deps import require, require_login, require_sudo
+from ..deps import require, require_login, require_sudo, viewer
 
 router = APIRouter(prefix="/api", tags=["resources"], dependencies=[Depends(require_login)])
 
@@ -21,9 +21,9 @@ NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._ ·-]{0,63}$")
 # ---------- registries & images ----------
 
 @router.get("/registries")
-def list_registries(db: Session = Depends(get_db)):
+def list_registries(db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
     images = list(db.scalars(select(m.Image).order_by(m.Image.ord)))
-    jobs = list(db.scalars(select(m.Job).order_by(m.Job.ord)))
+    jobs = [j for j in db.scalars(select(m.Job).order_by(m.Job.ord)) if s.can_see_job(who, j)]  # hidden jobs aren't named
     regs = list(db.scalars(select(m.Registry).order_by(m.Registry.ord)))
     pulled_by = {i.ref: (r.id if (r := s.registry_for(db, i.ref, regs)) else None) for i in images}
     return {
@@ -192,11 +192,11 @@ def delete_image(ref: str, db: Session = Depends(get_db)):
 # ---------- playbook repos ----------
 
 @router.get("/repos")
-def list_repos(db: Session = Depends(get_db)):
+def list_repos(db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
     """Repos are created when a job is saved. The built-in playbook repo is always listed first."""
     s.builtin_repo(db)
     db.commit()
-    jobs = list(db.scalars(select(m.Job).order_by(m.Job.ord)))
+    jobs = [j for j in db.scalars(select(m.Job).order_by(m.Job.ord)) if s.can_see_job(who, j)]  # hidden jobs aren't named
     repos = db.scalars(select(m.Repo).order_by((m.Repo.kind != "builtin"), m.Repo.id))
     return [{**r.to_dict(), "usedBy": [{"job": j.name, "path": j.book} for j in jobs if j.repo == r.name]} for r in repos]
 

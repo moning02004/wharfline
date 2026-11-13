@@ -1747,7 +1747,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
           <>
             <Field
               label="권한"
-              hint="이 작업을 고칠 수 있는 그룹과 멤버예요. Owner, Admin, 만든 사람은 항상 고칠 수 있어요."
+              hint="이 작업을 보고 고칠 수 있는 그룹과 멤버예요. Owner, Admin, 만든 사람은 항상 돼요. 여기 없는 멤버에게는 작업과 실행 기록이 보이지 않아요(그룹에 든 Viewer는 보기만 해요)."
             >
               <TipSpot id="access.editors">
               <Field

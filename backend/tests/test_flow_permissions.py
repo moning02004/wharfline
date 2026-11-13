@@ -27,7 +27,7 @@ def test_owner_can_edit_any_job(client, login):
 
 def test_viewer_cannot_edit(client, login):
     login(VIEWER)
-    job = _job(client, "api-server · staging")
+    job = _job(client, "batch-worker · production")  # the Viewer's group 배치팀 is listed as its editor
     assert job["canEdit"] is False
     r = client.put(f"/api/jobs/{job['id']}", json=_edit_body(job))
     assert r.status_code == 403
@@ -38,10 +38,13 @@ def test_deployer_edits_only_what_they_made_or_were_given(client, login):
     login(DEPLOYER)
     jobs = {j["name"]: j for j in client.get("/api/jobs").json()}
     mine = jobs["api-server · staging"]  # created by minji in the seed
-    other = jobs["api-server · production"]
-    assert mine["canEdit"] and not other["canEdit"]
+    assert mine["canEdit"]
+    assert "api-server · production" not in jobs  # not hers and not given to her: hidden
+    login(OWNER)
+    other = _job(client, "api-server · production")
+    login(DEPLOYER)
     assert client.put(f"/api/jobs/{mine['id']}", json=_edit_body(mine)).status_code == 200
-    assert client.put(f"/api/jobs/{other['id']}", json=_edit_body(other)).status_code == 403
+    assert client.put(f"/api/jobs/{other['id']}", json=_edit_body(other)).status_code == 404
 
 
 def test_editor_group_grants_edit(client, login):
@@ -59,7 +62,7 @@ def test_editor_group_grants_edit(client, login):
 
 
 def test_previewing_as_viewer_does_not_take_edit_away_from_owner(client, login):
-    job = _job(client, "web-front · production")
+    job = _job(client, "batch-worker · production")
     shown = next(j for j in client.get("/api/jobs", headers={"X-View-As": VIEWER}).json() if j["id"] == job["id"])
     assert shown["canEdit"] is False  # what the Viewer would see
     r = client.put(f"/api/jobs/{job['id']}", json=_edit_body(job), headers={"X-View-As": VIEWER})

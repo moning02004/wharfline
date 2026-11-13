@@ -134,6 +134,7 @@ def _job(client, name: str, **extra) -> dict:
     found = next((j for j in client.get("/api/jobs").json() if j["name"] == name), None)
     if found:
         return found
+    extra.setdefault("editors", {"groups": [], "members": [DEPLOYER]})  # a Deployer only sees jobs they may edit
     r = client.post("/api/jobs", json=builtin_job(name, "staging", "nginx:1.27", **extra))
     assert r.status_code == 200, r.text
     return r.json()
