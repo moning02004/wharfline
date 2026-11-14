@@ -54,10 +54,7 @@ interface ModalEntry {
   size: ModalSize;
   render: ModalRender;
   onClose?: () => void;
-  guard?: ModalGuard;
 }
-/** Set .current to take over Esc and backdrop clicks (e.g. to ask before closing with unsaved edits). */
-export type ModalGuard = { current: (() => void) | null };
 
 interface Toast {
   id: number;
@@ -86,7 +83,7 @@ interface AppCtx {
   /** Whether the shown role (mine, or the previewed member's) may do `action`. Buttons follow this. */
   can: (action: Action) => boolean;
   toast: (msg: string, tone?: ToastTone) => void;
-  openModal: (render: ModalRender, size?: ModalSize, onClose?: () => void, guard?: ModalGuard) => void;
+  openModal: (render: ModalRender, size?: ModalSize, onClose?: () => void) => void;
   closeModal: () => void;
   /** Bumped after any mutation, and when the server says data changed (/api/events), so pages refetch. */
   version: number;
@@ -142,8 +139,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => window.removeEventListener(TOAST_ERROR_EVENT, on);
   }, [toast]);
 
-  const openModal = useCallback((render: ModalRender, size: ModalSize = "sm", onClose?: () => void, guard?: ModalGuard) => {
-    setModals((m) => [...m, { id: ++seq.current, size, render, onClose, guard }]);
+  const openModal = useCallback((render: ModalRender, size: ModalSize = "sm", onClose?: () => void) => {
+    setModals((m) => [...m, { id: ++seq.current, size, render, onClose }]);
   }, []);
 
   const modalsRef = useRef(modals);
@@ -299,7 +296,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     <Ctx.Provider value={value}>
       {children}
       {modals.map((m, i) => (
-        <ModalShell key={m.id} size={m.size} onClose={() => (m.guard?.current ? m.guard.current() : closeModal())} top={i === modals.length - 1}>
+        <ModalShell key={m.id} size={m.size} onClose={closeModal} top={i === modals.length - 1}>
           {m.render(closeModal)}
         </ModalShell>
       ))}

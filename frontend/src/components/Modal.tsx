@@ -62,10 +62,10 @@ export function ModalFoot({ children, between }: { children: ReactNode; between?
 }
 
 /** A yes/no question in a small dialog (instead of the browser's confirm). */
-export function YesNoModal({ title, message, onYes, onNo }: { title: ReactNode; message?: ReactNode; onYes: () => void; onNo: () => void }) {
+export function YesNoModal({ title, message, onYes, onNo, onCancel }: { title: ReactNode; message?: ReactNode; onYes: () => void; onNo: () => void; onCancel: () => void }) {
   return (
     <>
-      <ModalHead title={title} onClose={onNo} />
+      <ModalHead title={title} onClose={onCancel} />
       {message && <div className="px-5 pb-4 text-[13px] text-muted">{message}</div>}
       <ModalFoot>
         <Button onClick={onNo}>아니오</Button>

@@ -1,13 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, errMsg, parseEnv } from "../lib/api";
-import { useApi, useApp, type ModalGuard } from "../lib/app";
+import { useApi, useApp } from "../lib/app";
 import { indentOnTab } from "../lib/indent";
 import type { BundleFile, EnvSet, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
 import { EnvSource, type EnvMode } from "../components/EnvSource";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
-import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
+import { ModalBody, ModalFoot, ModalHead, YesNoModal } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
@@ -819,12 +819,12 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     }
   };
 
-  const save = async () => {
+  const save = async (then?: () => void) => {
     if (!job || !validateAll()) return;
     setBusy(true);
     const payload = body();
     const done = () => {
-      onClose();
+      (then ?? onClose)();
       refresh();
       toast("작업을 고쳤어요");
     };
@@ -851,9 +851,43 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     }
   };
 
-  const saveRef = useRef(save);
-  saveRef.current = save;
-  const saveJob = () => saveRef.current();
+  // Editing: leaving with edited files asks whether to save first (취소, the back link, any other page link).
+  const [filesDirty, setFilesDirty] = useState(false);
+  const askLeave = (go: () => void) => {
+    if (!editing || !filesDirty) return go();
+    openModal(
+      (c) => (
+        <YesNoModal
+          title="수정된 파일이 있습니다. 저장하시겠습니까?"
+          onYes={() => (c(), save(go))}
+          onNo={() => (c(), go())}
+          onCancel={c}
+        />
+      ),
+      "sm",
+    );
+  };
+  const askLeaveRef = useRef(askLeave);
+  askLeaveRef.current = askLeave;
+  useEffect(() => {
+    if (!editing || !filesDirty) return;
+    const onClick = (e: MouseEvent) => {
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+      const a = (e.target as Element).closest?.("a[href]");
+      const href = a?.getAttribute("href");
+      if (!a || !href?.startsWith("/") || a.closest("[role=dialog]") || a.getAttribute("target")) return;
+      e.preventDefault();
+      e.stopPropagation();
+      askLeaveRef.current(() => nav(href));
+    };
+    const onUnload = (e: BeforeUnloadEvent) => e.preventDefault();
+    document.addEventListener("click", onClick, true);
+    window.addEventListener("beforeunload", onUnload);
+    return () => {
+      document.removeEventListener("click", onClick, true);
+      window.removeEventListener("beforeunload", onUnload);
+    };
+  }, [editing, filesDirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -1137,7 +1171,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
             setFilesTouched(true);
           }}
           onEnv={mergeEnv}
-          onSaveJob={editing ? saveJob : undefined}
+          onDirty={setFilesDirty}
         />
       )}
     </>
@@ -1328,7 +1362,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                     setFilesTouched(true);
                   }}
                   onEnv={mergeEnv}
-                  onSaveJob={editing ? saveJob : undefined}
+                  onDirty={setFilesDirty}
                 />
                 {fileImages.length > 0 && (
                   <Field label="추적하는 이미지">
@@ -1954,7 +1988,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
         </form>
         <div className="sticky bottom-0 z-10 rounded-b-xl overflow-hidden">
           <ModalFoot between>
-            <Button variant="ghost" onClick={onClose}>
+            <Button variant="ghost" onClick={() => askLeave(onClose)}>
               취소
             </Button>
             <span className="flex items-center gap-2 flex-wrap justify-end">
@@ -2237,14 +2271,14 @@ function FileBundleField({
   files,
   update,
   onEnv,
-  onSaveJob,
+  onDirty,
 }: {
   jobId: string | null;
   filesVer: number | null;
   files: BundleFile[];
   update: FileUpdate;
   onEnv: (vars: string[][]) => void;
-  onSaveJob?: () => void;
+  onDirty: (dirty: boolean) => void;
 }) {
   const { toast, openModal } = useApp();
   const upload = useBundleUpload(update, onEnv);
@@ -2266,11 +2300,12 @@ function FileBundleField({
   }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const edit = (start: string | null) => {
-    const guard: ModalGuard = { current: null };
-    openModal((c) => <FileWorkspaceModal jobId={jobId} initial={files} start={start} update={update} onEnv={onEnv} onSaveJob={onSaveJob} guard={guard} onClose={c} />, "full", undefined, guard);
+    openModal((c) => <FileWorkspaceModal jobId={jobId} initial={files} start={start} update={update} onEnv={onEnv} onClose={c} />, "full");
   };
   const mark = (f: BundleFile) => (!saved ? null : !saved.has(f.path) ? "new" : f.content !== undefined && saved.get(f.path) !== f.content ? "edited" : null);
   const removed = saved ? [...saved.keys()].filter((p) => !files.some((f) => f.path === p)) : [];
+  const dirty = removed.length > 0 || files.some((f) => mark(f));
+  useEffect(() => onDirty(dirty), [dirty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   return (
     <Field
