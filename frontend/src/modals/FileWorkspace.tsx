@@ -93,7 +93,7 @@ function CodeArea({ value, onChange, placeholder, autoFocus, label }: { value: s
   const gutter = useRef<HTMLDivElement>(null);
   const n = value.split("\n").length;
   return (
-    <div className="flex flex-1 min-h-0 font-mono text-[12.5px] leading-[1.65]">
+    <div className="flex flex-1 min-h-0 font-code text-[13px] leading-[1.7]">
       <div ref={gutter} aria-hidden className="select-none overflow-hidden text-right text-faint py-3 pl-3 pr-2.5 pb-10 bg-surface-2 border-r border-line tabular-nums min-w-[3.4em]">
         {Array.from({ length: n }, (_, i) => (
           <div key={i}>{i + 1}</div>
@@ -253,10 +253,10 @@ export function FileWorkspaceModal({
 
   return (
     <>
-      <ModalHead title="파일 편집기" sub={<>{jobName || "새 작업"} · <span className="font-mono">$SERVICE_PATH</span>에 올라가요</>} onClose={onClose} border />
-      <div className="flex-1 min-h-0 overflow-auto lg:overflow-hidden grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[230px_minmax(0,1fr)_270px]">
+      <ModalHead title="파일 편집기" sub={<>{jobName || "새 작업"} · <span className="font-mono">$SERVICE_PATH</span>에 올라가요</>} onClose={onClose} />
+      <div className="flex-1 min-h-0 overflow-auto lg:overflow-hidden grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[230px_minmax(0,1fr)_270px] gap-3 p-3 bg-canvas">
         {/* files */}
-        <aside aria-label="파일 목록" className="flex flex-col min-h-0 max-lg:max-h-[240px] lg:border-r max-lg:border-b border-line bg-surface-2/60">
+        <aside aria-label="파일 목록" className="flex flex-col min-h-0 max-lg:max-h-[240px] rounded-xl bg-surface shadow-soft overflow-hidden">
           <div className="flex items-center gap-1 px-3 py-2 border-b border-line">
             <span className="text-[12px] font-semibold text-muted mr-auto">파일 {files.length}</span>
             {upload.el}
@@ -275,7 +275,7 @@ export function FileWorkspaceModal({
                   title={f.path}
                   className={cx(
                     "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-mono transition-colors min-w-0",
-                    sel === f.path ? "bg-surface shadow-xs text-fg" : "text-muted hover:bg-hover hover:text-fg",
+                    sel === f.path ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg",
                   )}
                 >
                   <Icon name="file" className={cx("size-3.5 flex-none", sel === f.path ? "text-accent" : "text-faint")} />
@@ -286,7 +286,7 @@ export function FileWorkspaceModal({
               );
             })}
             {sel === NEW && (
-              <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] font-mono bg-surface shadow-xs">
+              <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] font-mono bg-accent-soft">
                 <Icon name="file" className="size-3.5 flex-none text-accent" />
                 <span className="truncate flex-1 text-faint">{fresh.path || pathDraft || "새 파일"}</span>
               </div>
@@ -306,7 +306,7 @@ export function FileWorkspaceModal({
         </aside>
 
         {/* editor or comparison */}
-        <section className="flex flex-col min-h-[420px] lg:min-h-0 min-w-0">
+        <section className="flex flex-col min-h-[420px] lg:min-h-0 min-w-0 rounded-xl bg-surface shadow-lift overflow-hidden">
           {ver != null ? (
             <>
               <div className="flex items-center gap-2 flex-wrap px-4 py-2 border-b border-line">
@@ -325,7 +325,7 @@ export function FileWorkspaceModal({
                   </Button>
                 </span>
               </div>
-              <div className="flex-1 min-h-0 overflow-auto scroll-soft bg-surface font-mono text-[12px] leading-[1.65] py-2">
+              <div className="flex-1 min-h-0 overflow-auto scroll-soft bg-surface font-code text-[12.5px] leading-[1.7] py-2">
                 {!compare ? (
                   <p className="px-4 text-muted font-sans text-[12.5px]">불러오는 중…</p>
                 ) : !oldFile ? (
@@ -386,7 +386,7 @@ export function FileWorkspaceModal({
         </section>
 
         {/* versions */}
-        <aside aria-label="버전 기록" className="flex flex-col min-h-0 max-lg:max-h-[300px] lg:border-l max-lg:border-t border-line">
+        <aside aria-label="버전 기록" className="flex flex-col min-h-0 max-lg:max-h-[300px] rounded-xl bg-surface shadow-soft overflow-hidden">
           <div className="px-3 py-2 border-b border-line text-[12px] font-semibold text-muted">버전 기록</div>
           <div className="flex-1 min-h-0 overflow-auto scroll-soft p-1.5 flex flex-col gap-0.5">
             {!jobId && <p className="p-2 text-[12.5px] text-faint">작업을 저장하면 그때부터 버전이 남아요.</p>}

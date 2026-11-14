@@ -156,6 +156,8 @@
   --shadow-primary: var(--elev-primary);
   /* Mac system fonts first (SF Pro, Apple SD Gothic Neo); Pretendard looks the same on Windows and Linux. */
   --font-sans: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Pretendard Variable", Pretendard, "Segoe UI", "Malgun Gothic", sans-serif;
+  /* The file editor: JetBrains Mono, made for reading code. */
+  --font-code: "JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "Geist Mono", Consolas, monospace;
   --ease-soft: cubic-bezier(0.22, 1, 0.36, 1);
   --animate-fade: fade 0.15s ease-out;
