@@ -1,12 +1,13 @@
 import { useEffect, type ReactNode } from "react";
 import { Button, cx } from "./ui";
 
-export type ModalSize = "sm" | "md" | "wide";
+export type ModalSize = "sm" | "md" | "wide" | "full";
 
 const sizes: Record<ModalSize, string> = {
   sm: "max-w-[520px]",
   md: "max-w-[680px]",
   wide: "max-w-[1000px] h-[min(720px,100%)]",
+  full: "max-w-[1480px] h-[min(880px,100%)]",
 };
 
 export function ModalShell({ size = "sm", onClose, children, top }: { size?: ModalSize; onClose: () => void; children: ReactNode; top: boolean }) {

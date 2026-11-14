@@ -22,7 +22,7 @@ const MARK: Record<Mark, { label: string; tone: "ok" | "warn" | "bad" | "neutral
 };
 
 /** Line diff (longest common subsequence). Big files fall back to showing the new text only. */
-function diffLines(a: string, b: string): { t: " " | "+" | "-"; s: string }[] | null {
+export function diffLines(a: string, b: string): { t: " " | "+" | "-"; s: string }[] | null {
   const x = a.split("\n");
   const y = b.split("\n");
   if (x.length * y.length > 4_000_000) return null;

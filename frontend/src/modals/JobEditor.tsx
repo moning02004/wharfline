@@ -11,7 +11,7 @@ import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
-import { FileHistoryModal } from "./FileHistoryModal";
+import { FileWorkspaceModal, NEW_FILE, fmtSize, riskyIn, useBundleUpload, type FileUpdate } from "./FileWorkspace";
 import { PlaybookEditor } from "../pages/PlaybookEditor";
 import { Banner, Button, Check, Chip, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
@@ -124,15 +124,6 @@ function findFileImages(files: BundleFile[]): FileImage[] {
     }
   }
   return out;
-}
-
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).split(",", 2)[1] ?? "");
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
-  });
 }
 
 /** Same as the server's app_slug: "api-server · production" -> "api-server-production". */
@@ -2232,35 +2223,9 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
   );
 }
 
-type FileUpdate = (fn: (prev: BundleFile[]) => BundleFile[]) => void;
-
-/** Same rules as the server (app/bundles.py): a relative path inside SERVICE_PATH. */
-const FILE_PART_RE = /^[A-Za-z0-9._@+-]{1,128}$/;
-function cleanFilePath(raw: string): string | null {
-  let p = raw.replace(/\\/g, "/").trim();
-  while (p.startsWith("./")) p = p.slice(2);
-  if (!p || p.startsWith("/")) return null;
-  const parts = p.split("/").filter(Boolean);
-  if (!parts.length || parts.some((x) => x === "." || x === ".." || !FILE_PART_RE.test(x))) return null;
-  return parts.join("/");
-}
-const RISKY_FILE: [RegExp, string][] = [
-  [/privileged:\s*true/, "privileged: true"],
-  [/docker\.sock/, "docker.sock 마운트"],
-  [/network_mode:\s*["']?host/, "network_mode: host"],
-  [/pid:\s*["']?host/, "pid: host"],
-  [/cap_add:/, "cap_add"],
-  [/hostPath:/, "hostPath"],
-  [/hostNetwork:\s*true/, "hostNetwork: true"],
-  [/hostPID:\s*true/, "hostPID: true"],
-];
-const riskyIn = (text: string) => RISKY_FILE.filter(([re]) => re.test(text)).map(([, m]) => m);
-const byteSize = (text: string) => new TextEncoder().encode(text).length;
-const fmtSize = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFixed(1)} KB`);
-
 /**
  * Files uploaded to SERVICE_PATH before the script: write one here, or upload a docker-compose.yaml or a
- * zip (a Kubernetes yaml set, a Makefile...). Each file is a card; opening it shows the content to read or edit.
+ * zip (a Kubernetes yaml set, a Makefile...). Opening a file shows the editor (files, content, versions).
  */
 function FileBundleField({
   jobId,
@@ -2278,9 +2243,7 @@ function FileBundleField({
   onEnv: (vars: string[][]) => void;
 }) {
   const { toast, openModal } = useApp();
-  const input = useRef<HTMLInputElement>(null);
-  const [dropped, setDropped] = useState<{ path: string; reason: string }[]>([]);
-  const [busy, setBusy] = useState(false);
+  const upload = useBundleUpload(update, onEnv);
   const updateRef = useRef(update);
   updateRef.current = update;
 
@@ -2293,48 +2256,8 @@ function FileBundleField({
     );
   }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const pick = async (fileList: FileList | null) => {
-    const file = fileList?.[0];
-    if (!file) return;
-    setBusy(true);
-    try {
-      const r = await api.post<{ files: BundleFile[]; env: string[][]; dropped: { path: string; reason: string }[] }>("/bundles/parse", {
-        name: file.name,
-        data: await fileToBase64(file),
-      });
-      update((prev) => {
-        const byPath = new Map(prev.map((f) => [f.path, f]));
-        r.files.forEach((f) => byPath.set(f.path, f)); // same path: the new upload wins
-        return [...byPath.values()].sort((a, b) => a.path.localeCompare(b.path));
-      });
-      setDropped(r.dropped);
-      onEnv(r.env);
-      toast(`파일 ${r.files.length}개를 올렸어요`);
-    } catch (e) {
-      toast(errMsg(e), "error");
-    } finally {
-      setBusy(false);
-      if (input.current) input.current.value = "";
-    }
-  };
-
-  const edit = (file: BundleFile | null) =>
-    openModal(
-      (c) => (
-        <FileEditorModal
-          file={file}
-          taken={files.map((f) => f.path).filter((p) => p !== file?.path)}
-          onClose={c}
-          onSave={(next) =>
-            update((prev) =>
-              [...prev.filter((f) => f.path !== file?.path && f.path !== next.path), next].sort((a, b) => a.path.localeCompare(b.path)),
-            )
-          }
-          onDelete={file ? () => update((prev) => prev.filter((f) => f.path !== file.path)) : undefined}
-        />
-      ),
-      "wide",
-    );
+  const edit = (start: string | null) =>
+    openModal((c) => <FileWorkspaceModal jobId={jobId} jobName={jobName} initial={files} start={start} update={update} onEnv={onEnv} onClose={c} />, "full");
 
   return (
     <Field
@@ -2345,26 +2268,21 @@ function FileBundleField({
       }
       right={
         <span className="flex gap-1 flex-wrap">
-          {jobId && filesVer && (
-            <Button size="sm" variant="ghost" icon="history" onClick={() => openModal((c) => <FileHistoryModal jobId={jobId} jobName={jobName} onClose={c} />, "wide")}>
-              기록 · v{filesVer}
-            </Button>
-          )}
-          <Button size="sm" variant="ghost" icon="upload" disabled={busy} onClick={() => input.current?.click()}>
-            {busy ? "읽는 중…" : "올리기"}
+          <Button size="sm" variant="ghost" icon="upload" disabled={upload.busy} onClick={upload.open}>
+            {upload.busy ? "읽는 중…" : "올리기"}
           </Button>
-          <Button size="sm" icon="plus" onClick={() => edit(null)}>
-            새 파일
+          <Button size="sm" icon={files.length ? "edit" : "plus"} onClick={() => edit(files.length ? null : NEW_FILE)}>
+            {files.length ? "편집기" : "새 파일"}
           </Button>
         </span>
       }
       hint={<><span className="font-mono">$SERVICE_PATH</span>에 올라가요. zip도 돼요.</>}
     >
-      <input ref={input} type="file" hidden accept=".yaml,.yml,.zip,.json,.conf,.sh,Makefile,*" onChange={(e) => pick(e.target.files)} />
+      {upload.el}
       {files.length === 0 ? (
         <button
           type="button"
-          onClick={() => edit(null)}
+          onClick={() => edit(NEW_FILE)}
           className="rounded-lg border border-dashed border-line-strong px-3.5 py-4 text-[13px] text-muted text-center hover:bg-hover hover:text-fg transition-colors"
         >
           <span className="text-accent font-medium">새 파일</span> 또는 올리기
@@ -2377,8 +2295,8 @@ function FileBundleField({
               <button
                 key={f.path}
                 type="button"
-                onClick={() => edit(f)}
-                title="눌러서 내용 보기 · 고치기"
+                onClick={() => edit(f.path)}
+                title="편집기에서 열기"
                 className="group flex items-center gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5 text-left hover:border-accent/40 hover:bg-hover transition-colors min-w-0"
               >
                 <span className="grid place-items-center size-8 rounded-md bg-surface-2 text-faint group-hover:text-accent flex-none">
@@ -2398,87 +2316,9 @@ function FileBundleField({
           })}
         </div>
       )}
-      {dropped.length > 0 && <Hint>빠진 파일: {dropped.map((d) => `${d.path} (${d.reason})`).join(", ")}</Hint>}
+      {jobId && filesVer && <Hint>지금 v{filesVer} · 버전 기록은 편집기 오른쪽에 있어요.</Hint>}
+      {upload.dropped.length > 0 && <Hint>빠진 파일: {upload.dropped.map((d) => `${d.path} (${d.reason})`).join(", ")}</Hint>}
     </Field>
-  );
-}
-
-/** Read or edit one file of the bundle: its path and content. A new file starts empty. */
-function FileEditorModal({
-  file,
-  taken,
-  onSave,
-  onDelete,
-  onClose,
-}: {
-  file: BundleFile | null;
-  taken: string[];
-  onSave: (f: BundleFile) => void;
-  onDelete?: () => void;
-  onClose: () => void;
-}) {
-  const { toast } = useApp();
-  const [path, setPath] = useState(file?.path ?? "");
-  const [content, setContent] = useState(file?.content ?? "");
-  const risky = riskyIn(content);
-  const lines = content.split("\n").length;
-
-  const save = () => {
-    const p = cleanFilePath(path);
-    if (!p) return toast("파일 이름은 docker-compose.yaml이나 k8s/01_namespace.yaml처럼 적어 주세요. /로 시작하거나 ..은 쓸 수 없어요.", "error");
-    if (p.split("/").pop() === ".env") return toast(".env는 파일로 두지 않아요. 환경 변수 단계에 넣어 주세요.", "error");
-    if (taken.includes(p)) return toast(`${p}이(가) 이미 있어요.`, "error");
-    const size = byteSize(content);
-    if (size > 512 * 1024) return toast("파일 하나는 512KB까지예요.", "error");
-    onSave({ path: p, content, size });
-    onClose();
-  };
-
-  return (
-    <>
-      <ModalHead title={file ? "파일" : "새 파일"} sub={file ? undefined : "$SERVICE_PATH에 이 이름으로 올라가요."} onClose={onClose} />
-      <div className="flex flex-col gap-3 px-5 pb-4 flex-1 min-h-0">
-        <Input mono aria-label="파일 이름" placeholder="docker-compose.yaml" value={path} onChange={(e) => setPath(e.target.value)} autoFocus={!file} />
-        <Textarea
-          aria-label="파일 내용"
-          spellCheck={false}
-          className="font-mono text-[12.5px] leading-relaxed flex-1 min-h-[320px] resize-none"
-          placeholder={"services:\n  app:\n    image: ghcr.io/acme/api:${API_TAG}\n    env_file: .env\n    restart: unless-stopped"}
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          onKeyDown={indentOnTab}
-          autoFocus={!!file}
-        />
-        <div className="flex items-center gap-2 flex-wrap text-[12px] text-muted">
-          <span>
-            {lines}줄 · {fmtSize(byteSize(content))}
-          </span>
-          {risky.length > 0 && <Chip tone="warn">서버 권한을 넘기는 설정: {risky.join(", ")}</Chip>}
-        </div>
-      </div>
-      <ModalFoot between>
-        {onDelete ? (
-          <Button
-            variant="dangerGhost"
-            icon="trash"
-            onClick={() => {
-              onDelete();
-              onClose();
-            }}
-          >
-            파일 빼기
-          </Button>
-        ) : (
-          <span />
-        )}
-        <span className="flex gap-2">
-          <Button onClick={onClose}>취소</Button>
-          <Button variant="primary" onClick={save}>
-            {file ? "저장" : "추가"}
-          </Button>
-        </span>
-      </ModalFoot>
-    </>
   );
 }
 
