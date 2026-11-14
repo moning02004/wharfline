@@ -2344,13 +2344,15 @@ function FileBundleField({
                 key={f.path}
                 type="button"
                 onClick={() => edit(f.path)}
-                title={risky ? "서버 권한을 넘기는 설정이 있어요" : "편집기에서 열기"}
-                className="inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-line bg-surface text-[12px] font-mono hover:border-accent/40 hover:text-accent transition-colors"
+                title={[mark(f) === "new" ? "새 파일" : mark(f) === "edited" ? "수정됨" : "", risky ? "서버 권한을 넘기는 설정이 있어요" : ""].filter(Boolean).join(" · ") || "편집기에서 열기"}
+                className={cx(
+                  "inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border bg-surface text-[12px] font-mono hover:text-accent transition-colors",
+                  mark(f) === "edited" ? "border-[var(--mark)]" : mark(f) === "new" ? "border-ok" : "border-line hover:border-accent/40",
+                )}
               >
                 <Icon name="file" className="size-3 text-faint flex-none" />
                 <span className="truncate">{f.path}</span>
                 {risky && <span className="size-1.5 rounded-full bg-warn flex-none" />}
-                {mark(f) && <span className={cx("font-sans text-[10.5px] font-semibold flex-none", mark(f) === "new" ? "text-ok" : "text-[var(--mark)]")}>{mark(f) === "new" ? "새" : "수정"}</span>}
               </button>
             );
           })}
