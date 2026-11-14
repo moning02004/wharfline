@@ -123,7 +123,6 @@ function CodeArea({ value, onChange, placeholder, autoFocus, label }: { value: s
  */
 export function FileWorkspaceModal({
   jobId,
-  jobName,
   initial,
   start,
   update,
@@ -131,7 +130,6 @@ export function FileWorkspaceModal({
   onClose,
 }: {
   jobId: string | null;
-  jobName: string;
   initial: BundleFile[];
   start: string | null; // a path to open, NEW for a new file, null for the first file
   update: FileUpdate;
@@ -253,7 +251,7 @@ export function FileWorkspaceModal({
 
   return (
     <>
-      <ModalHead title="파일 편집기" sub={<>{jobName || "새 작업"} · <span className="font-mono">$SERVICE_PATH</span>에 올라가요</>} onClose={onClose} />
+      <ModalHead title="파일 편집기" onClose={onClose} />
       <div className="flex-1 min-h-0 overflow-auto lg:overflow-hidden grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[230px_minmax(0,1fr)_270px] gap-3 p-3 bg-canvas">
         {/* files */}
         <aside aria-label="파일 목록" className="flex flex-col min-h-0 max-lg:max-h-[240px] rounded-xl bg-surface shadow-soft overflow-hidden">
@@ -362,7 +360,7 @@ export function FileWorkspaceModal({
                   {sel === NEW && !pathErr && <p className="mt-1 text-[11.5px] text-muted">이름을 적고 Enter를 누르면 목록에 들어가요.</p>}
                 </div>
                 <Button size="sm" variant="dangerGhost" icon="trash" onClick={remove}>
-                  {sel === NEW ? "취소" : "빼기"}
+                  {sel === NEW ? "취소" : "제거"}
                 </Button>
               </div>
               <CodeArea
@@ -441,8 +439,7 @@ export function FileWorkspaceModal({
           </div>
         </aside>
       </div>
-      <ModalFoot between>
-        <span className="text-[12px] text-muted">고친 내용은 작업을 저장할 때 서버에 반영돼요.</span>
+      <ModalFoot>
         <Button variant="primary" onClick={onClose}>
           완료
         </Button>

@@ -11,7 +11,7 @@ import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { GroupModal } from "./AccessModals";
-import { FileWorkspaceModal, NEW_FILE, fmtSize, riskyIn, useBundleUpload, type FileUpdate } from "./FileWorkspace";
+import { FileWorkspaceModal, NEW_FILE, riskyIn, useBundleUpload, type FileUpdate } from "./FileWorkspace";
 import { PlaybookEditor } from "../pages/PlaybookEditor";
 import { Banner, Button, Check, Chip, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
@@ -1126,7 +1126,6 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
       ) : (
         <FileBundleField
           jobId={editing ? job.id : null}
-          jobName={job?.name ?? ""}
           filesVer={job?.filesVer ?? null}
           files={files}
           update={(fn) => {
@@ -1317,7 +1316,6 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                 </Field>
                 <FileBundleField
                   jobId={editing ? job.id : null}
-                  jobName={job?.name ?? ""}
                   filesVer={job?.filesVer ?? null}
                   files={files}
                   update={(fn) => {
@@ -2229,14 +2227,12 @@ function ScriptEditor({ steps, onChange }: { steps: StepDraft[]; onChange: (s: S
  */
 function FileBundleField({
   jobId,
-  jobName,
   filesVer,
   files,
   update,
   onEnv,
 }: {
   jobId: string | null;
-  jobName: string;
   filesVer: number | null;
   files: BundleFile[];
   update: FileUpdate;
@@ -2257,7 +2253,7 @@ function FileBundleField({
   }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const edit = (start: string | null) =>
-    openModal((c) => <FileWorkspaceModal jobId={jobId} jobName={jobName} initial={files} start={start} update={update} onEnv={onEnv} onClose={c} />, "full");
+    openModal((c) => <FileWorkspaceModal jobId={jobId} initial={files} start={start} update={update} onEnv={onEnv} onClose={c} />, "full");
 
   return (
     <Field
@@ -2288,29 +2284,20 @@ function FileBundleField({
           <span className="text-accent font-medium">새 파일</span> 또는 올리기
         </button>
       ) : (
-        <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-2">
+        <div className="flex flex-wrap gap-1.5">
           {files.map((f) => {
-            const risky = f.content !== undefined ? riskyIn(f.content) : f.warnings ?? [];
+            const risky = f.content !== undefined ? riskyIn(f.content).length > 0 : !!f.warnings?.length;
             return (
               <button
                 key={f.path}
                 type="button"
                 onClick={() => edit(f.path)}
-                title="편집기에서 열기"
-                className="group flex items-center gap-2.5 rounded-lg border border-line bg-surface px-3 py-2.5 text-left hover:border-accent/40 hover:bg-hover transition-colors min-w-0"
+                title={risky ? "서버 권한을 넘기는 설정이 있어요" : "편집기에서 열기"}
+                className="inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-line bg-surface text-[12px] font-mono hover:border-accent/40 hover:text-accent transition-colors"
               >
-                <span className="grid place-items-center size-8 rounded-md bg-surface-2 text-faint group-hover:text-accent flex-none">
-                  <Icon name="file" className="size-4" />
-                </span>
-                <span className="min-w-0 flex-1">
-                  <span className="block font-mono text-[12.5px] truncate">{f.path}</span>
-                  <span className="block text-[11.5px] text-faint">
-                    {fmtSize(f.size)}
-                    {f.content !== undefined && ` · ${f.content.split("\n").length}줄`}
-                  </span>
-                </span>
-                {risky.length > 0 && <Chip tone="warn">주의</Chip>}
-                <Icon name="edit" className="size-3.5 text-faint group-hover:text-accent flex-none" />
+                <Icon name="file" className="size-3 text-faint flex-none" />
+                <span className="truncate">{f.path}</span>
+                {risky && <span className="size-1.5 rounded-full bg-warn flex-none" />}
               </button>
             );
           })}
