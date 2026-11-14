@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError, errMsg, parseEnv } from "../lib/api";
-import { useApi, useApp } from "../lib/app";
+import { useApi, useApp, type ModalGuard } from "../lib/app";
 import { indentOnTab } from "../lib/indent";
 import type { BundleFile, EnvSet, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
 import { EnvSource, type EnvMode } from "../components/EnvSource";
@@ -851,6 +851,10 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     }
   };
 
+  const saveRef = useRef(save);
+  saveRef.current = save;
+  const saveJob = () => saveRef.current();
+
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
@@ -1133,6 +1137,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
             setFilesTouched(true);
           }}
           onEnv={mergeEnv}
+          onSaveJob={editing ? saveJob : undefined}
         />
       )}
     </>
@@ -1323,6 +1328,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                     setFilesTouched(true);
                   }}
                   onEnv={mergeEnv}
+                  onSaveJob={editing ? saveJob : undefined}
                 />
                 {fileImages.length > 0 && (
                   <Field label="추적하는 이미지">
@@ -2231,12 +2237,14 @@ function FileBundleField({
   files,
   update,
   onEnv,
+  onSaveJob,
 }: {
   jobId: string | null;
   filesVer: number | null;
   files: BundleFile[];
   update: FileUpdate;
   onEnv: (vars: string[][]) => void;
+  onSaveJob?: () => void;
 }) {
   const { toast, openModal } = useApp();
   const upload = useBundleUpload(update, onEnv);
@@ -2244,16 +2252,25 @@ function FileBundleField({
   updateRef.current = update;
 
   // Editing: the job list only has names and sizes; load the contents once so they can be opened and saved again.
+  // The saved contents also mark which files were edited.
+  const [saved, setSaved] = useState<Map<string, string> | null>(null);
   useEffect(() => {
-    if (!jobId || !files.length || files.every((f) => f.content !== undefined)) return;
+    if (!jobId) return;
     api.get<BundleFile[]>(`/jobs/${jobId}/files`).then(
-      (full) => updateRef.current(() => full),
+      (full) => {
+        setSaved(new Map(full.map((f) => [f.path, f.content ?? ""])));
+        if (files.some((f) => f.content === undefined)) updateRef.current((prev) => prev.map((f) => (f.content === undefined ? full.find((x) => x.path === f.path) ?? f : f)));
+      },
       () => toast("파일 내용을 불러오지 못했어요", "error"),
     );
   }, [jobId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const edit = (start: string | null) =>
-    openModal((c) => <FileWorkspaceModal jobId={jobId} initial={files} start={start} update={update} onEnv={onEnv} onClose={c} />, "full");
+  const edit = (start: string | null) => {
+    const guard: ModalGuard = { current: null };
+    openModal((c) => <FileWorkspaceModal jobId={jobId} initial={files} start={start} update={update} onEnv={onEnv} onSaveJob={onSaveJob} guard={guard} onClose={c} />, "full", undefined, guard);
+  };
+  const mark = (f: BundleFile) => (!saved ? null : !saved.has(f.path) ? "new" : f.content !== undefined && saved.get(f.path) !== f.content ? "edited" : null);
+  const removed = saved ? [...saved.keys()].filter((p) => !files.some((f) => f.path === p)) : [];
 
   return (
     <Field
@@ -2272,7 +2289,7 @@ function FileBundleField({
           </Button>
         </span>
       }
-      hint={<><span className="font-mono">$SERVICE_PATH</span>에 올라가요. zip도 돼요.</>}
+      hint={<>{jobId && filesVer ? `v${filesVer} · ` : ""}<span className="font-mono">$SERVICE_PATH</span>에 올라가요. zip도 돼요.</>}
     >
       {upload.el}
       {files.length === 0 ? (
@@ -2298,12 +2315,17 @@ function FileBundleField({
                 <Icon name="file" className="size-3 text-faint flex-none" />
                 <span className="truncate">{f.path}</span>
                 {risky && <span className="size-1.5 rounded-full bg-warn flex-none" />}
+                {mark(f) && <span className={cx("font-sans text-[10.5px] font-semibold flex-none", mark(f) === "new" ? "text-ok" : "text-[var(--mark)]")}>{mark(f) === "new" ? "새" : "수정"}</span>}
               </button>
             );
           })}
+          {removed.map((p) => (
+            <span key={p} className="inline-flex items-center gap-1.5 h-7 max-w-full px-2.5 rounded-full border border-dashed border-line text-[12px] font-mono text-faint" title="저장하면 제거돼요">
+              <span className="truncate line-through">{p}</span>
+            </span>
+          ))}
         </div>
       )}
-      {jobId && filesVer && <Hint>지금 v{filesVer} · 버전 기록은 편집기 오른쪽에 있어요.</Hint>}
       {upload.dropped.length > 0 && <Hint>빠진 파일: {upload.dropped.map((d) => `${d.path} (${d.reason})`).join(", ")}</Hint>}
     </Field>
   );

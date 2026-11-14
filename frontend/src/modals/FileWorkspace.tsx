@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api, errMsg } from "../lib/api";
-import { useApp } from "../lib/app";
+import { useApp, type ModalGuard } from "../lib/app";
 import { indentOnTab } from "../lib/indent";
 import type { BundleFile } from "../lib/types";
-import { ModalFoot, ModalHead } from "../components/Modal";
+import { ModalFoot, ModalHead, YesNoModal } from "../components/Modal";
 import { Icon } from "../components/Icon";
 import { Button, Chip, Input, cx } from "../components/ui";
 import { diffLines } from "./FileHistoryModal";
@@ -127,6 +127,8 @@ export function FileWorkspaceModal({
   start,
   update,
   onEnv,
+  onSaveJob,
+  guard,
   onClose,
 }: {
   jobId: string | null;
@@ -134,9 +136,11 @@ export function FileWorkspaceModal({
   start: string | null; // a path to open, NEW for a new file, null for the first file
   update: FileUpdate;
   onEnv: (vars: string[][]) => void;
+  onSaveJob?: () => void; // editing a saved job: saves the whole job
+  guard?: ModalGuard;
   onClose: () => void;
 }) {
-  const { toast } = useApp();
+  const { toast, openModal } = useApp();
   const [files, setFiles] = useState<BundleFile[]>(initial);
   const mutate: FileUpdate = (fn) => {
     setFiles(fn);
@@ -198,6 +202,29 @@ export function FileWorkspaceModal({
   const removed = saved ? [...saved.keys()].filter((p) => !files.some((f) => f.path === p)) : [];
   const dirty = !!saved && (removed.length > 0 || files.some((f) => mark(f)));
 
+  // Editing a saved job: closing with unsaved file edits asks whether to save the job now.
+  const requestClose = () => {
+    if (!jobId || !onSaveJob || !dirty) return onClose();
+    openModal(
+      (c) => (
+        <YesNoModal
+          title="수정된 파일이 있습니다. 저장하시겠습니까?"
+          onYes={() => {
+            c();
+            onClose();
+            onSaveJob();
+          }}
+          onNo={() => {
+            c();
+            onClose();
+          }}
+        />
+      ),
+      "sm",
+    );
+  };
+  if (guard) guard.current = requestClose;
+
   const setContent = (content: string) => {
     if (sel === NEW) return setFresh((f) => ({ ...f, content }));
     mutate((prev) => prev.map((f) => (f.path === sel ? { ...f, content, size: byteSize(content), warnings: undefined } : f)));
@@ -251,7 +278,7 @@ export function FileWorkspaceModal({
 
   return (
     <>
-      <ModalHead title="파일 편집기" onClose={onClose} />
+      <ModalHead title="파일 편집기" onClose={requestClose} />
       <div className="flex-1 min-h-0 overflow-auto lg:overflow-hidden grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[230px_minmax(0,1fr)_270px] gap-3 p-3 bg-canvas">
         {/* files */}
         <aside aria-label="파일 목록" className="flex flex-col min-h-0 max-lg:max-h-[240px] rounded-xl bg-surface shadow-soft overflow-hidden">
@@ -440,7 +467,7 @@ export function FileWorkspaceModal({
         </aside>
       </div>
       <ModalFoot>
-        <Button variant="primary" onClick={onClose}>
+        <Button variant="primary" onClick={requestClose}>
           완료
         </Button>
       </ModalFoot>
