@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import type { Host } from "../lib/types";
 import { Icon } from "./Icon";
 import { Chip, cx } from "./ui";
@@ -6,7 +7,7 @@ import { Chip, cx } from "./ui";
 /** Expandable multi-select of inventory groups. Empty selection means "all servers". */
 export function GroupSelect({ groups, value, onChange }: { groups: Record<string, Host[]>; value: string[]; onChange: (v: string[]) => void }) {
   const [open, setOpen] = useState(false);
-  const [up, setUp] = useState(false);
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number } | null>(null);
   const wrap = useRef<HTMLDivElement>(null);
   const menu = useRef<HTMLDivElement>(null);
   const all = Object.keys(groups);
@@ -15,19 +16,31 @@ export function GroupSelect({ groups, value, onChange }: { groups: Record<string
 
   useEffect(() => {
     if (!open) return;
-    const onDown = (e: MouseEvent) => wrap.current && !wrap.current.contains(e.target as Node) && setOpen(false);
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!wrap.current?.contains(t) && !menu.current?.contains(t)) setOpen(false);
+    };
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [open]);
 
-  // Open upward when there is no room below (e.g. near the bottom of a modal).
+  // The list floats over the page (outside cards that clip their content) and opens upward when there is no room below.
   useLayoutEffect(() => {
-    if (!open || !menu.current || !wrap.current) return;
-    const scroller = wrap.current.closest(".overflow-auto") ?? document.documentElement;
-    const box = scroller.getBoundingClientRect();
-    const r = wrap.current.getBoundingClientRect();
-    const h = menu.current.offsetHeight;
-    setUp(r.bottom + h + 8 > box.bottom && r.top - h - 8 > box.top);
+    if (!open) return setPos(null);
+    const place = () => {
+      if (!wrap.current) return;
+      const r = wrap.current.getBoundingClientRect();
+      const h = menu.current?.offsetHeight ?? 0;
+      const up = r.bottom + h + 8 > window.innerHeight && r.top - h - 8 > 0;
+      setPos(up ? { left: r.left, width: r.width, bottom: window.innerHeight - r.top + 6 } : { left: r.left, width: r.width, top: r.bottom + 6 });
+    };
+    place();
+    window.addEventListener("scroll", place, true);
+    window.addEventListener("resize", place);
+    return () => {
+      window.removeEventListener("scroll", place, true);
+      window.removeEventListener("resize", place);
+    };
   }, [open, value.length]);
 
   const add = (g: string) => {
@@ -84,14 +97,12 @@ export function GroupSelect({ groups, value, onChange }: { groups: Record<string
           <Icon name="chev" />
         </span>
       </div>
-      {open && (
+      {open && createPortal(
         <div
           ref={menu}
           role="listbox"
-          className={cx(
-            "absolute inset-x-0 z-20 max-h-[260px] overflow-auto scroll-soft rounded-xl bg-surface shadow-pop p-1 flex flex-col animate-rise",
-            up ? "bottom-[calc(100%+6px)]" : "top-[calc(100%+6px)]",
-          )}
+          style={pos ?? { visibility: "hidden", left: 0, top: 0 }}
+          className="fixed z-[60] max-h-[260px] overflow-auto scroll-soft rounded-xl bg-surface shadow-pop p-1 flex flex-col animate-rise"
         >
           {rest.length ? (
             rest.map((g) => (
@@ -119,7 +130,8 @@ export function GroupSelect({ groups, value, onChange }: { groups: Record<string
               전체 서버로 되돌리기
             </button>
           )}
-        </div>
+        </div>,
+        document.body,
       )}
     </div>
   );
