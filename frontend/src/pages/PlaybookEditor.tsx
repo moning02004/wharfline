@@ -525,14 +525,14 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
                 ) : (
                   <>
                     {required.length > 0 && (
-                      <VarGroup title="꼭 넣어야 하는 값">
+                      <VarGroup title="필수" count={required.length}>
                         {required.map((v) => (
                           <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
                         ))}
                       </VarGroup>
                     )}
                     {optional.length > 0 && (
-                      <VarGroup title="안 넣어도 되는 값" sub="비워 두면 플레이북의 기본값을 써요.">
+                      <VarGroup title="선택" count={optional.length}>
                         {optional.map((v) => (
                           <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
                         ))}
@@ -704,11 +704,12 @@ function FileSummary({ files, dropped }: { files: BundleFile[]; dropped: Dropped
   );
 }
 
-function VarGroup({ title, sub, children }: { title: string; sub?: string; children: ReactNode }) {
+function VarGroup({ title, count, children }: { title: string; count: number; children: ReactNode }) {
   return (
     <div className="flex flex-col gap-3">
-      <div className="text-[12.5px] font-semibold text-muted">
-        {title} {sub && <span className="font-normal text-faint">· {sub}</span>}
+      <div className="flex items-baseline gap-2 pb-2 border-b border-line">
+        <h3 className="m-0 text-[16px] font-bold text-fg">{title}</h3>
+        <span className="text-[12.5px] text-faint">{count}개</span>
       </div>
       {children}
     </div>
@@ -730,21 +731,22 @@ function VarField({ v, value, onChange, saved, onClear }: { v: PlayVarInfo; valu
     </span>
   );
   const def = v.default !== null && v.default !== "" ? v.default : null;
+  const defLine = !v.required && (
+    <span className="block">
+      기본값 {def ? <span className="font-mono text-fg">{def}</span> : "없음"}
+    </span>
+  );
   const hint = (
     <>
       {v.desc}
       {v.secret && <span className="block">암호화해서 저장하고, 실행 기록에는 가려져요.</span>}
-      {!v.required && def && !v.bool && !v.desc.includes(def) && (
-        <span className="block">
-          비워 두면 <span className="font-mono">{def}</span>
-        </span>
-      )}
+      {defLine}
     </>
   );
   if (v.bool) {
     const on = value ? value === "true" : (v.default ?? "false").toLowerCase() === "true";
     return (
-      <Field label={label} hint={v.desc || undefined}>
+      <Field label={label} hint={v.desc || defLine ? <>{v.desc}{defLine}</> : undefined}>
         <label className="flex items-center gap-2.5 text-[13px]">
           <Switch checked={on} onChange={(x) => onChange(x ? "true" : "false")} label={v.name} />
           {on ? "켜기 (true)" : "끄기 (false)"}
