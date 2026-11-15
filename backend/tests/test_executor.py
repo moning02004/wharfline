@@ -92,6 +92,17 @@ def test_playbook_vars_without_options_is_wharfline_only():
     assert executor.playbook_vars(plan) == plan.extra_vars
 
 
+def test_playbook_vars_turn_yes_no_and_lists_into_values():
+    plan = _play_plan(play_vars={"tls": "true", "off": "false", "peers": "[laptop, phone]", "opts": '{"live-restore": true}',
+                                 "port": "2222", "text": "[not a list", "note": "a [b]"},
+                      secret_vars={"pw": "true"})
+    xv = executor.playbook_vars(plan)
+    assert xv["tls"] is True and xv["off"] is False
+    assert xv["peers"] == ["laptop", "phone"] and xv["opts"] == {"live-restore": True}
+    assert xv["port"] == "2222" and xv["text"] == "[not a list" and xv["note"] == "a [b]"
+    assert xv["pw"] == "true"  # secrets are passed as typed
+
+
 def test_shown_vars_masks_secrets():
     plan = _play_plan(play_vars={"region": "kr"}, secret_vars={"db_pass": "s3cret-db"})
     shown = executor.shown_vars(plan, {**plan.extra_vars, "env_src": "/tmp/x/app.env"})

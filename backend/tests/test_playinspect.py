@@ -96,10 +96,106 @@ def test_roles_defaults_and_templates():
     ]
     r = playinspect.inspect(files, "site.yml")
     v = _vars(r)
-    assert set(v) == {"db_url", "app_secret_token"}  # app_port has a role default
+    assert set(v) == {"db_url", "app_secret_token", "app_port"}
+    # a role default is optional, shown with its default
+    assert not v["app_port"]["required"] and v["app_port"]["default"] == "8080"
+    assert v["db_url"]["required"]
     assert v["app_secret_token"]["secret"]
     assert r["warnings"] == []
     assert any("hosts: web" in n for n in r["notes"])
+
+
+def test_a_role_template_is_read_from_that_role_only():
+    # two roles with a template of the same name: each task reads its own role's file, never the other's
+    book = "- hosts: vpn\n  roles:\n    - wireguard\n"
+    task = "- ansible.builtin.template:\n    src: docker-compose.yml.j2\n    dest: /opt/x/docker-compose.yml\n"
+    files = [
+        {"path": "12-vpn.yaml", "content": book},
+        {"path": "roles/crowdsec/templates/docker-compose.yml.j2", "content": "{{ crowdsec_version }} {{ crowdsec_lapi_port }}"},
+        {"path": "roles/crowdsec/defaults/main.yaml", "content": "crowdsec_version: v1\n"},
+        {"path": "roles/wireguard/defaults/main.yaml", "content": "wireguard_version: '1.0'\n"},
+        {"path": "roles/wireguard/tasks/main.yaml", "content": task},
+        {"path": "roles/wireguard/templates/docker-compose.yml.j2", "content": "{{ wireguard_version }}"},
+    ]
+    r = playinspect.inspect(files, "12-vpn.yaml")
+    assert set(_vars(r)) == {"wireguard_version"}
+    assert r["warnings"] == []
+
+
+ROLE_DEFAULTS = """\
+app_version: "1.2"                 # https://example.com/releases
+app_domain: ""                     # 필수. 예) app.example.com
+app_db_password: ""
+# 접속할 기기 이름 (영문, 숫자)
+app_peers: [laptop]
+app_tls: true
+app_note: ""                       # 비우면 안 씀
+app_url: "https://{{ app_domain }}/"
+app_registration_password_auth: false
+app_queue_enabled: true
+app_queue_user: ""
+app_queue_password: ""
+app_cache_enabled: false
+app_cache_url: ""
+app_confirm: ""
+"""
+ROLE_TASKS = """\
+- name: Check
+  ansible.builtin.assert:
+    that:
+      - app_domain | length > 0
+      - app_db_password | length >= 8
+      - ansible_architecture == 'x86_64' or app_note | length > 0
+      - not app_queue_enabled or (app_queue_user | length > 0 and app_queue_password | length >= 8)
+      - not app_cache_enabled or app_cache_url | length > 0
+      - app_confirm == 'yes'
+- ansible.builtin.include_role:
+    name: helper
+- ansible.builtin.copy:
+    src: app.conf
+    dest: /etc/app.conf
+- ansible.builtin.debug:
+    msg: "{{ app_url }} {{ app_peers }} {{ app_tls }}"
+"""
+
+
+def test_role_defaults_are_optional_unless_an_assert_needs_them():
+    book = "# 앱 설치\n#   app_peers 를 바꾸고 다시 실행\n- hosts: all\n  roles:\n    - app\n"
+    files = [
+        {"path": "site.yml", "content": book},
+        {"path": "roles/app/defaults/main.yml", "content": ROLE_DEFAULTS},
+        {"path": "roles/app/tasks/main.yml", "content": ROLE_TASKS},
+        {"path": "roles/helper/defaults/main.yml", "content": "helper_port: 9000\n"},
+    ]
+    r = playinspect.inspect(files, "site.yml")
+    v = _vars(r)
+    # empty and asserted non-empty → required; an assert joined by `or` does not make app_note required
+    assert v["app_domain"]["required"] and v["app_domain"]["default"] is None
+    assert v["app_db_password"]["required"] and v["app_db_password"]["secret"]
+    assert not v["app_note"]["required"]
+    # behind a switch that is on by default → required; behind one that is off → optional
+    assert v["app_queue_user"]["required"] and v["app_queue_password"]["required"]
+    assert not v["app_cache_url"]["required"]
+    assert v["app_confirm"]["required"]  # must be a given value
+    # the role's comment: trailing, or the lines just above; a playbook line that only names it doesn't win
+    assert v["app_domain"]["desc"] == "필수. 예) app.example.com"
+    assert v["app_peers"]["desc"] == "접속할 기기 이름 (영문, 숫자)"
+    assert v["app_version"]["default"] == "1.2" and v["app_version"]["desc"] == "https://example.com/releases"
+    # lists as [..], yes/no as a switch; a yes/no named like a password is not a secret
+    assert v["app_peers"]["default"] == '["laptop"]'
+    assert v["app_tls"]["bool"] and v["app_tls"]["default"] == "true"
+    assert not v["app_registration_password_auth"]["secret"]
+    # built from other values → not offered
+    assert "app_url" not in v
+    # include_role is followed
+    assert v["helper_port"]["default"] == "9000"
+    # required first
+    assert [x["name"] for x in r["vars"] if x["required"]] == ["app_domain", "app_db_password", "app_queue_user",
+                                                                "app_queue_password", "app_confirm"]
+    # the role copies app.conf from its own files/
+    assert r["warnings"] == ["올린 파일에 없어요: roles/app/files/app.conf (role 이 서버로 복사해요. 같이 올려 주세요)"]
+    files.append({"path": "roles/app/files/app.conf", "content": "x"})
+    assert playinspect.inspect(files, "site.yml")["warnings"] == []
 
 
 def test_playbooks_are_lists_of_plays():

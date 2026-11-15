@@ -33,6 +33,7 @@ from pathlib import Path, PurePosixPath
 from typing import Any
 
 import asyncssh
+import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -381,7 +382,25 @@ def playbook_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> dict[s
 
     The job's variables, then its secret variables, then Wharfline's own (image, env_src, registry…).
     """
-    return {**plan.play_vars, **plan.secret_vars, **(plan.extra_vars if wharfline is None else wharfline)}
+    typed = {k: typed_value(v) for k, v in plan.play_vars.items()}
+    return {**typed, **plan.secret_vars, **(plan.extra_vars if wharfline is None else wharfline)}
+
+
+def typed_value(v: str) -> Any:
+    """A job variable as the playbook expects it. The form keeps everything as text; a role default that is
+    a yes/no or a list/map ([a, b], {k: v}) has to reach Ansible as one, or `when: x` and loops misread it.
+    Anything else stays text, as `-e x=…` would give it."""
+    s = v.strip()
+    if s in ("true", "false"):
+        return s == "true"
+    if s[:1] in "[{" and s[-1:] in "]}":
+        try:
+            parsed = yaml.safe_load(s)
+        except yaml.YAMLError:
+            return v
+        if isinstance(parsed, (list, dict)):
+            return parsed
+    return v
 
 
 HIDDEN_VARS = ("registry_password", "env_src")

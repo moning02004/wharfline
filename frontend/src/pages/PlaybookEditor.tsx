@@ -734,6 +734,7 @@ function VarField({ v, value, onChange, saved, onClear }: { v: PlayVarInfo; valu
   const defLine = !v.required && (
     <span className="block">
       기본값 {def ? <span className="font-mono text-fg">{def}</span> : "없음"}
+      {def && /^[[{]/.test(def) && <span className="text-faint"> · 바꿀 때는 전체를 같은 형식으로 (예: [a, b])</span>}
     </span>
   );
   const hint = (

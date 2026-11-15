@@ -1,9 +1,11 @@
 """Read a playbook and tell the job form what it needs, so nobody has to know Ansible to fill it in.
 
 - `playbooks(files)`: which .yml files in an upload (or a repo) are playbooks (a list of plays).
-- `inspect(files, book)`: the variables the playbook reads but never sets (the ones to fill in), with
-  whether each is required, a default, a likely secret, a yes/no switch, and a description taken from
-  the playbook's own comments. Also what the plays need (sudo, a host group) and files it copies that
+- `inspect(files, book)`: the variables the playbook reads but never sets (the ones to fill in), plus
+  the ones its roles give a default to (optional, shown with that default), with whether each is
+  required, a default, a likely secret, a yes/no switch, and a description taken from the playbook's
+  own comments (or the comment next to the role default). A role default that is empty but checked by
+  an `assert` (`x | length > 0`) counts as required. Also what the plays need (sudo, a host group) and files it copies that
   are missing from the upload.
 
 Nothing here runs the playbook; it only reads text. Unknown or odd YAML is skipped, never an error:
@@ -12,6 +14,7 @@ the form falls back to adding variables by hand.
 
 from __future__ import annotations
 
+import json
 import posixpath
 import re
 from typing import Any
@@ -57,6 +60,12 @@ SET_VAR = re.compile(r"^\s*set\s+([A-Za-z_]\w*)\s*=")
 ACCESS = re.compile(r"""^(?:\s*\.\s*[A-Za-z_]\w*|\s*\[[^\]]*\])*""")
 GUARD = re.compile(r"^\s*(?:\|\s*(?:default|d)\s*\(|is\s+(?:not\s+)?defined\b|is\s+undefined\b)")
 DEFAULT_ARGS = re.compile(r"""^\s*\|\s*(?:default|d)\s*\(\s*('(?:[^'\\]|\\.)*'|"(?:[^"\\]|\\.)*"|-?\d+(?:\.\d+)?|true|false|True|False|none|None)?\s*(?:,\s*(true|True))?""")
+# assert conditions that make an empty role default required: `x | length > 0`, `x | length >= 10`, `x != ''`, `x == 'yes'`.
+ASSERT_FILLED = re.compile(r"""^\s*\(?\s*([A-Za-z_]\w*)\s*(?:\|\s*(?:string\s*\|\s*)?length\s*(?:>\s*0|>=\s*[1-9]\d*)|!=\s*(?:''|"")|==\s*(?:'[^']+'|"[^"]+"))\s*\)?\s*$""")
+# `not some_enabled or (…)`: what follows is required only while that switch is on.
+ASSERT_UNLESS = re.compile(r"^\s*not\s+([A-Za-z_]\w*)\s+or\s+(.+)$", re.S)
+INLINE_COMMENT = re.compile(r"\s#\s?(.*)$")
+TOP_KEY = re.compile(r"^([A-Za-z_]\w*)\s*:")
 BOOL_USE = re.compile(r"^(?:\s*\|\s*(?:default|d)\s*\([^)]*\))?\s*\|\s*bool\b")
 
 
@@ -137,6 +146,11 @@ class _Walk:
         self.defined: set[str] = set()
         self.copies: list[str] = []  # copy/template sources, relative to the playbook folder
         self.templates: list[str] = []
+        self.role_copies: list[tuple[str, str]] = []  # (role folder, src) — looked up in that role's files/
+        self.role_defaults: dict[str, dict[str, Any]] = {}  # name -> {value, desc, order}
+        self.asserted: dict[str, str | None] = {}  # names an assert requires to be non-empty -> unless this switch is off
+        self.roles_seen: set[str] = set()
+        self.role_root: str | None = None  # the role whose tasks are being read
 
     def value(self, v: Any, bare: bool = False) -> None:
         if isinstance(v, str):
@@ -167,7 +181,18 @@ class _Walk:
             if mod == "set_fact" and isinstance(val, dict):
                 self.defined |= {str(k) for k in val if k != "cacheable"}
             if mod in ("copy", "template", "synchronize") and isinstance(val, dict) and isinstance(val.get("src"), str):
-                (self.templates if mod == "template" else self.copies).append(val["src"])
+                if self.role_root is None:
+                    (self.templates if mod == "template" else self.copies).append(val["src"])
+                elif mod != "template":  # a role's templates/ are all read in role(); its copies come from its files/
+                    self.role_copies.append((self.role_root, val["src"]))
+            if mod == "assert" and isinstance(val, dict):
+                that = val.get("that")
+                for line in that if isinstance(that, list) else [that]:
+                    if isinstance(line, str):
+                        self.assertion(line)
+            if mod in ("include_role", "import_role") and isinstance(val, dict) and isinstance(val.get("name"), str) \
+                    and "{{" not in val["name"]:
+                self.role(val["name"])
             if key in TASK_LISTS:
                 for sub in val or []:
                     self.task(sub)
@@ -192,12 +217,34 @@ class _Walk:
             for t in p.get(key) or []:
                 self.task(t)
 
+    def assertion(self, line: str) -> None:
+        """Which names one assert line requires: `a | length > 0 and b == 'yes'`, or the same behind `not switch or (…)`.
+        Anything joined by a plain `or` is a choice, not a requirement."""
+        switch = None
+        m = ASSERT_UNLESS.match(line)
+        if m:
+            switch, line = m.group(1), m.group(2).strip()
+            if line.startswith("(") and line.endswith(")"):
+                line = line[1:-1]
+        if re.search(r"\bor\b", STRING.sub("''", line)):
+            return
+        for part in re.split(r"\s+and\s+", line):
+            hit = ASSERT_FILLED.match(part)
+            if hit:
+                self.asserted.setdefault(hit.group(1), switch)
+
     def role(self, name: str) -> None:
         root = posixpath.normpath(posixpath.join(self.base, "roles", name))
-        for part, defines in (("defaults", True), ("vars", True), ("tasks", False), ("handlers", False)):
+        if root in self.roles_seen:
+            return
+        self.roles_seen.add(root)
+        outer, self.role_root = self.role_root, root
+        for part in ("defaults", "vars", "tasks", "handlers"):
             text = self.files.get(f"{root}/{part}/main.yml") or self.files.get(f"{root}/{part}/main.yaml")
             data = _load(text) if text else None
-            if defines:
+            if part == "defaults":
+                self.defaults(data, text or "")
+            elif part == "vars":
                 self.vars_block(data)
             elif isinstance(data, list):
                 for t in data:
@@ -205,18 +252,63 @@ class _Walk:
         for path, text in self.files.items():
             if path.startswith(f"{root}/templates/"):
                 self.uses.text(text)
+        self.role_root = outer
+
+    def defaults(self, data: Any, text: str) -> None:
+        """A role's defaults/main.yml: values the job may change. Each keeps its value and its comment."""
+        if not isinstance(data, dict):
+            return
+        self.value(list(data.values()))
+        notes = _default_comments(text)
+        for k, v in data.items():
+            name = str(k)
+            if name not in self.role_defaults:
+                self.role_defaults[name] = {"value": v, "desc": notes.get(name, ""), "order": len(self.role_defaults)}
 
 
 def _comment_lines(text: str) -> list[str]:
     return [ln.strip().lstrip("#").strip() for ln in text.splitlines() if ln.strip().startswith("#")]
 
 
-def _comment_for(name: str, comments: list[str]) -> str:
+def _default_comments(text: str) -> dict[str, str]:
+    """For each top-level key in a defaults file: its trailing comment, else the comment lines right above it."""
+    out: dict[str, str] = {}
+    above: list[str] = []
+    for ln in text.splitlines():
+        s = ln.strip()
+        if s.startswith("#"):
+            above.append(s.lstrip("#").strip())
+            continue
+        m = TOP_KEY.match(ln)
+        if m:
+            inline = INLINE_COMMENT.search(STRING.sub(lambda x: " " * len(x.group(0)), ln))
+            note = ln[inline.start(1):].strip() if inline else " ".join(x for x in above if x)
+            out[m.group(1)] = re.sub(r"\s+", " ", note).strip()
+        if not ln.startswith((" ", "\t", "-")):
+            above = []
+    return out
+
+
+def _shown_default(v: Any) -> str | None:
+    """A role default as the form shows it: true/false, a number, text, or [a, b] / {k: v} for lists and maps."""
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        return "true" if v else "false"
+    if isinstance(v, (list, dict)):
+        return json.dumps(v, ensure_ascii=False) if v else ("[]" if isinstance(v, list) else "{}")
+    return str(v)
+
+
+def _comment_for(name: str, comments: list[str], defining_only: bool = False) -> str:
     """The comment line about the variable. A line that defines it ("init_user  처음 접속할 계정",
     "비밀 변수  init_password  …") wins over one that only mentions it ("init_user 를 docker 그룹에 추가")."""
     rx = re.compile(rf"(?<![\w.]){re.escape(name)}(?![\w])")
     defining = re.compile(rf"^(?:[^\w\s]*\s*)?(?:\S+(?:\s\S+)?\s{{2,}})?{re.escape(name)}(?:\s{{2,}}|\s*[:=-]\s|$)")
-    return next((ln for ln in comments if defining.search(ln)), None) or next((ln for ln in comments if rx.search(ln)), "")
+    hit = next((ln for ln in comments if defining.search(ln)), None)
+    if hit or defining_only:
+        return hit or ""
+    return next((ln for ln in comments if rx.search(ln)), "")
 
 
 def _describe(name: str, line: str) -> str:
@@ -286,11 +378,41 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
             what = f"{local}/ 폴더" if src.rstrip().endswith("/") else local
             warnings.append(f"올린 파일에 없어요: {what} (플레이북이 서버로 복사해요. 같이 올려 주세요)")
 
+    for root, src in walk.role_copies:
+        if "{{" in src or src.startswith("/"):
+            continue
+        rel = src.strip("/")
+        if not any(p == f"{root}/files/{rel}" or p.startswith(f"{root}/files/{rel}/") for p in by_path):
+            warnings.append(f"올린 파일에 없어요: {root}/files/{rel} (role 이 서버로 복사해요. 같이 올려 주세요)")
+
     comments = _comment_lines(text)
     auto: list[str] = []
     out: list[dict[str, Any]] = []
+    # Role defaults the playbook does not set itself: optional (required when empty and asserted), with the default shown.
+    for name, d in walk.role_defaults.items():
+        if name in walk.defined or name in WHARFLINE:
+            continue
+        value = d["value"]
+        if isinstance(value, str) and ("{{" in value or "{%" in value):
+            continue  # built from other values; changing those is enough
+        if any(isinstance(x, str) and "{{" in x for x in (value if isinstance(value, list) else
+                                                         value.values() if isinstance(value, dict) else [])):
+            continue
+        empty = value in (None, "", [], {})
+        # the playbook's comment only when it describes this value; a line that merely names it loses to the role's own comment
+        comment_line = _comment_for(name, comments, defining_only=True)
+        desc = (_describe(name, comment_line) if comment_line else "") or d["desc"]
+        u = walk.uses.names.get(name, {})
+        secret = not isinstance(value, bool) and bool(
+            SECRET_NAME.search(name) or (comment_line and SECRET_WORDS.search(comment_line.split(name, 1)[0])))
+        switch = walk.asserted.get(name)
+        on = switch is None or walk.role_defaults.get(switch, {}).get("value") is True
+        out.append({"name": name, "required": empty and name in walk.asserted and on, "secret": secret,
+                    "default": None if empty and not isinstance(value, (list, dict)) else _shown_default(value),
+                    "bool": (isinstance(value, bool) or bool(u.get("bool"))) and not secret,
+                    "desc": OPTIONAL_WORDS.sub("", desc).strip(), "_order": d["order"]})
     for name, u in walk.uses.names.items():
-        if name in walk.defined or name in walk.uses.local:
+        if name in walk.defined or name in walk.uses.local or name in walk.role_defaults:
             continue
         if name in WHARFLINE:
             auto.append(name)
@@ -306,7 +428,10 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
                     "bool": u["bool"] and not secret, "desc": OPTIONAL_WORDS.sub("", desc).strip()})
     # Comment order first (the author's own order), then the rest by name; required before optional.
     order = {n: i for i, n in enumerate(_comment_order(comments, [v["name"] for v in out]))}
-    out.sort(key=lambda v: (not v["required"], order.get(v["name"], len(order)), v["name"]))
+    # then role defaults in file order, then the rest by name
+    out.sort(key=lambda v: (not v["required"], order.get(v["name"], len(order)), v.get("_order", 1 << 20), v["name"]))
+    for v in out:
+        v.pop("_order", None)
 
     notes: list[str] = []
     if any(p.get("become") for p in plays):
