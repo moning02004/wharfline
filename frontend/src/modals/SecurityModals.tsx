@@ -83,6 +83,7 @@ export function useTfaSetup(onDone: (codes: string[], s: Session) => void) {
   }, []);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     setBusy(true);
     try {
       const r = await api.post<{ codes: string[]; session: Session }>("/auth/tfa/verify", { code });
@@ -175,6 +176,7 @@ export function usePasswordForm(askCurrent: boolean, onDone: (s: Session) => voi
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (next !== again) return setErr("새 비밀번호 두 칸이 서로 달라요.");
+    setErr("");
     setBusy(true);
     try {
       onDone(await api.post<Session>("/auth/password", { current, new: next }));
@@ -231,6 +233,7 @@ export function DisableTfaModal({ onClose }: { onClose: () => void }) {
   const [err, setErr] = useState("");
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     try {
       setSession(await api.post<Session>("/auth/tfa/disable", { password: pw }));
       onClose();

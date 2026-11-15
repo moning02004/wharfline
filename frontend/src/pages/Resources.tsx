@@ -593,6 +593,7 @@ function RepoKeyModal({ repo, onClose }: { repo: Repo; onClose: () => void }) {
 
   const save = () =>
     withSudo("플레이북 레포 키 변경", async () => {
+      setErr("");
       try {
         await api.put(`/repos/${repo.id}/key`, { key });
         refresh();

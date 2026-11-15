@@ -53,6 +53,7 @@ function PasswordStep({ onDone, samples }: { onDone: (s: Session) => void; sampl
   const [busy, setBusy] = useState(false);
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr(""); // a message left from the last try must not show (and toast) again while this one runs
     setBusy(true);
     try {
       onDone(await api.post<Session>("/auth/login", { email, password: pw }));
@@ -107,6 +108,7 @@ function TotpStep({ onDone, onBack }: { onDone: (s: Session) => void; onBack: ()
   const [err, setErr] = useState("");
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     try {
       onDone(await api.post<Session>("/auth/totp", { code }));
     } catch (e) {

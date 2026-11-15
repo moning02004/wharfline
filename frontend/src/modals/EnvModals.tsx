@@ -17,6 +17,7 @@ export function NewEnvModal({ onClose }: { onClose: () => void }) {
 
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     try {
       await api.post("/envs", { name, vars: parseEnv(text) });
       onClose();

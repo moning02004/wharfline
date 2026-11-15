@@ -396,6 +396,7 @@ export function GroupModal({ repos, members, onClose, onCreated }: { repos: stri
   const [err, setErr] = useState("");
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     try {
       const g = await saveGroup(undefined, draft);
       onClose();
@@ -583,6 +584,7 @@ export function DeleteGroupModal({ group, onClose }: { group: Group; onClose: ()
   const { refresh, reloadAccess, toast } = useApp();
   const [err, setErr] = useState("");
   const remove = async () => {
+    setErr("");
     try {
       await api.del(`/groups/${group.id}`);
       onClose();

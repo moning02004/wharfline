@@ -43,6 +43,7 @@ export function NewKeyModal({ onClose, onCreated, initialMode = "gen" }: { onClo
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     withSudo("키 추가", async () => {
       try {
         const k = await api.post<Key>("/keys", { mode, name, privateKey: priv, passphrase: pass, user, token: tok });
@@ -311,6 +312,7 @@ export function NewRegistryModal({ onClose, reg }: { onClose: () => void; reg?: 
 
   const submit = (e: React.FormEvent) => {
     e.preventDefault();
+    setErr("");
     withSudo("레지스트리 토큰 저장", async () => {
       try {
         if (reg) await api.put(`/registries/${reg.id}`, { host: reg.host, namespace: ns, user, token: tok });

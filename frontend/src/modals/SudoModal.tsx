@@ -12,6 +12,7 @@ export function SudoModal({ reason, minutes, always, onClose, onDone }: { reason
   const submit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!pw) return;
+    setErr("");
     setBusy(true);
     try {
       onDone(await api.post<Session>("/auth/sudo", { password: pw }));
