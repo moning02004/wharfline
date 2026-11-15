@@ -359,6 +359,16 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
   const title = editing ? "플레이북 작업 편집" : copying ? "플레이북 작업 복제" : "플레이북 추가";
   const required = vars.filter((v) => v.required);
   const optional = vars.filter((v) => !v.required);
+  // [role, values] in the order roles first appear; "" holds what the playbook reads itself
+  const optionalGroups = useMemo(() => {
+    const m = new Map<string, PlayVarInfo[]>([["", []]]);
+    for (const v of optional) {
+      const k = v.role ?? "";
+      if (!m.has(k)) m.set(k, []);
+      m.get(k)!.push(v);
+    }
+    return [...m.entries()].filter(([, list]) => list.length > 0);
+  }, [optional]);
 
   return (
     <>
@@ -533,9 +543,19 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
                     )}
                     {optional.length > 0 && (
                       <VarGroup title="선택" count={optional.length}>
-                        {optional.map((v) => (
-                          <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
-                        ))}
+                        {/* the playbook's own values first, then each role's defaults folded under its name */}
+                        {optionalGroups.map(([role, list]) => {
+                          const field = (v: PlayVarInfo) => (
+                            <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
+                          );
+                          if (!role) return list.map(field);
+                          const changed = list.filter((v) => (values[v.name] ?? "") !== "" || (savedSecrets.has(v.name) && !cleared.has(v.name))).length;
+                          return (
+                            <RoleGroup key={role} role={role} count={list.length} changed={changed}>
+                              {list.map(field)}
+                            </RoleGroup>
+                          );
+                        })}
                       </VarGroup>
                     )}
                   </>
@@ -712,6 +732,33 @@ function VarGroup({ title, count, children }: { title: string; count: number; ch
         <span className="text-[12.5px] text-faint">{count}개</span>
       </div>
       {children}
+    </div>
+  );
+}
+
+/** One role's optional values, folded until opened (opened from the start when one of them is already set). */
+function RoleGroup({ role, count, changed, children }: { role: string; count: number; changed: number; children: ReactNode }) {
+  const [open, setOpen] = useState(changed > 0);
+  const id = `rg-${role}`;
+  return (
+    <div className="rounded-lg border border-line">
+      <button
+        type="button"
+        aria-expanded={open}
+        aria-controls={id}
+        onClick={() => setOpen((x) => !x)}
+        className="w-full flex items-center gap-2 px-3 py-2.5 text-left text-[13.5px] hover:bg-surface-2 rounded-lg"
+      >
+        <Icon name="chev" className={cx("size-3.5 text-faint transition-transform duration-150", !open && "-rotate-90")} />
+        <span className="font-mono font-medium">{role}</span>
+        <span className="text-[12.5px] text-faint">{count}개</span>
+        {changed > 0 && <Chip tone="accent">바꾼 값 {changed}</Chip>}
+      </button>
+      {open && (
+        <div id={id} className="flex flex-col gap-3 px-3 pb-3 pt-1 border-t border-line">
+          {children}
+        </div>
+      )}
     </div>
   );
 }

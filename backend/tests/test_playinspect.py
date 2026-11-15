@@ -189,6 +189,8 @@ def test_role_defaults_are_optional_unless_an_assert_needs_them():
     assert "app_url" not in v
     # include_role is followed
     assert v["helper_port"]["default"] == "9000"
+    # each role default says which role it belongs to; values the playbook itself reads have none
+    assert v["app_peers"]["role"] == "app" and v["helper_port"]["role"] == "helper"
     # required first
     assert [x["name"] for x in r["vars"] if x["required"]] == ["app_domain", "app_db_password", "app_queue_user",
                                                                 "app_queue_password", "app_confirm"]

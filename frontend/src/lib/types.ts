@@ -77,6 +77,8 @@ export interface PlayVarInfo {
   bool: boolean;
   /** From the playbook's comments. */
   desc: string;
+  /** The role whose defaults/main.yml gives it a default; null when the playbook itself reads it. */
+  role?: string | null;
 }
 
 export interface PlaybookInfo {

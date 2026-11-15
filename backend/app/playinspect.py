@@ -3,8 +3,8 @@
 - `playbooks(files)`: which .yml files in an upload (or a repo) are playbooks (a list of plays).
 - `inspect(files, book)`: the variables the playbook reads but never sets (the ones to fill in), plus
   the ones its roles give a default to (optional, shown with that default), with whether each is
-  required, a default, a likely secret, a yes/no switch, and a description taken from the playbook's
-  own comments (or the comment next to the role default). A role default that is empty but checked by
+  required, a default, a likely secret, a yes/no switch, a description taken from the playbook's own
+  comments (or the comment next to the role default), and the role it comes from (None: the playbook). A role default that is empty but checked by
   an `assert` (`x | length > 0`) counts as required. Also what the plays need (sudo, a host group) and files it copies that
   are missing from the upload.
 
@@ -263,7 +263,8 @@ class _Walk:
         for k, v in data.items():
             name = str(k)
             if name not in self.role_defaults:
-                self.role_defaults[name] = {"value": v, "desc": notes.get(name, ""), "order": len(self.role_defaults)}
+                self.role_defaults[name] = {"value": v, "desc": notes.get(name, ""), "order": len(self.role_defaults),
+                                            "role": posixpath.basename(self.role_root or "")}
 
 
 def _comment_lines(text: str) -> list[str]:
@@ -410,7 +411,7 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
         out.append({"name": name, "required": empty and name in walk.asserted and on, "secret": secret,
                     "default": None if empty and not isinstance(value, (list, dict)) else _shown_default(value),
                     "bool": (isinstance(value, bool) or bool(u.get("bool"))) and not secret,
-                    "desc": OPTIONAL_WORDS.sub("", desc).strip(), "_order": d["order"]})
+                    "desc": OPTIONAL_WORDS.sub("", desc).strip(), "role": d["role"] or None, "_order": d["order"]})
     for name, u in walk.uses.names.items():
         if name in walk.defined or name in walk.uses.local or name in walk.role_defaults:
             continue
@@ -425,7 +426,7 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
         required = u["plain"] > 0 and not OPTIONAL_WORDS.search(desc)
         secret = bool(SECRET_NAME.search(name) or SECRET_WORDS.search(comment_line.split(name, 1)[0]))
         out.append({"name": name, "required": required, "secret": secret, "default": u["default"],
-                    "bool": u["bool"] and not secret, "desc": OPTIONAL_WORDS.sub("", desc).strip()})
+                    "bool": u["bool"] and not secret, "desc": OPTIONAL_WORDS.sub("", desc).strip(), "role": None})
     # Comment order first (the author's own order), then the rest by name; required before optional.
     order = {n: i for i, n in enumerate(_comment_order(comments, [v["name"] for v in out]))}
     # then role defaults in file order, then the rest by name
