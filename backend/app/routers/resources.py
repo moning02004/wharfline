@@ -498,6 +498,165 @@ def delete_host(inv_id: str, ix: int, db: Session = Depends(get_db)):
     return {"ok": True}
 
 
+# ---------- editing inventories and servers ----------
+# Only what can't break logins changes freely (names, groups). A new deploy user or key, or moving a server to an
+# inventory with another user or key, is applied only after every affected server accepts the login.
+
+def _inv_or_404(db: Session, inv_id: str) -> m.Inventory:
+    inv = db.get(m.Inventory, inv_id)
+    if not inv:
+        raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
+    return inv
+
+
+def _host_or_404(inv: m.Inventory, ix: int) -> m.Host:
+    if not 0 <= ix < len(inv.hosts):
+        raise HTTPException(404, "서버를 찾을 수 없어요.")
+    return inv.hosts[ix]
+
+
+def _names(items: list[str]) -> str:
+    return ", ".join(items[:3]) + (f" 외 {len(items) - 3}개" if len(items) > 3 else "")
+
+
+def _left_without_servers(db: Session, inv: m.Inventory, host: m.Host, new_group: str | None) -> list[str]:
+    """Jobs that would have no server left if `host` moved to `new_group` (None: left the inventory)."""
+    others = [h for h in inv.hosts if h is not host]
+    groups_after = {h.grp for h in others} | ({new_group} if new_group else set())
+    out = []
+    for j in db.scalars(select(m.Job).where(m.Job.inventory == inv.name).order_by(m.Job.name)):
+        targets = list(j.targets or [])
+        if targets and host.grp in targets and not set(targets) & groups_after:
+            out.append(j.name)
+        elif not targets and new_group is None and not others:
+            out.append(j.name)
+    return out
+
+
+def _busy_jobs(db: Session, inv: m.Inventory) -> list[str]:
+    """Jobs on this inventory with a run going or waiting for approval."""
+    ids = list(db.scalars(select(m.Job.id).where(m.Job.inventory == inv.name)))
+    if not ids:
+        return []
+    return sorted(set(db.scalars(select(m.Run.job).where(m.Run.job_id.in_(ids), m.Run.status.in_(("run", "approval"))))))
+
+
+async def _logins_ok(hosts: list[m.Host], user: str, key: m.Key) -> list[str]:
+    """Each server must log in as `user` with `key` and show its pinned host key; returns the failures."""
+    private = key.get_secret() or ""
+    results = await asyncio.gather(*(sshcheck.check(h.ip, h.port, user, private) for h in hosts))
+    bad = []
+    for h, r in zip(hosts, results):
+        if h.host_fingerprint and r.get("fingerprint") and r["fingerprint"] != h.host_fingerprint:
+            bad.append(f"{h.name}: 호스트 키가 저장된 값과 달라요")
+        elif not r.get("login"):
+            bad.append(f"{h.name}: {r.get('error') or '로그인하지 못했어요'}")
+    return bad
+
+
+class HostEditIn(BaseModel):
+    name: str
+    group: str
+
+
+@router.put("/inventory/{inv_id}/hosts/{ix}", dependencies=[Depends(require("resources"))])
+def edit_host(inv_id: str, ix: int, body: HostEditIn, db: Session = Depends(get_db)):
+    """A server's name and group. The address, port and user stay: changing them is a different server."""
+    inv = _inv_or_404(db, inv_id)
+    h = _host_or_404(inv, ix)
+    name, group = body.name.strip() or h.ip, body.group.strip() or "default"
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,31}$", group):
+        raise HTTPException(400, "그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.")
+    if len(name) > 128 or any(o.name == name for o in inv.hosts if o is not h):
+        raise HTTPException(400, "서버 이름이 너무 길거나 이 인벤토리에 이미 있어요.")
+    if group != h.grp and (left := _left_without_servers(db, inv, h, group)):
+        raise HTTPException(400, f"{h.grp} 그룹의 마지막 서버라 바꿀 수 없어요. 이 그룹에 배포하는 작업: {_names(left)}")
+    before = f"{h.name}/{h.grp}"
+    h.name, h.grp = name, group
+    s.log_act(db, "서버 수정", f"{inv.name} · {before} → {name}/{group}")
+    db.commit()
+    return h.to_dict()
+
+
+class InventoryEditIn(BaseModel):
+    name: str
+    user: str
+    key: str
+
+
+@router.put("/inventory/{inv_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+async def edit_inventory(inv_id: str, body: InventoryEditIn, db: Session = Depends(get_db)):
+    """Rename (jobs follow), or switch the deploy user or SSH key once every server accepts the new login."""
+    inv = _inv_or_404(db, inv_id)
+    name = body.name.strip()
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", name):
+        raise HTTPException(400, "인벤토리 이름은 production처럼 영문 소문자, 숫자, -, _ 로 넣어 주세요.")
+    if name != inv.name and db.scalar(select(m.Inventory).where(m.Inventory.name == name)):
+        raise HTTPException(400, "같은 이름의 인벤토리가 있어요.")
+    user = check_ssh_user(body.user)
+    key = db.scalar(select(m.Key).where(m.Key.name == body.key, m.Key.kind == "ssh"))
+    if not key:
+        raise HTTPException(400, "서버 접속에 쓸 SSH 키를 골라 주세요.")
+    login_changes = user != inv.ssh_user or key.name != inv.key or any(h.ssh_user != user for h in inv.hosts)
+    if (name != inv.name or login_changes) and (busy := _busy_jobs(db, inv)):
+        raise HTTPException(400, f"이 인벤토리로 배포 중이거나 승인을 기다리는 작업이 있어요: {_names(busy)}. 끝난 뒤에 바꿔 주세요.")
+    if login_changes and inv.hosts and (bad := await _logins_ok(inv.hosts, user, key)):
+        raise HTTPException(400, f"새 사용자·키로 접속하지 못한 서버가 있어 바꾸지 않았어요. {' / '.join(bad)}")
+    changes = []
+    if name != inv.name:
+        for j in db.scalars(select(m.Job).where(m.Job.inventory == inv.name)):
+            j.inventory = name
+        changes.append(f"이름 {inv.name} → {name}")
+        inv.name = name
+    if user != inv.ssh_user:
+        changes.append(f"사용자 {inv.ssh_user} → {user}")
+        inv.ssh_user = user
+    for h in inv.hosts:
+        h.ssh_user = user
+    if key.name != inv.key:
+        old = db.scalar(select(m.Key).where(m.Key.name == inv.key))
+        if old and old.used_count:
+            old.used_count -= 1
+        key.used_count += 1
+        changes.append(f"키 {inv.key} → {key.name}")
+        inv.key = key.name
+    if changes:
+        s.log_act(db, "인벤토리 수정", f"{inv.name} · " + " · ".join(changes), "warn" if login_changes else "ok")
+    db.commit()
+    return inv.to_dict()
+
+
+class HostMoveIn(BaseModel):
+    to: str  # inventory id
+
+
+@router.post("/inventory/{inv_id}/hosts/{ix}/move", dependencies=[Depends(require("resources"))])
+async def move_host(inv_id: str, ix: int, body: HostMoveIn, db: Session = Depends(get_db)):
+    """Move a server to another inventory. With another user or key there, it must log in with them first."""
+    src = _inv_or_404(db, inv_id)
+    h = _host_or_404(src, ix)
+    dst = _inv_or_404(db, body.to)
+    if dst.id == src.id:
+        raise HTTPException(400, "같은 인벤토리예요.")
+    if any(o.name == h.name for o in dst.hosts):
+        raise HTTPException(400, f"{dst.name}에 같은 이름의 서버({h.name})가 있어요. 이름을 바꾼 뒤 옮겨 주세요.")
+    if left := _left_without_servers(db, src, h, None):
+        raise HTTPException(400, f"옮기면 서버가 없어지는 작업이 있어요: {_names(left)}")
+    if busy := sorted(set(_busy_jobs(db, src)) | set(_busy_jobs(db, dst))):
+        raise HTTPException(400, f"배포 중이거나 승인을 기다리는 작업이 있어요: {_names(busy)}. 끝난 뒤에 옮겨 주세요.")
+    if dst.key != src.key or h.ssh_user != dst.ssh_user:
+        key = db.scalar(select(m.Key).where(m.Key.name == dst.key, m.Key.kind == "ssh"))
+        if not key:
+            raise HTTPException(400, f"{dst.name}의 SSH 키 {dst.key}를 찾을 수 없어요.")
+        if bad := await _logins_ok([h], dst.ssh_user, key):
+            raise HTTPException(400, f"{dst.name}의 사용자({dst.ssh_user})·키({dst.key})로 접속하지 못해 옮기지 않았어요. {bad[0]}")
+    h.ssh_user = dst.ssh_user
+    h.inventory = dst  # back_populates moves it between the two lists; the row stays (not an orphan)
+    s.log_act(db, "서버 이동", f"{h.name} ({h.ip}) · {src.name} → {dst.name}")
+    db.commit()
+    return {"ok": True, "host": h.to_dict()}
+
+
 @router.post("/inventory/{inv_id}/hosts/{ix}/accept-key", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 def accept_host_key(inv_id: str, ix: int, db: Session = Depends(get_db)):
     inv = db.get(m.Inventory, inv_id)

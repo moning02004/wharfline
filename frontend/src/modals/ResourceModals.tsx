@@ -619,8 +619,6 @@ const NEW_GROUP = "\u0000new";
 
 function ServerFields({ value: v, onChange, groups }: { value: ServerDraft; onChange: (v: ServerDraft) => void; groups: string[] }) {
   const set = (patch: Partial<ServerDraft>) => onChange({ ...v, ...patch });
-  // A group of the inventory from the list, or a new one typed in.
-  const [typing, setTyping] = useState(false);
   const optional = <span className="text-muted font-normal text-[12.5px]">선택</span>;
   return (
     <>
@@ -633,31 +631,39 @@ function ServerFields({ value: v, onChange, groups }: { value: ServerDraft; onCh
       <Field label={<>이름 {optional}</>} htmlFor="hName" hint="화면과 실행 기록에서 부르는 이름이에요. 비우면 IP로 해요.">
         <Input id="hName" placeholder={v.ip.trim() || "web-03"} value={v.name} onChange={(e) => set({ name: e.target.value })} />
       </Field>
-      <Field label={<>그룹 {optional}</>} htmlFor="hGroup" hint="배포 대상을 고를 때 써요.">
-        {groups.length && !typing ? (
-          <Select
-            id="hGroup"
-            mono
-            value={v.group.trim() || "default"}
-            onChange={(e) => {
-              if (e.target.value === NEW_GROUP) {
-                setTyping(true);
-                set({ group: "" });
-              } else set({ group: e.target.value === "default" ? "" : e.target.value });
-            }}
-          >
-            {[...new Set([...groups, "default"])].map((g) => (
-              <option key={g} value={g}>
-                {g}
-              </option>
-            ))}
-            <option value={NEW_GROUP}>새 그룹 입력…</option>
-          </Select>
-        ) : (
-          <Input id="hGroup" mono placeholder="default" value={v.group} onChange={(e) => set({ group: e.target.value })} autoFocus={typing} />
-        )}
-      </Field>
+      <GroupField value={v.group} onChange={(group) => set({ group })} groups={groups} />
     </>
+  );
+}
+
+/** A group of the inventory from the list, or a new one typed in. Empty = default. */
+function GroupField({ value, onChange, groups }: { value: string; onChange: (g: string) => void; groups: string[] }) {
+  const [typing, setTyping] = useState(false);
+  return (
+    <Field label={<>그룹 <span className="text-muted font-normal text-[12.5px]">선택</span></>} htmlFor="hGroup" hint="배포 대상을 고를 때 써요.">
+      {groups.length && !typing ? (
+        <Select
+          id="hGroup"
+          mono
+          value={value.trim() || "default"}
+          onChange={(e) => {
+            if (e.target.value === NEW_GROUP) {
+              setTyping(true);
+              onChange("");
+            } else onChange(e.target.value === "default" ? "" : e.target.value);
+          }}
+        >
+          {[...new Set([...groups, "default"])].map((g) => (
+            <option key={g} value={g}>
+              {g}
+            </option>
+          ))}
+          <option value={NEW_GROUP}>새 그룹 입력…</option>
+        </Select>
+      ) : (
+        <Input id="hGroup" mono placeholder="default" value={value} onChange={(e) => onChange(e.target.value)} autoFocus={typing} />
+      )}
+    </Field>
   );
 }
 
@@ -1028,6 +1034,175 @@ export function HostKeyModal({ invId, ix, host, onClose }: { invId: string; ix: 
           }
         >
           새 지문으로 바꾸기
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+/** A server's name and group. Address, port and user stay: those would make it a different server. */
+export function EditHostModal({ inventory: inv, ix, onClose }: { inventory: Inventory; ix: number; onClose: () => void }) {
+  const { refresh, toast } = useApp();
+  const h = inv.hosts[ix];
+  const [name, setName] = useState(h.name);
+  const [group, setGroup] = useState(h.group === "default" ? "" : h.group);
+  const [busy, setBusy] = useState(false);
+  const groups = [...new Set(inv.hosts.map((x) => x.group))];
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    if (group.trim() && !/^[a-z0-9][a-z0-9_-]{0,31}$/.test(group.trim())) return toast("그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.", "error");
+    setBusy(true);
+    try {
+      await api.put(`/inventory/${inv.id}/hosts/${ix}`, { name: name.trim(), group: group.trim() });
+      refresh();
+      onClose();
+      toast("서버를 고쳤어요");
+    } catch (err) {
+      toast(errMsg(err), "error");
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      <ModalHead title="서버 수정" sub={`${inv.name} · ${h.ip}:${h.port}`} onClose={onClose} />
+      <form id="hostEdit" onSubmit={save} className="contents">
+        <ModalBody>
+          <Field label="이름" htmlFor="hName" hint="화면과 실행 기록에서 부르는 이름이에요. 비우면 IP로 해요.">
+            <Input id="hName" autoFocus placeholder={h.ip} value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <GroupField value={group} onChange={setGroup} groups={groups} />
+          <Hint>주소, 포트, 사용자는 바꿀 수 없어요. 다른 서버가 되니 지우고 새로 추가해 주세요.</Hint>
+        </ModalBody>
+      </form>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" type="submit" form="hostEdit" disabled={busy}>
+          {busy ? "저장하는 중…" : "저장"}
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+/** An inventory's name, deploy user and key. A new user or key is applied only when every server logs in with it. */
+export function EditInventoryModal({ inventory: inv, onClose }: { inventory: Inventory; onClose: () => void }) {
+  const { refresh, toast, withSudo, openModal } = useApp();
+  const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
+  const [name, setName] = useState(inv.name);
+  const [user, setUser] = useState(inv.user);
+  const [key, setKey] = useState(inv.key);
+  const [busy, setBusy] = useState(false);
+  const loginChange = user.trim() !== inv.user || key !== inv.key;
+
+  const save = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name.trim())) return toast("인벤토리 이름은 production처럼 영문 소문자, 숫자, -, _ 로 넣어 주세요.", "error");
+    const bad = userError(user);
+    if (bad) return toast(bad, "error");
+    withSudo("인벤토리 수정", async () => {
+      setBusy(true);
+      try {
+        await api.put(`/inventory/${inv.id}`, { name: name.trim(), user: user.trim(), key });
+        refresh();
+        onClose();
+        toast(loginChange ? `서버 ${inv.hosts.length}대 모두 새 설정으로 접속돼서 바꿨어요` : "인벤토리를 고쳤어요");
+      } catch (err) {
+        if ((err as { sudoRequired?: boolean }).sudoRequired) throw err;
+        toast(errMsg(err), "error");
+      } finally {
+        setBusy(false);
+      }
+    });
+  };
+
+  return (
+    <>
+      <ModalHead title="인벤토리 수정" sub={`서버 ${inv.hosts.length}대`} onClose={onClose} />
+      <form id="invEdit" onSubmit={save} className="contents">
+        <ModalBody>
+          <Field label="이름" htmlFor="ieName" hint="바꾸면 이 인벤토리를 쓰는 배포 작업도 따라 바뀌어요.">
+            <Input id="ieName" mono value={name} onChange={(e) => setName(e.target.value)} />
+          </Field>
+          <Field label="배포 사용자" htmlFor="ieUser">
+            <Input id="ieUser" mono value={user} onChange={(e) => setUser(e.target.value)} />
+          </Field>
+          <Field
+            label="SSH 키"
+            htmlFor="ieKey"
+            right={
+              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
+                키 추가
+              </Button>
+            }
+          >
+            <Select id="ieKey" value={key} onChange={(e) => setKey(e.target.value)}>
+              {!keys.some((k) => k.name === key) && <option value={key}>{key}</option>}
+              {keys.map((k) => (
+                <option key={k.id} value={k.name}>
+                  {k.name}
+                </option>
+              ))}
+            </Select>
+          </Field>
+          {loginChange && inv.hosts.length > 0 && (
+            <Banner tone="info" icon="info" title="저장할 때 서버마다 접속해 봐요">
+              새 사용자·키로 {inv.hosts.length}대 모두 로그인되면 바꾸고, 하나라도 안 되면 그대로 둬요. 서버의 authorized_keys에 새 키를 먼저 넣어 주세요.
+            </Banner>
+          )}
+        </ModalBody>
+      </form>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="primary" type="submit" form="invEdit" disabled={busy}>
+          {busy ? (loginChange ? "접속 확인 중…" : "저장하는 중…") : "저장"}
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+/** Move a server to another inventory (the same thing dragging does). */
+export function MoveHostModal({ from, ix, all, onMove, onClose }: { from: Inventory; ix: number; all: Inventory[]; onMove: (to: Inventory) => Promise<void>; onClose: () => void }) {
+  const others = all.filter((i) => i.id !== from.id);
+  const [to, setTo] = useState(others[0]?.id ?? "");
+  const [busy, setBusy] = useState(false);
+  const target = others.find((i) => i.id === to);
+  const h = from.hosts[ix];
+  return (
+    <>
+      <ModalHead title="다른 인벤토리로 옮기기" sub={`${h.name} · ${h.ip}`} onClose={onClose} />
+      <ModalBody>
+        <Field label="옮길 인벤토리" htmlFor="mvTo">
+          <Select id="mvTo" mono value={to} onChange={(e) => setTo(e.target.value)}>
+            {others.map((i) => (
+              <option key={i.id} value={i.id}>
+                {i.name} · {i.user} · {i.key}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        {target && (target.key !== from.key || target.user !== h.user) && (
+          <Hint>
+            사용자나 키가 달라서, {target.user}·{target.key}로 먼저 접속해 보고 되면 옮겨요.
+          </Hint>
+        )}
+      </ModalBody>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button
+          variant="primary"
+          disabled={!target || busy}
+          onClick={async () => {
+            if (!target) return;
+            setBusy(true);
+            await onMove(target);
+            setBusy(false);
+            onClose();
+          }}
+        >
+          {busy ? "옮기는 중…" : "옮기기"}
         </Button>
       </ModalFoot>
     </>

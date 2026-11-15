@@ -3,10 +3,10 @@ import { Link } from "react-router-dom";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, GitProvider, Image, ImageUsage, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
-import { HostKeyModal, NewHostModal, NewImageModal, NewInventoryModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
+import { EditHostModal, EditInventoryModal, HostKeyModal, MoveHostModal, NewHostModal, NewImageModal, NewInventoryModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, Card, CardHeader, Chip, Dot, ErrorText, Field, Input, KV, Loading, PageHeader, Seg, Select, TableWrap, Textarea } from "../components/ui";
+import { Banner, Button, Card, CardHeader, cx, Chip, Dot, ErrorText, Field, Input, KV, Loading, PageHeader, Seg, Select, TableWrap, Textarea } from "../components/ui";
 import { MoreMenu, type MenuItem } from "../components/Menu";
 import { PROVIDER_NAME } from "../components/BuildBadge";
 
@@ -746,7 +746,26 @@ export function Inventory() {
   const { openModal, toast, can, withSudo, refresh } = useApp();
   const manage = can("resources");
   const [pinging, setPinging] = useState<string | null>(null);
+  // Dragging a server row onto another inventory's card moves it there.
+  const [drag, setDrag] = useState<{ inv: string; ix: number } | null>(null);
+  const [over, setOver] = useState<string | null>(null);
+  const [moving, setMoving] = useState<string | null>(null);
   if (!data) return <Loading />;
+
+  const move = async (from: Inv, ix: number, to: Inv) => {
+    const h = from.hosts[ix];
+    if (!h || from.id === to.id) return;
+    setMoving(to.id);
+    try {
+      await api.post(`/inventory/${from.id}/hosts/${ix}/move`, { to: to.id });
+      refresh();
+      toast(`${h.name}을(를) ${to.name}(으)로 옮겼어요`);
+    } catch (e) {
+      toast(errMsg(e), "error");
+    }
+    setMoving(null);
+  };
+  const canDrag = manage && data.length > 1;
 
   const ping = async (inv: Inv) => {
     setPinging(inv.id);
@@ -819,7 +838,27 @@ export function Inventory() {
       {data.map((inv) => {
         const sharedWith = data.filter((o) => o.id !== inv.id && o.key === inv.key).map((o) => o.name);
         return (
-          <Card key={inv.id}>
+          <div
+            key={inv.id}
+            onDragOver={(e) => {
+              if (!drag || drag.inv === inv.id) return;
+              e.preventDefault();
+              e.dataTransfer.dropEffect = "move";
+              if (over !== inv.id) setOver(inv.id);
+            }}
+            onDragLeave={(e) => {
+              if (!e.currentTarget.contains(e.relatedTarget as Node)) setOver((o) => (o === inv.id ? null : o));
+            }}
+            onDrop={(e) => {
+              e.preventDefault();
+              const from = drag && data.find((i) => i.id === drag.inv);
+              setOver(null);
+              setDrag(null);
+              if (from && drag) move(from, drag.ix, inv);
+            }}
+            className={cx("rounded-[18px] transition-shadow", over === inv.id && "ring-2 ring-accent ring-offset-2 ring-offset-canvas", drag && drag.inv !== inv.id && over !== inv.id && "outline-2 outline-dashed outline-accent/40 outline-offset-2")}
+          >
+          <Card>
             <CardHeader
               title={
                 <span className="flex items-center gap-2 flex-wrap">
@@ -829,6 +868,8 @@ export function Inventory() {
                     {inv.key}
                   </span>
                   {sharedWith.length > 0 && <SharedKeyChip others={sharedWith} />}
+                  {moving === inv.id && <span className="text-xs text-accent font-normal">옮기는 중… (접속 확인)</span>}
+                  {over === inv.id && moving !== inv.id && <span className="text-xs text-accent font-normal">여기에 놓으면 옮겨요</span>}
                 </span>
               }
             >
@@ -840,7 +881,13 @@ export function Inventory() {
                   <Button size="sm" icon="refresh" disabled={pinging === inv.id || !inv.hosts.length} onClick={() => ping(inv)}>
                     {pinging === inv.id ? "확인 중…" : "연결 테스트"}
                   </Button>
-                  <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label={`${inv.name} 인벤토리 삭제`} title="인벤토리 삭제" onClick={() => delInventory(inv)} />
+                  <MoreMenu
+                    label={`${inv.name} 인벤토리 메뉴`}
+                    items={[
+                      { label: "수정", icon: "edit", onClick: () => openModal((c) => <EditInventoryModal inventory={inv} onClose={c} />) },
+                      { label: "삭제", icon: "trash", danger: true, onClick: () => delInventory(inv) },
+                    ]}
+                  />
                 </div>
               )}
             </CardHeader>
@@ -859,7 +906,18 @@ export function Inventory() {
                 </thead>
                 <tbody>
                   {inv.hosts.map((h, ix) => (
-                    <tr key={h.name + ix}>
+                    <tr
+                      key={h.name + ix}
+                      draggable={canDrag}
+                      title={canDrag ? "끌어서 다른 인벤토리로 옮길 수 있어요" : undefined}
+                      onDragStart={(e) => {
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("text/plain", h.name);
+                        setDrag({ inv: inv.id, ix });
+                      }}
+                      onDragEnd={() => (setDrag(null), setOver(null))}
+                      className={cx(canDrag && "cursor-grab active:cursor-grabbing", drag?.inv === inv.id && drag.ix === ix && "opacity-40")}
+                    >
                       <td>
                         <Chip tone="accent" mono>
                           {h.group}
@@ -880,7 +938,16 @@ export function Inventory() {
                             </Button>
                           )}
                           {manage && (
-                            <Button size="sm" variant="ghost" iconOnly icon="trash" aria-label={`${h.name} 서버 삭제`} title="서버 삭제" onClick={() => delHost(inv, ix)} />
+                            <MoreMenu
+                              label={`${h.name} 서버 메뉴`}
+                              items={[
+                                { label: "수정", icon: "edit", onClick: () => openModal((c) => <EditHostModal inventory={inv} ix={ix} onClose={c} />) },
+                                ...(data.length > 1
+                                  ? [{ label: "다른 인벤토리로 옮기기", icon: "arrow" as const, onClick: () => openModal((c) => <MoveHostModal from={inv} ix={ix} all={data} onMove={(to) => move(inv, ix, to)} onClose={c} />) }]
+                                  : []),
+                                { label: "삭제", icon: "trash", danger: true, onClick: () => delHost(inv, ix) },
+                              ]}
+                            />
                           )}
                         </div>
                       </td>
@@ -890,6 +957,7 @@ export function Inventory() {
               </table>
             </TableWrap>
           </Card>
+          </div>
         );
       })}
     </>
