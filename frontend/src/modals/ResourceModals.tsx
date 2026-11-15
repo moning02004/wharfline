@@ -3,7 +3,7 @@ import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Host, Image, Inventory, Key, PublicKeyInfo, Registry } from "../lib/types";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, Check, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea } from "../components/ui";
+import { Banner, Button, Check, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea, cx } from "../components/ui";
 import { Icon } from "../components/Icon";
 
 export function copyText(text: string, toast: (m: string) => void) {
@@ -1163,46 +1163,124 @@ export function EditInventoryModal({ inventory: inv, onClose }: { inventory: Inv
   );
 }
 
-/** Move a server to another inventory (the same thing dragging does). */
-export function MoveHostModal({ from, ix, all, onMove, onClose }: { from: Inventory; ix: number; all: Inventory[]; onMove: (to: Inventory) => Promise<void>; onClose: () => void }) {
+type MoveCheck = { key: string; label: string; ok: boolean; detail: string };
+
+/** One line of the move checklist: spinner while checking, then a check mark or an X with the reason. */
+function CheckLine({ label, state, detail }: { label: string; state: "wait" | "ok" | "bad"; detail?: string }) {
+  return (
+    <li className="flex items-start gap-2.5 py-2.5 border-b border-line last:border-b-0">
+      <span className={cx("grid place-items-center size-5 rounded-full flex-none mt-px", state === "ok" ? "bg-ok-soft text-ok" : state === "bad" ? "bg-bad-soft text-bad" : "text-faint")}>
+        {state === "wait" ? (
+          <span className="size-3.5 rounded-full border-2 border-current border-t-transparent animate-spin" aria-label="확인 중" />
+        ) : (
+          <Icon name={state === "ok" ? "check" : "x"} className="size-3" />
+        )}
+      </span>
+      <span className="min-w-0">
+        <span className="block text-[13px] font-medium">{label}</span>
+        <span className={cx("block text-[12px]", state === "bad" ? "text-bad" : "text-muted")}>{state === "wait" ? "확인하는 중…" : detail}</span>
+      </span>
+    </li>
+  );
+}
+
+/**
+ * "옮기겠습니까?" with a checklist: same name there, jobs left without servers, deploys going, and a login with
+ * the target's user and key. Moving is possible only when every line has a check mark.
+ * `to` is fixed after a drag; from the menu, the person picks the inventory here.
+ */
+export function MoveHostModal({ from, ix, all, to: fixedTo, onClose }: { from: Inventory; ix: number; all: Inventory[]; to?: Inventory; onClose: () => void }) {
+  const { refresh, toast } = useApp();
   const others = all.filter((i) => i.id !== from.id);
-  const [to, setTo] = useState(others[0]?.id ?? "");
+  const [toId, setToId] = useState(fixedTo?.id ?? others[0]?.id ?? "");
+  const [checks, setChecks] = useState<MoveCheck[] | null>(null);
+  const [login, setLogin] = useState<MoveCheck | null>(null);
   const [busy, setBusy] = useState(false);
-  const target = others.find((i) => i.id === to);
+  const target = others.find((i) => i.id === toId);
   const h = from.hosts[ix];
+
+  useEffect(() => {
+    if (!target) return;
+    let live = true;
+    setChecks(null);
+    setLogin(null);
+    const body = { to: target.id };
+    api.post<{ checks: MoveCheck[] }>(`/inventory/${from.id}/hosts/${ix}/move/check`, body).then(
+      (r) => live && setChecks(r.checks),
+      (e) => live && setChecks([{ key: "err", label: "확인", ok: false, detail: errMsg(e) }]),
+    );
+    api.post<MoveCheck>(`/inventory/${from.id}/hosts/${ix}/move/login`, body).then(
+      (r) => live && setLogin(r),
+      (e) => live && setLogin({ key: "login", label: "서버 연결", ok: false, detail: errMsg(e) }),
+    );
+    return () => {
+      live = false;
+    };
+  }, [toId]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const lines: { key: string; label: string; state: "wait" | "ok" | "bad"; detail?: string }[] = [
+    ...(checks ?? [{ key: "name", label: "같은 이름의 서버" }, { key: "jobs", label: "배포 작업 영향" }, { key: "busy", label: "진행 중인 배포" }]).map((c) => ({
+      key: c.key,
+      label: c.label,
+      state: !checks ? ("wait" as const) : (c as MoveCheck).ok ? ("ok" as const) : ("bad" as const),
+      detail: (c as MoveCheck).detail,
+    })),
+    { key: "login", label: "서버 연결", state: !login ? "wait" : login.ok ? "ok" : "bad", detail: login?.detail },
+  ];
+  const done = !!checks && !!login;
+  const allOk = done && lines.every((l) => l.state === "ok");
+
+  const move = async () => {
+    if (!target) return;
+    setBusy(true);
+    try {
+      await api.post(`/inventory/${from.id}/hosts/${ix}/move`, { to: target.id });
+      refresh();
+      onClose();
+      toast(`${h.name}을(를) ${target.name}(으)로 옮겼어요`);
+    } catch (e) {
+      toast(errMsg(e), "error");
+      setBusy(false);
+    }
+  };
+
   return (
     <>
-      <ModalHead title="다른 인벤토리로 옮기기" sub={`${h.name} · ${h.ip}`} onClose={onClose} />
+      <ModalHead title="서버를 옮기겠습니까?" onClose={onClose} />
       <ModalBody>
-        <Field label="옮길 인벤토리" htmlFor="mvTo">
-          <Select id="mvTo" mono value={to} onChange={(e) => setTo(e.target.value)}>
-            {others.map((i) => (
-              <option key={i.id} value={i.id}>
-                {i.name} · {i.user} · {i.key}
-              </option>
-            ))}
-          </Select>
-        </Field>
-        {target && (target.key !== from.key || target.user !== h.user) && (
-          <Hint>
-            사용자나 키가 달라서, {target.user}·{target.key}로 먼저 접속해 보고 되면 옮겨요.
-          </Hint>
+        <div className="flex items-center gap-2 flex-wrap text-[13px]">
+          <span className="font-mono font-medium">{h.name}</span>
+          <span className="text-muted font-mono text-[12px]">{h.ip}</span>
+          <span className="text-muted">·</span>
+          <span className="font-mono">{from.name}</span>
+          <Icon name="arrow" className="size-3.5 text-faint" />
+          {fixedTo ? (
+            <span className="font-mono font-semibold text-accent">{fixedTo.name}</span>
+          ) : (
+            <Select aria-label="옮길 인벤토리" mono className="w-auto" value={toId} onChange={(e) => setToId(e.target.value)}>
+              {others.map((i) => (
+                <option key={i.id} value={i.id}>
+                  {i.name}
+                </option>
+              ))}
+            </Select>
+          )}
+        </div>
+        <ul className="rounded-xl border border-line px-3.5">
+          {lines.map((l) => (
+            <CheckLine key={l.key} label={l.label} state={l.state} detail={l.detail} />
+          ))}
+        </ul>
+        {done && !allOk && (
+          <Banner tone="warn" icon="alert" title="옮길 수 없어요">
+            X 표시된 항목을 정리한 뒤 다시 옮겨 주세요.
+          </Banner>
         )}
       </ModalBody>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
-        <Button
-          variant="primary"
-          disabled={!target || busy}
-          onClick={async () => {
-            if (!target) return;
-            setBusy(true);
-            await onMove(target);
-            setBusy(false);
-            onClose();
-          }}
-        >
-          {busy ? "옮기는 중…" : "옮기기"}
+        <Button variant="primary" disabled={!allOk || busy} onClick={move}>
+          {busy ? "옮기는 중…" : done ? "옮기기" : "확인하는 중…"}
         </Button>
       </ModalFoot>
     </>

@@ -108,3 +108,21 @@ def test_move_server_between_inventories(client, login, monkeypatch):
     client.delete(f"/api/inventory/{a['id']}/hosts/1")
     r = client.post(f"/api/inventory/{a['id']}/hosts/0/move", json={"to": b["id"]})
     assert r.status_code == 400 and "move-a job" in r.json()["detail"]
+
+
+def test_move_checklist(client, login, monkeypatch):
+    login(OWNER, sudo=True)
+    a = _make(client, "chk-a", hosts=[("k-01", "10.8.7.1", "app"), ("k-02", "10.8.7.2", "app")])
+    b = _make(client, "chk-b", hosts=[("k-02", "10.8.8.2", "app")])
+    r = client.post(f"/api/inventory/{a['id']}/hosts/0/move/check", json={"to": b["id"]})
+    assert r.status_code == 200 and all(c["ok"] for c in r.json()["checks"])
+    checks = {c["key"]: c for c in client.post(f"/api/inventory/{a['id']}/hosts/1/move/check", json={"to": b["id"]}).json()["checks"]}
+    assert not checks["name"]["ok"] and checks["jobs"]["ok"] and checks["busy"]["ok"]
+    assert client.post(f"/api/inventory/{a['id']}/hosts/0/move/login", json={"to": b["id"]}).json()["ok"]
+    with monkeypatch.context() as mp:
+        _refuse_logins(mp)
+        out = client.post(f"/api/inventory/{a['id']}/hosts/0/move/login", json={"to": b["id"]}).json()
+        assert not out["ok"] and "로그인 실패" in out["detail"]
+        # same user and key, but the move still needs a working login
+        assert client.post(f"/api/inventory/{a['id']}/hosts/0/move", json={"to": b["id"]}).status_code == 400
+    assert client.post(f"/api/inventory/{a['id']}/hosts/0/move", json={"to": a["id"]}).status_code == 400

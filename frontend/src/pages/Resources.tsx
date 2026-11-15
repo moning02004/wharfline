@@ -749,22 +749,10 @@ export function Inventory() {
   // Dragging a server row onto another inventory's card moves it there.
   const [drag, setDrag] = useState<{ inv: string; ix: number } | null>(null);
   const [over, setOver] = useState<string | null>(null);
-  const [moving, setMoving] = useState<string | null>(null);
   if (!data) return <Loading />;
 
-  const move = async (from: Inv, ix: number, to: Inv) => {
-    const h = from.hosts[ix];
-    if (!h || from.id === to.id) return;
-    setMoving(to.id);
-    try {
-      await api.post(`/inventory/${from.id}/hosts/${ix}/move`, { to: to.id });
-      refresh();
-      toast(`${h.name}을(를) ${to.name}(으)로 옮겼어요`);
-    } catch (e) {
-      toast(errMsg(e), "error");
-    }
-    setMoving(null);
-  };
+  const askMove = (from: Inv, ix: number, to?: Inv) =>
+    openModal((c) => <MoveHostModal from={from} ix={ix} all={data} to={to} onClose={c} />, "md");
   const canDrag = manage && data.length > 1;
 
   const ping = async (inv: Inv) => {
@@ -854,10 +842,27 @@ export function Inventory() {
               const from = drag && data.find((i) => i.id === drag.inv);
               setOver(null);
               setDrag(null);
-              if (from && drag) move(from, drag.ix, inv);
+              if (from && drag && from.id !== inv.id) askMove(from, drag.ix, inv);
             }}
-            className={cx("rounded-[18px] transition-shadow", over === inv.id && "ring-2 ring-accent ring-offset-2 ring-offset-canvas", drag && drag.inv !== inv.id && over !== inv.id && "outline-2 outline-dashed outline-accent/40 outline-offset-2")}
+            className={cx(
+              "relative rounded-[18px] transition-[box-shadow,transform] duration-150",
+              over === inv.id && "ring-2 ring-accent ring-offset-2 ring-offset-canvas scale-[1.005]",
+              drag && drag.inv !== inv.id && over !== inv.id && "outline-2 outline-dashed outline-accent/40 outline-offset-2",
+            )}
           >
+            {/* While dragging: a tinted layer over the cards a server can go to */}
+            {drag && drag.inv !== inv.id && (
+              <div
+                className={cx(
+                  "absolute inset-0 z-10 rounded-[18px] pointer-events-none grid place-items-center transition-colors",
+                  over === inv.id ? "bg-accent/12" : "bg-accent/[.04]",
+                )}
+              >
+                {over === inv.id && (
+                  <span className="rounded-full bg-accent text-white text-[12.5px] font-semibold px-3.5 py-1.5 shadow-lift">{inv.name}(으)로 옮기기</span>
+                )}
+              </div>
+            )}
           <Card>
             <CardHeader
               title={
@@ -868,8 +873,6 @@ export function Inventory() {
                     {inv.key}
                   </span>
                   {sharedWith.length > 0 && <SharedKeyChip others={sharedWith} />}
-                  {moving === inv.id && <span className="text-xs text-accent font-normal">옮기는 중… (접속 확인)</span>}
-                  {over === inv.id && moving !== inv.id && <span className="text-xs text-accent font-normal">여기에 놓으면 옮겨요</span>}
                 </span>
               }
             >
@@ -913,6 +916,15 @@ export function Inventory() {
                       onDragStart={(e) => {
                         e.dataTransfer.effectAllowed = "move";
                         e.dataTransfer.setData("text/plain", h.name);
+                        // A solid card under the cursor instead of the see-through table row.
+                        const ghost = document.createElement("div");
+                        ghost.className = "fixed -left-[999px] top-0 flex items-center gap-2 px-3.5 py-2 rounded-xl bg-surface text-fg shadow-pop ring-2 ring-accent text-[13px] font-medium";
+                        ghost.innerHTML = `<span class="font-mono"></span><span class="font-mono text-[12px] text-muted"></span>`;
+                        (ghost.children[0] as HTMLElement).textContent = h.name;
+                        (ghost.children[1] as HTMLElement).textContent = h.ip;
+                        document.body.appendChild(ghost);
+                        e.dataTransfer.setDragImage(ghost, 18, 18);
+                        setTimeout(() => ghost.remove(), 0);
                         setDrag({ inv: inv.id, ix });
                       }}
                       onDragEnd={() => (setDrag(null), setOver(null))}
@@ -943,7 +955,7 @@ export function Inventory() {
                               items={[
                                 { label: "수정", icon: "edit", onClick: () => openModal((c) => <EditHostModal inventory={inv} ix={ix} onClose={c} />) },
                                 ...(data.length > 1
-                                  ? [{ label: "다른 인벤토리로 옮기기", icon: "arrow" as const, onClick: () => openModal((c) => <MoveHostModal from={inv} ix={ix} all={data} onMove={(to) => move(inv, ix, to)} onClose={c} />) }]
+                                  ? [{ label: "다른 인벤토리로 옮기기", icon: "arrow" as const, onClick: () => askMove(inv, ix) }]
                                   : []),
                                 { label: "삭제", icon: "trash", danger: true, onClick: () => delHost(inv, ix) },
                               ]}

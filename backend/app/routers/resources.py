@@ -630,26 +630,65 @@ class HostMoveIn(BaseModel):
     to: str  # inventory id
 
 
-@router.post("/inventory/{inv_id}/hosts/{ix}/move", dependencies=[Depends(require("resources"))])
-async def move_host(inv_id: str, ix: int, body: HostMoveIn, db: Session = Depends(get_db)):
-    """Move a server to another inventory. With another user or key there, it must log in with them first."""
+def _move_parts(db: Session, inv_id: str, ix: int, to: str) -> tuple[m.Inventory, m.Host, m.Inventory]:
     src = _inv_or_404(db, inv_id)
     h = _host_or_404(src, ix)
-    dst = _inv_or_404(db, body.to)
+    dst = _inv_or_404(db, to)
     if dst.id == src.id:
         raise HTTPException(400, "같은 인벤토리예요.")
-    if any(o.name == h.name for o in dst.hosts):
-        raise HTTPException(400, f"{dst.name}에 같은 이름의 서버({h.name})가 있어요. 이름을 바꾼 뒤 옮겨 주세요.")
-    if left := _left_without_servers(db, src, h, None):
-        raise HTTPException(400, f"옮기면 서버가 없어지는 작업이 있어요: {_names(left)}")
-    if busy := sorted(set(_busy_jobs(db, src)) | set(_busy_jobs(db, dst))):
-        raise HTTPException(400, f"배포 중이거나 승인을 기다리는 작업이 있어요: {_names(busy)}. 끝난 뒤에 옮겨 주세요.")
-    if dst.key != src.key or h.ssh_user != dst.ssh_user:
-        key = db.scalar(select(m.Key).where(m.Key.name == dst.key, m.Key.kind == "ssh"))
-        if not key:
-            raise HTTPException(400, f"{dst.name}의 SSH 키 {dst.key}를 찾을 수 없어요.")
-        if bad := await _logins_ok([h], dst.ssh_user, key):
-            raise HTTPException(400, f"{dst.name}의 사용자({dst.ssh_user})·키({dst.key})로 접속하지 못해 옮기지 않았어요. {bad[0]}")
+    return src, h, dst
+
+
+def _move_checks(db: Session, src: m.Inventory, h: m.Host, dst: m.Inventory) -> list[dict]:
+    """The quick checks before a move, each {key, label, ok, detail}. The login check is separate (slow)."""
+    clash = any(o.name == h.name for o in dst.hosts)
+    left = _left_without_servers(db, src, h, None)
+    busy = sorted(set(_busy_jobs(db, src)) | set(_busy_jobs(db, dst)))
+    return [
+        {"key": "name", "label": "같은 이름의 서버", "ok": not clash,
+         "detail": f"{dst.name}에 {h.name} 서버가 이미 있어요. 한쪽 이름을 바꿔 주세요." if clash else f"{dst.name}에 {h.name}이(가) 없어요."},
+        {"key": "jobs", "label": "배포 작업 영향", "ok": not left,
+         "detail": f"옮기면 서버가 없어지는 작업이 있어요: {_names(left)}. 작업의 대상을 바꾸거나 서버를 먼저 추가해 주세요." if left
+         else "옮겨도 서버가 비는 배포 작업이 없어요."},
+        {"key": "busy", "label": "진행 중인 배포", "ok": not busy,
+         "detail": f"배포 중이거나 승인을 기다리는 작업이 있어요: {_names(busy)}. 끝난 뒤에 다시 해 주세요." if busy
+         else "배포 중이거나 승인을 기다리는 작업이 없어요."},
+    ]
+
+
+async def _move_login(db: Session, h: m.Host, dst: m.Inventory) -> dict:
+    """Can the server log in with the target inventory's user and key (and show its pinned host key)?"""
+    key = db.scalar(select(m.Key).where(m.Key.name == dst.key, m.Key.kind == "ssh"))
+    if not key:
+        return {"key": "login", "label": "서버 연결", "ok": False, "detail": f"{dst.name}의 SSH 키 {dst.key}를 찾을 수 없어요."}
+    bad = await _logins_ok([h], dst.ssh_user, key)
+    return {"key": "login", "label": "서버 연결", "ok": not bad,
+            "detail": bad[0].split(": ", 1)[-1] + f" ({dst.ssh_user} · 키 {dst.key})" if bad else f"{dst.ssh_user}@{h.ip} 로그인돼요 (키 {dst.key})."}
+
+
+@router.post("/inventory/{inv_id}/hosts/{ix}/move/check", dependencies=[Depends(require("resources"))])
+def move_host_check(inv_id: str, ix: int, body: HostMoveIn, db: Session = Depends(get_db)):
+    src, h, dst = _move_parts(db, inv_id, ix, body.to)
+    return {"checks": _move_checks(db, src, h, dst)}
+
+
+@router.post("/inventory/{inv_id}/hosts/{ix}/move/login", dependencies=[Depends(require("resources"))])
+async def move_host_login(inv_id: str, ix: int, body: HostMoveIn, db: Session = Depends(get_db)):
+    _, h, dst = _move_parts(db, inv_id, ix, body.to)
+    return await _move_login(db, h, dst)
+
+
+@router.post("/inventory/{inv_id}/hosts/{ix}/move", dependencies=[Depends(require("resources"))])
+async def move_host(inv_id: str, ix: int, body: HostMoveIn, db: Session = Depends(get_db)):
+    """Move a server to another inventory once every check passes; it must log in with the target's user and key."""
+    src, h, dst = _move_parts(db, inv_id, ix, body.to)
+    failed = [c for c in _move_checks(db, src, h, dst) if not c["ok"]]
+    if not failed:
+        login = await _move_login(db, h, dst)
+        if not login["ok"]:
+            failed.append(login)
+    if failed:
+        raise HTTPException(400, f"옮기지 않았어요. {failed[0]['detail']}")
     h.ssh_user = dst.ssh_user
     h.inventory = dst  # back_populates moves it between the two lists; the row stays (not an orphan)
     s.log_act(db, "서버 이동", f"{h.name} ({h.ip}) · {src.name} → {dst.name}")
