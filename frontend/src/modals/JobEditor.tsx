@@ -348,7 +348,7 @@ export function EditJobPage() {
   const back = useBack(job ? `/jobs/${job.id}` : "/jobs");
   if (!job) return <>{gone}</>;
   if (!job.canEdit) return <EditorMissing text="이 배포 작업을 고칠 권한이 없어요." />;
-  if (job.playbook.kind === "upload") return <PlaybookEditor key={job.id} mode="edit" job={job} onClose={back} />;
+  if (job.playbook.kind === "upload" || job.playbook.kind === "git") return <PlaybookEditor key={job.id} mode="edit" job={job} onClose={back} />;
   return <JobEditor key={job.id} mode="edit" job={job} onClose={back} initialGuide={false} />;
 }
 
@@ -370,7 +370,7 @@ export function CopyJobPage() {
     );
   }, [job, files]);
   if (!job) return <>{gone}</>;
-  if (job.playbook.kind === "upload") return <PlaybookEditor mode="copy" job={job} onClose={back} />;
+  if (job.playbook.kind === "upload" || job.playbook.kind === "git") return <PlaybookEditor mode="copy" job={job} onClose={back} />;
   if (err) return <EditorMissing text={`파일을 불러오지 못했어요: ${err}`} />;
   if (files === null) return <Loading />;
   return <JobEditor mode="copy" job={{ ...job, files }} onClose={back} initialGuide={false} />;

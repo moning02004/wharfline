@@ -66,7 +66,8 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
   const fixedSafety = !can("run_protected");
   const inventories = useApi<Inventory[]>("/inventory").data ?? [];
   const keys = useApi<Key[]>("/keys").data ?? [];
-  const repos = (useApi<Repo[]>("/repos").data ?? []).filter((r) => r.kind === "git");
+  const reposRes = useApi<Repo[]>("/repos");
+  const repos = (reposRes.data ?? []).filter((r) => r.kind === "git");
 
   const pb = job?.playbook;
   const [from, setFrom] = useState<From>(pb && pb.kind !== "upload" ? "git" : "upload");
@@ -92,6 +93,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
   const savedSecrets = useMemo(() => new Set(editing || copying ? job!.secretVarNames : []), [editing, copying, job]);
   const [cleared, setCleared] = useState<Set<string>>(new Set()); // saved secrets the member chose to remove
   const [extras, setExtras] = useState<Extra[]>([]);
+  const [gitFailed, setGitFailed] = useState(false); // a saved Git job whose repo couldn't be read just now
   const [showAuto, setShowAuto] = useState(false);
   const [inv, setInv] = useState(job?.inventory ?? "");
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
@@ -135,14 +137,14 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
 
   // Variables saved on the job that the playbook doesn't name (added by hand before): keep them as extra rows.
   useEffect(() => {
-    if (!info || !job || extras.length) return;
-    const known = new Set(info.vars.map((v) => v.name));
+    if (!job || extras.length || (!info && !gitFailed)) return;
+    const known = new Set(info?.vars.map((v) => v.name) ?? []);
     const rows: Extra[] = [
       ...job.playVars.filter(([n]) => !known.has(n)).map(([n, v]) => ({ id: ++seq, name: n, value: v, secret: false, saved: false })),
       ...job.secretVarNames.filter((n) => !known.has(n)).map((n) => ({ id: ++seq, name: n, value: "", secret: true, saved: true })),
     ];
     if (rows.length) setExtras(rows);
-  }, [info]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [info, gitFailed]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // The name follows the playbook and the inventory until the member types one.
   useEffect(() => {
@@ -223,21 +225,35 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
     sendFiles(out.length === 1 && items[0].isFile ? [{ path: out[0].file.name, file: out[0].file }] : out);
   };
 
-  const findInGit = async () => {
+  const [missingBook, setMissingBook] = useState("");
+  const findInGit = async (first = false) => {
     if (!url.trim()) return toast("저장소 주소를 넣어 주세요", "error");
     setReading(true);
     try {
       const r = await api.post<GitResult>("/playbooks/git", { url: url.trim(), branch: branch.trim() || "main", key: reused ? NO_KEY : key });
       setGit(r);
       setBooks(r.playbooks);
-      setBook(r.playbooks.includes(book) ? book : r.playbooks[0] ?? "");
+      // Opening a saved job whose playbook is gone from the repo: pick nothing rather than silently another one.
+      const gone = first && !!book && !r.playbooks.includes(book);
+      setMissingBook(gone ? book : "");
+      setBook(r.playbooks.includes(book) ? book : gone ? "" : r.playbooks[0] ?? "");
+      setGitFailed(false);
       if (!r.playbooks.length) toast("저장소에서 플레이북(.yml)을 찾지 못했어요", "error");
     } catch (e) {
+      if (job && !git) setGitFailed(true);
       toast(errMsg(e), "error");
     } finally {
       setReading(false);
     }
   };
+
+  // Editing or copying a Git playbook: read the repo once (its saved key), so the values show as when it was made.
+  const gitLoaded = useRef(false);
+  useEffect(() => {
+    if (!job || pb?.kind !== "git" || gitLoaded.current || !reposRes.data) return;
+    gitLoaded.current = true;
+    findInGit(true);
+  }, [job, pb, reposRes.data]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /* ---------- the values ---------- */
 
@@ -248,6 +264,8 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
     if (from === "upload" && !files?.length) return "플레이북 파일을 올려 주세요.";
     if (from === "git" && !git && !editing) return "저장소에서 플레이북을 찾아 주세요.";
     if (!book) return "실행할 플레이북을 골라 주세요.";
+    // Without the playbook read, the saved values can't be shown or kept.
+    if (!info && !(from === "git" && gitFailed)) return from === "git" ? "저장소에서 플레이북을 다시 읽어 주세요." : "플레이북을 읽는 중이에요. 잠시 뒤 다시 눌러 주세요.";
     for (const v of vars) {
       const val = (values[v.name] ?? "").trim();
       const saved = v.secret && savedSecrets.has(v.name) && !cleared.has(v.name);
@@ -471,7 +489,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
                 </Field>
               </div>
               <div>
-                <Button icon="refresh" disabled={reading} onClick={findInGit}>
+                <Button icon="refresh" disabled={reading} onClick={() => findInGit()}>
                   {reading ? "저장소 읽는 중…" : git ? "다시 찾기" : "플레이북 찾기"}
                 </Button>
                 {git && <span className="ml-2 text-muted text-[12.5px]">커밋 {git.commit} · 플레이북 {git.playbooks.length}개</span>}
@@ -479,6 +497,11 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
             </>
           )}
 
+          {missingBook && !book && (
+            <Banner tone="warn" icon="alert" title={`저장된 플레이북 ${missingBook}이(가) 저장소에 없어요`}>
+              이름이 바뀌었거나 지워졌어요. 아래에서 실행할 플레이북을 다시 골라 주세요.
+            </Banner>
+          )}
           {books.length > 1 && (
             <Field label="실행할 플레이북" hint="올린 파일 중 플레이북(.yml)이에요. 하나를 골라요.">
               <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-2">
