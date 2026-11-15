@@ -74,11 +74,16 @@ def is_playbook(text: str) -> bool:
         "hosts" in p or "import_playbook" in p or "ansible.builtin.import_playbook" in p for p in data)
 
 
+# Folders whose playbooks are not offered as the job's playbook: role internals and tests (tests/test.yml …).
+# Their files still go up with the rest, so a playbook can still import them.
+SKIP_DIRS = {"roles", "test", "tests"}
+
+
 def playbooks(files: list[dict[str, str]]) -> list[str]:
-    """Paths of the playbooks in a file set, top-level ones first (stack.yml before roles/x/…)."""
+    """Paths of the playbooks in a file set, top-level ones first (stack.yml before deploy/…); none from roles/ or tests/."""
     found = [f["path"] for f in files
              if f["path"].endswith((".yml", ".yaml")) and len(f.get("content", "")) <= MAX_TEXT
-             and "/roles/" not in f"/{f['path']}" and is_playbook(f.get("content", ""))]
+             and not SKIP_DIRS & {d.lower() for d in f["path"].split("/")[:-1]} and is_playbook(f.get("content", ""))]
     return sorted(found, key=lambda p: (p.count("/"), p))
 
 

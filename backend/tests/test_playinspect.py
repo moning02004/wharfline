@@ -109,8 +109,13 @@ def test_playbooks_are_lists_of_plays():
         {"path": "nginx/compose.yaml", "content": "services:\n  web:\n    image: nginx\n"},
         {"path": "roles/app/tasks/main.yml", "content": "- hosts: x\n"},
         {"path": "broken.yml", "content": "- hosts: [\n"},
+        {"path": "tests/test.yml", "content": "- hosts: localhost\n"},
+        {"path": "roles/web/tests/test.yml", "content": "- hosts: localhost\n"},
+        {"path": "deploy/Tests/smoke.yml", "content": "- hosts: all\n"},
+        {"path": "contest.yml", "content": "- hosts: all\n"},
     ]
-    assert playinspect.playbooks(files) == ["stack.yml", "deploy/app.yaml"]
+    # role internals and test folders aren't offered; a file merely named like "test" is
+    assert playinspect.playbooks(files) == ["contest.yml", "stack.yml", "deploy/app.yaml"]
 
 
 def test_odd_yaml_is_not_an_error():
