@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { api, ApiError, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
@@ -458,7 +459,16 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
           ) : (
             <>
               <Field label="저장소 주소" htmlFor="pbUrl">
-                <Input id="pbUrl" mono value={url} onChange={(e) => setUrl(e.target.value)} placeholder="https://git.example.com/org/infra.git" autoComplete="off" spellCheck={false} />
+                <RepoUrlInput
+                  id="pbUrl"
+                  value={url}
+                  onChange={setUrl}
+                  repos={repos}
+                  onPick={(r) => {
+                    setUrl(r.url);
+                    setBranch(r.branch);
+                  }}
+                />
               </Field>
               <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-[minmax(0,1fr)_minmax(0,2fr)] gap-3">
                 <Field label="브랜치" htmlFor="pbBranch">
@@ -902,4 +912,142 @@ export function NewPlaybookPage() {
   const nav = useNavigate();
   const loc = useLocation();
   return <PlaybookEditor mode="new" onClose={() => (loc.key !== "default" ? nav(-1) : nav("/jobs"))} />;
+}
+
+/**
+ * The repo address: typed by hand, or picked from the Git repos already registered (shown when the field is
+ * clicked, narrowed as you type). Picking one fills the branch too, and the repo's saved access is reused.
+ */
+function RepoUrlInput({ id, value, onChange, repos, onPick }: { id: string; value: string; onChange: (v: string) => void; repos: Repo[]; onPick: (r: Repo) => void }) {
+  const box = useRef<HTMLDivElement>(null);
+  const list = useRef<HTMLDivElement>(null);
+  const [open, setOpen] = useState(false);
+  const [active, setActive] = useState(0);
+  const [pos, setPos] = useState<{ left: number; width: number; top?: number; bottom?: number; maxHeight: number } | null>(null);
+  const q = value.trim().toLowerCase();
+  // the whole list while the field holds a registered address (to switch), otherwise the ones matching the text
+  const exact = repos.some((r) => r.url.toLowerCase() === q);
+  const shown = exact || !q ? repos : repos.filter((r) => `${r.url} ${r.name} ${r.branch}`.toLowerCase().includes(q));
+  const visible = open && shown.length > 0;
+
+  const place = () => {
+    const r = box.current?.getBoundingClientRect();
+    if (!r) return;
+    const below = window.innerHeight - r.bottom - 8;
+    const above = r.top - 8;
+    const up = below < 200 && above > below;
+    setPos({ left: r.left, width: r.width, maxHeight: Math.max(120, Math.min(300, up ? above : below)), ...(up ? { bottom: window.innerHeight - r.top + 4 } : { top: r.bottom + 4 }) });
+  };
+  useLayoutEffect(() => {
+    if (!visible) return;
+    place();
+    const onDown = (e: MouseEvent) => {
+      const t = e.target as Node;
+      if (!box.current?.contains(t) && !list.current?.contains(t)) setOpen(false);
+    };
+    window.addEventListener("resize", place);
+    window.addEventListener("scroll", place, true);
+    document.addEventListener("mousedown", onDown);
+    return () => {
+      window.removeEventListener("resize", place);
+      window.removeEventListener("scroll", place, true);
+      document.removeEventListener("mousedown", onDown);
+    };
+  }, [visible]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    if (visible) list.current?.querySelector(`[data-index="${active}"]`)?.scrollIntoView({ block: "nearest" });
+  }, [visible, active]);
+
+  const choose = (r: Repo | undefined) => {
+    if (r) onPick(r);
+    setOpen(false);
+  };
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+      e.preventDefault();
+      if (!open) return (setOpen(true), setActive(0));
+      setActive((a) => Math.max(0, Math.min(shown.length - 1, a + (e.key === "ArrowDown" ? 1 : -1))));
+    } else if (e.key === "Enter" && visible) {
+      e.preventDefault();
+      choose(shown[active]);
+    } else if (e.key === "Escape" && visible) {
+      e.preventDefault();
+      e.stopPropagation();
+      setOpen(false);
+    } else if (e.key === "Tab") setOpen(false);
+  };
+
+  return (
+    <div ref={box} className="relative">
+      <Input
+        id={id}
+        mono
+        value={value}
+        role="combobox"
+        aria-expanded={visible}
+        aria-autocomplete="list"
+        onChange={(e) => {
+          onChange(e.target.value);
+          setOpen(true);
+          setActive(0);
+        }}
+        onClick={() => setOpen((o) => !o)}
+        onKeyDown={onKeyDown}
+        placeholder={repos.length ? "눌러서 등록된 저장소를 고르거나 주소를 붙여넣어요" : "https://git.example.com/org/infra.git"}
+        autoComplete="off"
+        spellCheck={false}
+        className={cx(repos.length > 0 && "pr-8", "placeholder:font-sans")}
+      />
+      {repos.length > 0 && (
+        <button
+          type="button"
+          tabIndex={-1}
+          aria-label="등록된 저장소"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => setOpen((o) => !o)}
+          className="absolute right-1.5 top-1/2 -translate-y-1/2 grid place-items-center size-6 rounded-md text-faint hover:text-primary"
+        >
+          <Icon name="chev" className={cx("size-3.5 transition-transform duration-150", visible && "rotate-180")} />
+        </button>
+      )}
+      {visible &&
+        pos &&
+        createPortal(
+          <div
+            ref={list}
+            role="listbox"
+            style={{ position: "fixed", left: pos.left, width: pos.width, top: pos.top, bottom: pos.bottom, maxHeight: pos.maxHeight }}
+            className="z-[70] overflow-auto scroll-soft rounded-xl bg-surface shadow-pop p-1 animate-fade"
+          >
+            <div className="px-2 pt-1 pb-1.5 text-[11.5px] text-faint">등록된 저장소 {shown.length}개</div>
+            {shown.map((r, i) => {
+              const on = r.url === value.trim();
+              return (
+                <div
+                  key={r.id}
+                  data-index={i}
+                  role="option"
+                  aria-selected={on}
+                  onMouseEnter={() => setActive(i)}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => choose(r)}
+                  className={cx("flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer", i === active && "bg-hover")}
+                >
+                  <Icon name="git" className="size-3.5 flex-none text-muted" />
+                  <div className="flex-1 min-w-0">
+                    <div className={cx("font-mono text-[12.5px] truncate", on && "font-medium text-primary")}>{r.url}</div>
+                    <div className="text-[11.5px] text-muted truncate">
+                      {r.name} · {r.branch} · {r.auth}
+                      {r.usedBy.length > 0 && ` · 작업 ${r.usedBy.length}개`}
+                    </div>
+                  </div>
+                  {on && <Icon name="check" className="size-3.5 flex-none" strokeWidth={2.4} />}
+                </div>
+              );
+            })}
+          </div>,
+          document.body,
+        )}
+    </div>
+  );
 }

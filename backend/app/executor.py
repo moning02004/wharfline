@@ -858,6 +858,28 @@ async def _fetch(plan: Plan, out: Out, tmp: Path, env: dict[str, str]) -> Path |
     return dest
 
 
+def sudo_hint(said: list[str], targets: list[Target]) -> list[str]:
+    """`become: true` on a server whose account needs a password for sudo: Ansible only says "Missing sudo
+    password". Say what to change on the server, for the servers that said it."""
+    failed: set[str] = set()
+    host = None  # the message comes on the `fatal: [host]` line or the lines under it
+    for line in said:
+        m = re.match(r"\s*(?:fatal|failed): \[([^\]]+)\]", line)
+        if m:
+            host = m.group(1)
+        if ("Missing sudo password" in line or "sudo: a password is required" in line) and host:
+            failed.add(host)
+    if not failed:
+        return []
+    hit = [t for t in targets if inventory_name(t.name) in failed] or targets
+    lines = ["⚠ 서버 계정이 sudo 할 때 비밀번호를 물어요. 플레이북이 become: true 라서 비밀번호 없는 sudo 가 필요해요.",
+             "  서버에서 한 번 실행해 주세요 (서버를 '새 서버 초기화'로 추가할 때 sudo 전체 권한을 켜도 같아요):"]
+    for user in dict.fromkeys(t.user for t in hit):
+        f = f"/etc/sudoers.d/wharfline-{user}"
+        lines.append(f"  echo '{user} ALL=(ALL) NOPASSWD:ALL' | sudo tee {f} && sudo chmod 440 {f} && sudo visudo -cf {f}")
+    return lines
+
+
 async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
     env = _base_env(tmp)
     out.start("플레이북 가져오기")
@@ -929,6 +951,8 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
     ran_nowhere = rc == 0 and not any(re.search(r"\bok=\d+", line) for line in said)
     if ran_nowhere:
         out.line("r", "✘ 플레이북이 어느 서버에서도 실행되지 않았어요 (no hosts matched). 플레이북의 hosts: 가 고른 서버를 가리키는지 확인해 주세요.")
+    for hint in sudo_hint(said, [t for t, _ in alive]):
+        out.line("y", hint)
     out.end("플레이북 실행", rc == 0 and not ran_nowhere)
 
     out.start("마무리")
