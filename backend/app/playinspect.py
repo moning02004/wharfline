@@ -452,3 +452,60 @@ def _comment_order(comments: list[str], names: list[str]) -> list[str]:
             if n not in seen and re.search(rf"(?<![\w.]){re.escape(n)}(?![\w])", ln):
                 seen.append(n)
     return seen
+
+
+# ---------- which inventory groups a playbook runs on ----------
+
+_HOST_VAR = re.compile(r"""\{\{\s*([A-Za-z_]\w*)\s*(?:\|\s*(?:default|d)\s*\(\s*(?:'([^']*)'|"([^"]*)")\s*\)\s*)?\}\}""")
+_NOT_GROUPS = {"all", "*", "localhost", "127.0.0.1", "ungrouped"}
+
+
+def _resolve_hosts(value: Any, scope: dict[str, Any]) -> str | None:
+    """`hosts:` with simple templates filled in ("{{ base_hosts }}", "{{ x | default('web') }}"); None when unknown."""
+    if isinstance(value, list):
+        value = ",".join(str(v) for v in value)
+    if not isinstance(value, str):
+        return None
+
+    def fill(m: re.Match[str]) -> str:
+        v = scope.get(m[1])
+        if v is None:
+            v = m[2] if m[2] is not None else m[3]
+        return "{{?}}" if v is None else (",".join(map(str, v)) if isinstance(v, list) else str(v))
+
+    out = _HOST_VAR.sub(fill, value)
+    return None if "{{" in out else out
+
+
+def host_groups(read: Any, book: str, scope: dict[str, Any] | None = None) -> list[str]:
+    """Group names the playbook's plays target (`hosts:`), following import_playbook and its `vars:`.
+
+    `read(path)` returns a file's text or None; paths are relative to the repo root. Patterns that are not plain
+    names (all, localhost, wildcards, ranges, regexes) are left out; `!x` and `&x` count as x."""
+    found: list[str] = []
+    seen: set[str] = set()
+
+    def visit(path: str, sc: dict[str, Any], depth: int) -> None:
+        if depth > 10 or path in seen:
+            return
+        seen.add(path)
+        data = _load(read(path) or "")
+        if not isinstance(data, list):
+            return
+        for p in data:
+            if not isinstance(p, dict):
+                continue
+            here = {**sc, **(p.get("vars") if isinstance(p.get("vars"), dict) else {})}
+            imported = p.get("import_playbook") or p.get("ansible.builtin.import_playbook")
+            if isinstance(imported, str):
+                visit(posixpath.normpath(posixpath.join(posixpath.dirname(path), imported)), here, depth + 1)
+                continue
+            hosts = _resolve_hosts(p.get("hosts"), here)
+            for pat in re.split(r"[,:]", hosts or ""):
+                name = pat.strip().lstrip("!&")
+                if name and name not in _NOT_GROUPS and re.fullmatch(r"[A-Za-z0-9_.-]+", name) and name not in found:
+                    found.append(name)
+        seen.discard(path)  # the same file imported twice with other vars is read again
+
+    visit(posixpath.normpath(book), dict(scope or {}), 0)
+    return found

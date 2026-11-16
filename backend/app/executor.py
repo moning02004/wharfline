@@ -40,6 +40,7 @@ from sqlalchemy.orm import Session
 from . import bundles
 from . import crypto
 from . import models as m
+from . import playinspect
 from . import store as s
 from .db import SessionLocal
 from .sshcheck import HOST_KEY_ALGS
@@ -369,12 +370,33 @@ def inventory_name(name: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]", "-", name) or "host"
 
 
-def inventory(targets: list[Target]) -> dict[str, Any]:
+def inventory(targets: list[Target], play_groups: list[str] | tuple[str, ...] = ()) -> dict[str, Any]:
+    """The run's inventory: each server in its Wharfline group. A group the playbook targets (`hosts: gitea`) that
+    no chosen server is in gets all of them, so the servers picked in Wharfline are the ones the playbook runs on."""
     groups: dict[str, dict[str, Any]] = {}
     for t in targets:
         hosts = groups.setdefault(t.group, {"hosts": {}})["hosts"]
         hosts[inventory_name(t.name)] = {"ansible_host": t.ip, "ansible_port": t.port, "ansible_user": t.user}
+    for g in play_groups:
+        if g not in groups:
+            groups[g] = {"hosts": {inventory_name(t.name): {} for t in targets}}
     return {"all": {"children": groups}}
+
+
+def _repo_reader(src: Path):
+    """read(path) for playinspect: a file's text inside the checked-out repo, or None (never outside it)."""
+    root = src.resolve()
+
+    def read(path: str) -> str | None:
+        f = (root / path).resolve()
+        if root not in f.parents or not f.is_file():
+            return None
+        try:
+            return f.read_text(errors="replace")
+        except OSError:
+            return None
+
+    return read
 
 
 def playbook_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -832,8 +854,6 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
     key = _write_secret(tmp / "ssh_key", plan.ssh_key)
     kh = tmp / "known_hosts"
     kh.write_text("".join(known_hosts_line(t.ip, t.port, k) + "\n" for t, k in alive))
-    inv = tmp / "inventory.yml"
-    inv.write_text(json.dumps(inventory([t for t, _ in alive]), ensure_ascii=False))
     xv = dict(plan.extra_vars)
     if plan.env_vars is not None:
         # The built-in playbook hands the file to `docker run --env-file`; other playbooks usually to compose.
@@ -847,6 +867,12 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         xv["env_src"] = str(_write_secret(tmp / "app.env", text))
     # Secret variables reach ansible only through this 0600 file, never argv or the environment.
     vars_file = _write_secret(tmp / "vars.json", json.dumps(playbook_vars(plan, xv), ensure_ascii=False))
+    servers = [t for t, _ in alive]
+    wanted = playinspect.host_groups(_repo_reader(src), plan.book, playbook_vars(plan, xv))
+    if added := [g for g in wanted if g not in {t.group for t in servers}]:
+        out.line("", f"플레이북 그룹 {', '.join(added)} → 고른 서버 {len(servers)}대 ({', '.join(t.name for t in servers)})")
+    inv = tmp / "inventory.yml"
+    inv.write_text(json.dumps(inventory(servers, wanted), ensure_ascii=False))
     (tmp / "cp").mkdir(mode=0o700)
     limit = ",".join(inventory_name(t.name) for t, _ in alive)
     env.update(
@@ -863,15 +889,22 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
     env["ANSIBLE_PRIVATE_KEY_FILE"] = str(key)
     argv += ["--private-key", str(key)]
     out.line("", f"$ ansible-playbook {plan.book} -i <임시 인벤토리> --limit {limit} {shown_vars(plan, xv)}")
-    rc = await _stream(argv, out, src, env)
-    out.end("플레이북 실행", rc == 0)
+    said: list[str] = []
+    rc = await _stream(argv, out, src, env, seen=said)
+    # Exit code 0 with no host in the recap: every play was "skipping: no hosts matched". Nothing was deployed.
+    ran_nowhere = rc == 0 and not any(re.search(r"\bok=\d+", line) for line in said)
+    if ran_nowhere:
+        out.line("r", "✘ 플레이북이 어느 서버에서도 실행되지 않았어요 (no hosts matched). 플레이북의 hosts: 가 고른 서버를 가리키는지 확인해 주세요.")
+    out.end("플레이북 실행", rc == 0 and not ran_nowhere)
 
     out.start("마무리")
     names = ", ".join(t.name for t, _ in alive)
     out.line("", f"잠금 해제: {names}")
-    ok = rc == 0 and not missing
+    ok = rc == 0 and not missing and not ran_nowhere
     if ok:
         out.line("g", f"✔ 배포 성공 · {plan.done_label} · 서버 {len(alive)}대")
+    elif ran_nowhere:
+        out.line("r", "✘ 배포 실패 · 실행된 서버가 없어요")
     elif rc == 0:
         out.line("r", f"✘ 배포 실패 · 서버 {len(alive)}대에는 배포했지만 {missing}대에 연결하지 못했어요")
     else:
