@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { api, errMsg } from "../lib/api";
+import { api, ApiError, errMsg } from "../lib/api";
+import { fromDrop, fromFileList, uploadBody, type Picked } from "../lib/folder";
+import { FileTree } from "../components/FileTree";
 import { useApp } from "../lib/app";
 import { indentOnTab } from "../lib/indent";
 import type { BundleFile } from "../lib/types";
@@ -37,45 +39,53 @@ export const fmtSize = (n: number) => (n < 1024 ? `${n} B` : `${(n / 1024).toFix
 const MAX_FILE = 512 * 1024;
 const sortFiles = (list: BundleFile[]) => [...list].sort((a, b) => a.path.localeCompare(b.path));
 
-function fileToBase64(file: File): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const r = new FileReader();
-    r.onload = () => resolve(String(r.result).split(",", 2)[1] ?? "");
-    r.onerror = () => reject(r.error);
-    r.readAsDataURL(file);
-  });
-}
-
-/** Upload a single file or a zip: the server unpacks it, a .env inside goes to the env step. */
+/** Upload a file, a zip or a whole folder: the server unpacks it, a .env inside goes to the env step. */
 export function useBundleUpload(update: FileUpdate, onEnv: (vars: string[][]) => void, onDone?: (paths: string[]) => void) {
   const { toast } = useApp();
   const input = useRef<HTMLInputElement>(null);
+  const folderInput = useRef<HTMLInputElement>(null);
   const [busy, setBusy] = useState(false);
   const [dropped, setDropped] = useState<Dropped>([]);
-  const pick = async (fileList: FileList | null) => {
-    const file = fileList?.[0];
-    if (!file) return;
+  useEffect(() => {
+    folderInput.current?.setAttribute("webkitdirectory", "");
+  });
+  const send = async (picked: Picked[]) => {
+    if (!picked.length) return;
     setBusy(true);
     try {
-      const r = await api.post<{ files: BundleFile[]; env: string[][]; dropped: Dropped }>("/bundles/parse", { name: file.name, data: await fileToBase64(file) });
+      const { body, tooBig } = await uploadBody(picked);
+      const r = await api.post<{ files: BundleFile[]; env: string[][]; dropped: Dropped }>("/bundles/parse", body);
       update((prev) => {
         const byPath = new Map(prev.map((f) => [f.path, f]));
         r.files.forEach((f) => byPath.set(f.path, f)); // same path: the new upload wins
         return sortFiles([...byPath.values()]);
       });
-      setDropped(r.dropped);
+      setDropped([...tooBig, ...r.dropped]);
       onEnv(r.env);
       onDone?.(r.files.map((f) => f.path));
       toast(`파일 ${r.files.length}개를 올렸어요`);
     } catch (e) {
-      toast(errMsg(e), "error");
+      toast(e instanceof Error && !(e instanceof ApiError) ? e.message : errMsg(e), "error");
     } finally {
       setBusy(false);
       if (input.current) input.current.value = "";
+      if (folderInput.current) folderInput.current.value = "";
     }
   };
-  const el = <input ref={input} type="file" hidden accept=".yaml,.yml,.zip,.json,.conf,.sh,Makefile,*" onChange={(e) => pick(e.target.files)} />;
-  return { el, busy, dropped, open: () => input.current?.click() };
+  const drop = async (dt: DataTransfer) => {
+    try {
+      await send(await fromDrop(dt));
+    } catch {
+      toast("끌어 놓은 파일을 읽지 못했어요. 폴더 올리기 버튼을 써 주세요.", "error");
+    }
+  };
+  const el = (
+    <>
+      <input ref={input} type="file" hidden accept=".yaml,.yml,.zip,.json,.conf,.sh,Makefile,*" onChange={(e) => e.target.files && send(fromFileList(e.target.files))} />
+      <input ref={folderInput} type="file" hidden multiple onChange={(e) => e.target.files && send(fromFileList(e.target.files))} />
+    </>
+  );
+  return { el, busy, dropped, drop, open: () => input.current?.click(), openFolder: () => folderInput.current?.click() };
 }
 
 interface Version {
@@ -150,6 +160,7 @@ export function FileWorkspaceModal({
   const [versions, setVersions] = useState<Version[] | null>(null);
   const [ver, setVer] = useState<number | null>(null); // a version being compared, null while editing
   const [verFiles, setVerFiles] = useState<Record<number, BundleFile[]>>({});
+  const [dropping, setDropping] = useState(false); // files dragged over the file list
 
   const current = sel === NEW ? fresh : files.find((f) => f.path === sel);
   const pathInput = useRef<HTMLInputElement>(null);
@@ -254,53 +265,72 @@ export function FileWorkspaceModal({
       <ModalHead title="파일 편집기" onClose={onClose} />
       <div className="flex-1 min-h-0 overflow-auto lg:overflow-hidden grid grid-cols-[minmax(0,1fr)] lg:grid-cols-[230px_minmax(0,1fr)_270px] gap-3 p-3 bg-canvas">
         {/* files */}
-        <aside aria-label="파일 목록" className="flex flex-col min-h-0 max-lg:max-h-[240px] rounded-xl bg-surface shadow-soft overflow-hidden">
-          <div className="flex items-center gap-1 px-3 py-2 border-b border-line">
+        <aside
+          aria-label="파일 목록"
+          onDragOver={(e) => {
+            if (![...e.dataTransfer.types].includes("Files")) return;
+            e.preventDefault();
+            setDropping(true);
+          }}
+          onDragLeave={(e) => !e.currentTarget.contains(e.relatedTarget as Node) && setDropping(false)}
+          onDrop={(e) => {
+            e.preventDefault();
+            setDropping(false);
+            upload.drop(e.dataTransfer);
+          }}
+          className={cx("relative flex flex-col min-h-0 max-lg:max-h-[280px] rounded-xl bg-surface shadow-soft overflow-hidden", dropping && "ring-2 ring-accent")}
+        >
+          <div className="flex items-center gap-0.5 px-3 py-2 border-b border-line">
             <span className="text-[12px] font-semibold text-muted mr-auto">파일 {files.length}</span>
             {upload.el}
-            <Button size="sm" variant="ghost" iconOnly icon="upload" aria-label="올리기" title="올리기 (zip도 돼요)" disabled={upload.busy} onClick={upload.open} />
+            <Button size="sm" variant="ghost" iconOnly icon="upload" aria-label="파일 올리기" title="파일 올리기 (zip도 돼요)" disabled={upload.busy} onClick={upload.open} />
+            <Button size="sm" variant="ghost" iconOnly icon="folder" aria-label="폴더 올리기" title="폴더 올리기" disabled={upload.busy} onClick={upload.openFolder} />
             <Button size="sm" variant="ghost" iconOnly icon="plus" aria-label="새 파일" title="새 파일" onClick={() => (setVer(null), setSel(NEW))} />
           </div>
           <div className="flex-1 min-h-0 overflow-auto scroll-soft p-1.5 flex flex-col gap-0.5">
-            {files.map((f) => {
-              const m = mark(f);
-              const warn = f.content !== undefined ? riskyIn(f.content).length > 0 : !!f.warnings?.length;
-              return (
-                <button
-                  key={f.path}
-                  type="button"
-                  onClick={() => setSel(f.path)}
-                  title={f.path}
-                  className={cx(
-                    "flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-left text-[12.5px] font-mono transition-colors min-w-0",
-                    sel === f.path ? "bg-accent-soft text-fg" : "text-muted hover:bg-hover hover:text-fg",
-                  )}
-                >
-                  <Icon name="file" className={cx("size-3.5 flex-none", sel === f.path ? "text-accent" : "text-faint")} />
-                  <span className="truncate flex-1">{f.path}</span>
-                  {warn && <span title="서버 권한을 넘기는 설정" className="size-1.5 rounded-full bg-warn flex-none" />}
-                  {m && <span className={cx("text-[10.5px] font-sans font-semibold flex-none", m === "new" ? "text-ok" : "text-[var(--mark)]")}>{m === "new" ? "새" : "수정"}</span>}
-                </button>
-              );
-            })}
+            <FileTree
+              selected={sel === NEW ? null : sel}
+              onSelect={(p) => setSel(p)}
+              files={[
+                ...files.map((f) => {
+                  const m = mark(f);
+                  const warn = f.content !== undefined ? riskyIn(f.content).length > 0 : !!f.warnings?.length;
+                  return {
+                    path: f.path,
+                    trailing: (
+                      <>
+                        {warn && <span title="서버 권한을 넘기는 설정" className="size-1.5 rounded-full bg-warn flex-none" />}
+                        {m && <span className={cx("text-[10.5px] font-sans font-semibold flex-none", m === "new" ? "text-ok" : "text-[var(--mark)]")}>{m === "new" ? "새" : "수정"}</span>}
+                      </>
+                    ),
+                  };
+                }),
+                ...removed.map((p) => ({
+                  path: p,
+                  struck: true,
+                  trailing: (
+                    <button type="button" className="font-sans text-[11px] text-accent hover:underline flex-none" onClick={() => restore(p, saved!.get(p) ?? "")}>
+                      되돌리기
+                    </button>
+                  ),
+                })),
+              ]}
+            />
             {sel === NEW && (
               <div className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] font-mono bg-accent-soft">
                 <Icon name="file" className="size-3.5 flex-none text-accent" />
                 <span className="truncate flex-1 text-faint">{fresh.path || pathDraft || "새 파일"}</span>
               </div>
             )}
-            {removed.map((p) => (
-              <div key={p} className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-[12.5px] font-mono text-faint">
-                <Icon name="file" className="size-3.5 flex-none" />
-                <span className="truncate flex-1 line-through">{p}</span>
-                <button type="button" className="font-sans text-[11px] text-accent hover:underline" onClick={() => restore(p, saved!.get(p) ?? "")}>
-                  되돌리기
-                </button>
-              </div>
-            ))}
-            {files.length === 0 && sel !== NEW && <span className="p-2 text-[12.5px] text-faint">파일이 없어요.</span>}
+            {files.length === 0 && sel !== NEW && <span className="p-2 text-[12.5px] text-faint">파일이 없어요. 파일이나 폴더를 여기로 끌어 놓아도 돼요.</span>}
           </div>
+          {upload.busy && <p className="px-3 py-2 border-t border-line text-[11.5px] text-accent">읽는 중…</p>}
           {upload.dropped.length > 0 && <p className="px-3 py-2 border-t border-line text-[11.5px] text-muted">빠진 파일: {upload.dropped.map((d) => `${d.path} (${d.reason})`).join(", ")}</p>}
+          {dropping && (
+            <div className="absolute inset-0 grid place-items-center bg-accent/10 pointer-events-none">
+              <span className="rounded-full bg-accent text-white text-[12.5px] font-semibold px-3.5 py-1.5 shadow-lift">놓으면 올려요</span>
+            </div>
+          )}
         </aside>
 
         {/* editor or comparison */}

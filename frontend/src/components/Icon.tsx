@@ -136,6 +136,7 @@ const P = {
     </>
   ),
   chev: <path d="M6 9l6 6 6-6" />,
+  folder: <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z" />,
   box: (
     <>
       <path d="M21 8l-9-5-9 5v8l9 5 9-5z" />

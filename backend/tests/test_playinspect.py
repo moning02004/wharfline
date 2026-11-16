@@ -290,3 +290,26 @@ def test_vars_prompt_becomes_inputs():
     assert [n for n in out if n == "account_name"] == ["account_name"]  # the prompt, not also the role default
     notes = playinspect.inspect(files, "13-user.yaml")["notes"]
     assert any("고른 서버에서 실행돼요" in n for n in notes)
+
+
+def test_role_values_of_an_imported_playbook_say_where_they_come_from():
+    files = [
+        {"path": "01-base.yaml", "content": "- hosts: all\n  roles:\n    - common\n"},
+        {"path": "03-app.yaml", "content": "- import_playbook: 01-base.yaml\n- hosts: app\n  roles:\n    - web\n"},
+        {"path": "roles/common/defaults/main.yaml", "content": "timezone: Asia/Seoul\n"},
+        {"path": "roles/web/defaults/main.yaml", "content": "web_port: 8080\n"},
+    ]
+    got = {v["name"]: v for v in playinspect.inspect(files, "03-app.yaml")["vars"]}
+    assert got["web_port"]["role"] == "web" and got["web_port"]["from"] is None
+    assert got["timezone"]["role"] == "common" and got["timezone"]["from"] == "01-base.yaml"
+    # the base playbook on its own: its roles are its own
+    assert playinspect.inspect(files, "01-base.yaml")["vars"][0]["from"] is None
+
+
+def test_vars_given_on_an_import_are_not_asked():
+    files = [
+        {"path": "01-base.yaml", "content": "- hosts: \"{{ base_hosts | default('all') }}\"\n  tasks: []\n"},
+        {"path": "03-app.yaml", "content": "- import_playbook: 01-base.yaml\n  vars:\n    base_hosts: app\n"},
+    ]
+    assert "base_hosts" not in [v["name"] for v in playinspect.inspect(files, "03-app.yaml")["vars"]]
+    assert "base_hosts" in [v["name"] for v in playinspect.inspect(files, "01-base.yaml")["vars"]]

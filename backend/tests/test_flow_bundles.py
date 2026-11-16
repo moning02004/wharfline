@@ -5,7 +5,7 @@ import io
 import stat
 import zipfile
 
-from tests.conftest import builtin_job, last_run_no, log_text, send_hook, wait_auto_run, wait_run
+from tests.conftest import OWNER, builtin_job, last_run_no, log_text, send_hook, wait_auto_run, wait_run
 
 COMPOSE = """services:
   api:
@@ -264,3 +264,19 @@ def test_leftover_text_after_an_image_is_caught(client, login):
     assert bundles.image_line_problem([{"path": "c.yml", "content": ok}]) is None
     r = client.post("/api/jobs", json=script_job("bundle · leftover") | {"files": [{"path": "c.yml", "content": broken}]})
     assert r.status_code == 400 and "3번째 줄" in r.json()["detail"]
+
+
+def test_folder_upload(client, login):
+    login(OWNER)
+    enc = lambda t: base64.b64encode(t.encode()).decode()
+    entries = [
+        {"path": "myapp/docker-compose.yaml", "content": enc("services:\n  app:\n    image: nginx\n")},
+        {"path": "myapp/conf/nginx.conf", "content": enc("server {}\n")},
+        {"path": "myapp/.env", "content": enc("A=1\n")},
+        {"path": "myapp/.git/config", "content": enc("x")},
+    ]
+    r = client.post("/api/bundles/parse", json={"entries": entries})
+    assert r.status_code == 200, r.text
+    out = r.json()
+    assert sorted(f["path"] for f in out["files"]) == ["conf/nginx.conf", "docker-compose.yaml"]  # the folder name goes
+    assert out["env"] == [["A", "1"]]

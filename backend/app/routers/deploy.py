@@ -930,20 +930,23 @@ async def run_job(job_id: str, body: RunIn, db: Session = Depends(get_db)):  # a
 
 
 class UploadIn(BaseModel):
-    name: str
-    data: str  # base64
+    """One file or a zip (name + base64 data), or a folder picked in the browser (entries: path + base64 content)."""
+    name: str = ""
+    data: str = ""  # base64
+    entries: list[FileIn] | None = None
 
 
 @router.post("/bundles/parse", dependencies=[Depends(require("job_create"))])
 def parse_bundle(body: UploadIn):
-    """Read an uploaded docker-compose.yaml or zip: the files to keep, .env variables, what was left out, warnings."""
-    if len(body.data) > bundles.MAX_UPLOAD_BYTES * 4 // 3 + 16:
+    """Read an uploaded docker-compose.yaml, zip or folder: the files to keep, .env variables, what was left out, warnings."""
+    limit = bundles.MAX_UPLOAD_BYTES * 4 // 3 + 16
+    if body.entries is not None:
+        if sum(len(e.content) for e in body.entries) > limit:
+            raise HTTPException(400, "폴더가 너무 커요. 모두 합쳐 5MB까지 올릴 수 있어요.")
+        return bundles.parse_folder([(e.path, _b64(e.content)) for e in body.entries])
+    if len(body.data) > limit:
         raise HTTPException(400, "파일이 너무 커요. 5MB까지 올릴 수 있어요.")
-    try:
-        data = base64.b64decode(body.data, validate=True)
-    except (binascii.Error, ValueError) as e:
-        raise HTTPException(400, "파일을 읽을 수 없어요.") from e
-    return bundles.parse_upload(body.name, data)
+    return bundles.parse_upload(body.name, _b64(body.data))
 
 
 class PlaybookUploadIn(BaseModel):

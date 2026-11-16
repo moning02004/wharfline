@@ -79,6 +79,8 @@ export interface PlayVarInfo {
   desc: string;
   /** The role whose defaults/main.yml gives it a default; null when the playbook itself reads it. */
   role?: string | null;
+  /** An imported playbook (import_playbook) whose role gives the default; null for the chosen playbook's own. */
+  from?: string | null;
 }
 
 export interface PlaybookInfo {

@@ -5,6 +5,8 @@ import { api, ApiError, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { BundleFile, Inventory, Job, Key, PlaybookInfo, PlayVarInfo, Repo } from "../lib/types";
 import { GroupSelect } from "../components/GroupSelect";
+import { FileTree } from "../components/FileTree";
+import { readEntry, skipPath, toBase64 } from "../lib/folder";
 import { Icon } from "../components/Icon";
 import { NewHostModal, NewInventoryModal, NewKeyModal } from "../modals/ResourceModals";
 import { Banner, Button, Card, CardHeader, Chip, ErrorText, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, cx } from "../components/ui";
@@ -27,35 +29,9 @@ type Extra = { id: number; name: string; value: string; secret: boolean; saved: 
 const NO_KEY = "";
 const MAX_FOLDER_BYTES = 5 * 1024 * 1024;
 const MAX_FILE_BYTES = 512 * 1024;
-const SKIP_DIRS = new Set([".git", "node_modules", ".venv", "venv", "__pycache__", ".idea", ".vscode"]);
 const NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
 const isSsh = (url: string) => /^(git@|ssh:\/\/)/.test(url.trim());
 let seq = 0;
-
-function toBase64(buf: ArrayBuffer): string {
-  const bytes = new Uint8Array(buf);
-  let bin = "";
-  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
-  return btoa(bin);
-}
-
-const skipPath = (path: string) => path.split("/").some((p) => SKIP_DIRS.has(p));
-
-/** Files of a dropped folder (DataTransfer entries), with paths starting at the folder name. */
-async function readEntry(entry: FileSystemEntry, out: { path: string; file: File }[]): Promise<void> {
-  if (entry.isFile) {
-    const file = await new Promise<File>((res, rej) => (entry as FileSystemFileEntry).file(res, rej));
-    out.push({ path: entry.fullPath.replace(/^\//, ""), file });
-    return;
-  }
-  if (!entry.isDirectory || SKIP_DIRS.has(entry.name)) return;
-  const reader = (entry as FileSystemDirectoryEntry).createReader();
-  for (;;) {
-    const batch = await new Promise<FileSystemEntry[]>((res, rej) => reader.readEntries(res, rej));
-    if (!batch.length) break;
-    for (const e of batch) await readEntry(e, out);
-  }
-}
 
 const baseName = (p: string) => p.split("/").pop()!.replace(/\.ya?ml$/, "");
 
@@ -377,17 +353,27 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
 
   const title = editing ? "플레이북 작업 편집" : copying ? "플레이북 작업 복제" : "플레이북 추가";
   const required = vars.filter((v) => v.required);
-  const optional = vars.filter((v) => !v.required);
-  // [role, values] in the order roles first appear; "" holds what the playbook reads itself
-  const optionalGroups = useMemo(() => {
-    const m = new Map<string, PlayVarInfo[]>([["", []]]);
-    for (const v of optional) {
-      const k = v.role ?? "";
-      if (!m.has(k)) m.set(k, []);
-      m.get(k)!.push(v);
-    }
-    return [...m.entries()].filter(([, list]) => list.length > 0);
-  }, [optional]);
+  // The chosen playbook's own optional values; those of playbooks it imports (01-base.yaml …) are shown apart.
+  const optional = vars.filter((v) => !v.required && !v.from);
+  // (plain values, not hooks: this runs after the early return above)
+  const optionalGroups = byRole(optional);
+  const importedMap = new Map<string, PlayVarInfo[]>();
+  for (const v of vars) if (!v.required && v.from) (importedMap.get(v.from) ?? importedMap.set(v.from, []).get(v.from)!).push(v);
+  const imported = [...importedMap.entries()];
+  const isChanged = (v: PlayVarInfo) => (values[v.name] ?? "") !== "" || (savedSecrets.has(v.name) && !cleared.has(v.name));
+  const field = (v: PlayVarInfo) => (
+    <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
+  );
+  const roleGroups = (groups: [string, PlayVarInfo[]][]) =>
+    groups.map(([role, list]) =>
+      !role ? (
+        list.map(field)
+      ) : (
+        <RoleGroup key={role} role={role} count={list.length} changed={list.filter(isChanged).length}>
+          {list.map(field)}
+        </RoleGroup>
+      ),
+    );
 
   return (
     <>
@@ -577,18 +563,17 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
                     {optional.length > 0 && (
                       <VarGroup title="선택" count={optional.length}>
                         {/* the playbook's own values first, then each role's defaults folded under its name */}
-                        {optionalGroups.map(([role, list]) => {
-                          const field = (v: PlayVarInfo) => (
-                            <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
-                          );
-                          if (!role) return list.map(field);
-                          const changed = list.filter((v) => (values[v.name] ?? "") !== "" || (savedSecrets.has(v.name) && !cleared.has(v.name))).length;
-                          return (
-                            <RoleGroup key={role} role={role} count={list.length} changed={changed}>
-                              {list.map(field)}
-                            </RoleGroup>
-                          );
-                        })}
+                        {roleGroups(optionalGroups)}
+                      </VarGroup>
+                    )}
+                    {imported.length > 0 && (
+                      <VarGroup title="불러온 플레이북" count={imported.reduce((n, [, l]) => n + l.length, 0)}>
+                        <Hint className="-mt-1">이 플레이북이 import_playbook으로 함께 실행하는 플레이북의 값이에요. 대부분 기본값 그대로 두면 돼요.</Hint>
+                        {imported.map(([src, list]) => (
+                          <RoleGroup key={src} role={src} count={list.length} changed={list.filter(isChanged).length}>
+                            {roleGroups(byRole(list))}
+                          </RoleGroup>
+                        ))}
                       </VarGroup>
                     )}
                   </>
@@ -736,10 +721,8 @@ function FileSummary({ files, dropped }: { files: BundleFile[]; dropped: Dropped
         <Icon name="chev" className={cx("size-3 text-faint transition-transform", open && "rotate-180")} />
       </button>
       {open && (
-        <div className="font-mono text-[12px] text-muted max-h-48 overflow-auto scroll-soft">
-          {files.map((f) => (
-            <div key={f.path}>{f.path}</div>
-          ))}
+        <div className="max-h-72 overflow-auto scroll-soft -mx-1">
+          <FileTree files={files.map((f) => ({ path: f.path }))} />
         </div>
       )}
       {dropped.length > 0 && (
@@ -767,6 +750,17 @@ function VarGroup({ title, count, children }: { title: string; count: number; ch
       {children}
     </div>
   );
+}
+
+/** [role, values] in the order roles first appear; "" holds what the playbook reads itself. */
+function byRole(list: PlayVarInfo[]): [string, PlayVarInfo[]][] {
+  const m = new Map<string, PlayVarInfo[]>([["", []]]);
+  for (const v of list) {
+    const k = v.role ?? "";
+    if (!m.has(k)) m.set(k, []);
+    m.get(k)!.push(v);
+  }
+  return [...m.entries()].filter(([, l]) => l.length > 0);
 }
 
 /** One role's optional values, folded until opened (opened from the start when one of them is already set). */

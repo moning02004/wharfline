@@ -2317,14 +2317,17 @@ function FileBundleField({
       right={
         <span className="flex gap-1 flex-wrap">
           <Button size="sm" variant="ghost" icon="upload" disabled={upload.busy} onClick={upload.open}>
-            {upload.busy ? "읽는 중…" : "올리기"}
+            {upload.busy ? "읽는 중…" : "파일 올리기"}
+          </Button>
+          <Button size="sm" variant="ghost" icon="folder" disabled={upload.busy} onClick={upload.openFolder}>
+            폴더 올리기
           </Button>
           <Button size="sm" icon={files.length ? "edit" : "plus"} onClick={() => edit(files.length ? null : NEW_FILE)}>
             {files.length ? "편집기" : "새 파일"}
           </Button>
         </span>
       }
-      hint={<>{jobId && filesVer ? `v${filesVer} · ` : ""}<span className="font-mono">$SERVICE_PATH</span>에 올라가요. zip도 돼요.</>}
+      hint={<>{jobId && filesVer ? `v${filesVer} · ` : ""}<span className="font-mono">$SERVICE_PATH</span>에 올라가요. zip이나 폴더째 올려도 돼요.</>}
     >
       {upload.el}
       {files.length === 0 ? (

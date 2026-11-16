@@ -152,6 +152,7 @@ class _Walk:
         self.roles_seen: set[str] = set()
         self.role_root: str | None = None  # the role whose tasks are being read
         self.prompts: list[dict[str, Any]] = []  # vars_prompt entries: asked at a terminal, so Wharfline asks instead
+        self.source: str | None = None  # the imported playbook being read (None: the chosen playbook itself)
 
     def value(self, v: Any, bare: bool = False) -> None:
         if isinstance(v, str):
@@ -267,7 +268,7 @@ class _Walk:
             name = str(k)
             if name not in self.role_defaults:
                 self.role_defaults[name] = {"value": v, "desc": notes.get(name, ""), "order": len(self.role_defaults),
-                                            "role": posixpath.basename(self.role_root or "")}
+                                            "role": posixpath.basename(self.role_root or ""), "from": self.source}
 
 
 def _comment_lines(text: str) -> list[str]:
@@ -350,10 +351,13 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
             sub = posixpath.normpath(posixpath.join(base, imported))
             plays.append({"name": p.get("name") or imported, "import": sub})
             sub_data = _load(by_path.get(sub, "")) if sub in by_path else None
+            walk.vars_block(p.get("vars"))  # `import_playbook: x.yml` + `vars:` sets those for the imported plays
             if isinstance(sub_data, list):
+                walk.source = sub  # its role values are shown apart, under "불러온 플레이북"
                 for sp in sub_data:
                     if isinstance(sp, dict) and "hosts" in sp:
                         walk.play(sp)
+                walk.source = None
             elif sub not in by_path:
                 warnings.append(f"불러오는 플레이북 {sub}이(가) 올린 파일에 없어요.")
             continue
@@ -423,7 +427,7 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
         out.append({"name": name, "required": empty and name in walk.asserted and on, "secret": secret,
                     "default": None if empty and not isinstance(value, (list, dict)) else _shown_default(value),
                     "bool": (isinstance(value, bool) or bool(u.get("bool"))) and not secret,
-                    "desc": OPTIONAL_WORDS.sub("", desc).strip(), "role": d["role"] or None, "_order": d["order"]})
+                    "desc": OPTIONAL_WORDS.sub("", desc).strip(), "role": d["role"] or None, "from": d.get("from"), "_order": d["order"]})
     for name, u in walk.uses.names.items():
         if name in walk.defined or name in walk.uses.local or name in walk.role_defaults:
             continue
