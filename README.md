@@ -140,6 +140,7 @@ Gitea(Forgejo), GitHub, GitLab의 CI가 이미지를 빌드하는 동안 배포 
   - 넘기는 변수: `app_name`, 이미지가 있으면 `image`·`image_tag`·`image_ref`, 환경 변수가 있으면 `env_file`(서버 경로)·`env_src`(실행기에 쓴 임시 .env 파일, `copy`의 `src`로 써요), 비공개 레지스트리면 `registry_host`·`registry_user`·`registry_password`, 추가 이미지마다 `<var>_image`·`<var>_tag`·`<var>_image_ref`.
   - 레포의 `ansible.cfg`는 그대로 읽혀요(작업 폴더가 레포 루트예요). 호스트 키 검사, 키 파일, 인벤토리는 Wharfline이 정한 값이 우선해요.
   - 기본 플레이북 `container.yml`은 `backend/playbooks/builtin`에 있어요. .env를 올리고, 이미지를 받고, 컨테이너 하나를 다시 띄워요. 포트 같은 인자는 `docker_run_args`로 넘겨요.
+  - **Ansible 컬렉션**: 백엔드에는 `ansible-core`만 있어서 컬렉션은 이미지에 따로 넣어요. 지금은 `ansible.posix`(authorized_key 등), `community.general`, `community.docker`가 들어 있어요(`backend/ansible-collections.yml`, 버전 고정). 플레이북이 다른 컬렉션을 쓰면 `couldn't resolve module/action` 오류가 나니, 그 파일에 추가하고 백엔드 이미지를 다시 빌드하세요.
 - **SSH 스크립트 작업**: 서버마다 SSH로 접속해서 파일과 `.env`(0600)를 SFTP로 올리고, 레지스트리에 `docker login --password-stdin`을 한 뒤, 단계를 순서대로 `bash -s`(없으면 `sh`)로 실행해요. 각 단계는 `set -e`로 돌아서 명령 하나라도 실패하면 그 서버는 멈추고 나머지 단계는 건너뛰어요.
 - **호스트 키 고정**: 서버를 추가할 때 연결 확인에서 본 지문을 저장해요. 배포할 때마다 서버가 보낸 키와 비교하고, 다르면 그 서버를 `호스트 키 확인 필요`로 바꾸고 건너뛰어요. 인벤토리에서 새 키를 승인하면 다음 배포가 그때의 키를 다시 저장해요. 지문이 없는 예전 서버는 첫 배포에서 저장해요.
 - **.env 형식**: 스크립트 작업과 직접 만든 플레이북의 .env는 docker compose 규칙으로 써요. 특수문자가 있는 값은 작은따옴표로 감싸서 `pa$word` 같은 값의 `$`가 변수로 풀리지 않아요. 기본 플레이북은 `docker run --env-file`이 읽어서 값을 그대로 쓰고, 줄바꿈이 있는 값은 실패로 알려요.

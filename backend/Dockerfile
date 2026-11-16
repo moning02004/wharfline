@@ -14,6 +14,13 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 
+# ansible-core ships without collections. Playbooks commonly use these (ansible.posix.authorized_key,
+# community.general.ufw, community.docker.docker_compose_v2, …), so they are installed once, read-only, where
+# ansible-playbook looks by default. Versions are pinned to ones that support ansible-core 2.17.
+COPY ansible-collections.yml .
+RUN ansible-galaxy collection install -r ansible-collections.yml -p /usr/share/ansible/collections \
+    && rm -rf /root/.ansible
+
 COPY alembic.ini ./
 COPY migrations ./migrations
 COPY app ./app
