@@ -69,6 +69,9 @@ TOP_KEY = re.compile(r"^([A-Za-z_]\w*)\s*:")
 BOOL_USE = re.compile(r"^(?:\s*\|\s*(?:default|d)\s*\([^)]*\))?\s*\|\s*bool\b")
 
 
+REQUIRED_PREFIX = re.compile(r"^필수\s*(?:\([^)]*\))?\s*[.,·:]?\s*")
+
+
 def _load(text: str) -> Any:
     try:
         return yaml.safe_load(text)
@@ -449,13 +452,12 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
     out.sort(key=lambda v: (not v["required"], order.get(v["name"], len(order)), v.get("_order", 1 << 20), v["name"]))
     for v in out:
         v.pop("_order", None)
+        if v["required"]:  # it already sits under 필수: "필수 (vault). 예) …" → "예) …"
+            v["desc"] = REQUIRED_PREFIX.sub("", v["desc"]).strip()
 
+    # Only what the person has to act on. (sudo and hosts: groups need nothing here: a run that stops on a missing
+    # sudo password says what to set, and runs go to the chosen servers whatever the hosts: line says.)
     notes: list[str] = []
-    if any(p.get("become") for p in plays):
-        notes.append("서버에서 sudo(관리자 권한)로 실행해요. 서버를 추가할 때 sudo 전체 권한을 켜 두세요.")
-    hosts = sorted({p["hosts"] for p in plays if p.get("hosts") and p["hosts"] not in ("all", "*")})
-    if hosts:
-        notes.append(f"hosts: {', '.join(hosts)} — 배포할 때 고른 서버에서 실행돼요. 그룹 이름은 맞추지 않아도 돼요.")
     if "env_src" in auto or "env_file" in auto:
         notes.append("이 플레이북은 환경 변수(.env)를 받아요. 작업을 만든 뒤 환경 변수를 연결할 수 있어요.")
     return {"book": book, "plays": plays, "vars": out, "auto": sorted(auto), "notes": notes, "warnings": warnings}

@@ -9,7 +9,7 @@ import { FileTree } from "../components/FileTree";
 import { readEntry, skipPath, toBase64 } from "../lib/folder";
 import { Icon } from "../components/Icon";
 import { NewHostModal, NewInventoryModal, NewKeyModal } from "../modals/ResourceModals";
-import { Banner, Button, Card, CardHeader, Chip, ErrorText, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, cx } from "../components/ui";
+import { Banner, Button, Card, CardHeader, Chip, ErrorText, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /*
  * 플레이북 추가: bring an Ansible playbook (a folder, zip or .yml, or a Git repo), and Wharfline reads what it
@@ -361,8 +361,9 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
   for (const v of vars) if (!v.required && v.from) (importedMap.get(v.from) ?? importedMap.set(v.from, []).get(v.from)!).push(v);
   const imported = [...importedMap.entries()];
   const isChanged = (v: PlayVarInfo) => (values[v.name] ?? "") !== "" || (savedSecrets.has(v.name) && !cleared.has(v.name));
+  const invKey = keys.find((k) => k.kind === "ssh" && k.name === invObj?.key);
   const field = (v: PlayVarInfo) => (
-    <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
+    <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} invKey={invKey} />
   );
   const roleGroups = (groups: [string, PlayVarInfo[]][]) =>
     groups.map(([role, list]) =>
@@ -499,7 +500,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
             </Banner>
           )}
           {books.length > 1 && (
-            <Field label="실행할 플레이북" hint="올린 파일 중 플레이북(.yml)이에요. 하나를 골라요.">
+            <Field label="실행할 플레이북">
               <div className="grid grid-cols-[minmax(0,1fr)] sm:grid-cols-2 gap-2">
                 {books.map((b) => (
                   <button
@@ -527,7 +528,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
 
         {/* 2. the values */}
         {book && (
-          <Section no={2} title="입력할 값" sub="플레이북이 읽는 값이에요. 플레이북 안의 설명을 같이 보여 드려요.">
+          <Section no={2} title="입력할 값">
             {inspecting && !info ? (
               <Loading />
             ) : !info ? (
@@ -555,9 +556,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
                   <>
                     {required.length > 0 && (
                       <VarGroup title="필수" count={required.length}>
-                        {required.map((v) => (
-                          <VarField key={v.name} v={v} value={values[v.name] ?? ""} onChange={(x) => setVal(v.name, x)} saved={savedSecrets.has(v.name) && !cleared.has(v.name)} onClear={() => setCleared((s) => new Set(s).add(v.name))} />
-                        ))}
+                        {required.map(field)}
                       </VarGroup>
                     )}
                     {optional.length > 0 && (
@@ -568,7 +567,6 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
                     )}
                     {imported.length > 0 && (
                       <VarGroup title="불러온 플레이북" count={imported.reduce((n, [, l]) => n + l.length, 0)}>
-                        <Hint className="-mt-1">이 플레이북이 import_playbook으로 함께 실행하는 플레이북의 값이에요. 대부분 기본값 그대로 두면 돼요.</Hint>
                         {imported.map(([src, list]) => (
                           <RoleGroup key={src} role={src} count={list.length} changed={list.filter(isChanged).length}>
                             {roleGroups(byRole(list))}
@@ -694,7 +692,7 @@ function BackLink({ onClick }: { onClick: () => void }) {
   );
 }
 
-function Section({ no, title, sub, children }: { no: number; title: string; sub: string; children: ReactNode }) {
+function Section({ no, title, sub, children }: { no: number; title: string; sub?: string; children: ReactNode }) {
   return (
     <Card>
       <CardHeader
@@ -790,38 +788,56 @@ function RoleGroup({ role, count, changed, children }: { role: string; count: nu
   );
 }
 
-/** One value the playbook asks for: a text box, a hidden box for secrets, or a switch for yes/no. */
-function VarField({ v, value, onChange, saved, onClear }: { v: PlayVarInfo; value: string; onChange: (x: string) => void; saved: boolean; onClear: () => void }) {
+/** A list default ([a, b]) is typed one item per line and sent as a list. */
+const isListDefault = (d: string | null) => !!d && d.trim().startsWith("[");
+function listLines(value: string): string {
+  if (!value.trim()) return "";
+  try {
+    const x = JSON.parse(value);
+    if (Array.isArray(x)) return x.map((i) => (typeof i === "string" ? i : JSON.stringify(i))).join("\n");
+  } catch {
+    /* typed by hand before: show as is */
+  }
+  return value;
+}
+const linesToList = (text: string) => {
+  const items = text.split("\n").map((l) => l.trim()).filter(Boolean);
+  return items.length ? JSON.stringify(items) : "";
+};
+/** A list of SSH public keys (authorized_keys): offer the inventory's key. */
+const SSH_KEY_LIST = /(ssh|authorized)_?(pub(lic)?_?)?keys?$|pubkeys?$/i;
+
+/** One value the playbook asks for: a text box, a hidden box for secrets, a switch for yes/no, lines for a list. */
+function VarField({ v, value, onChange, saved, onClear, invKey }: { v: PlayVarInfo; value: string; onChange: (x: string) => void; saved: boolean; onClear: () => void; invKey?: Key }) {
+  const { toast } = useApp();
   const [show, setShow] = useState(false);
   const id = `pv-${v.name}`;
   const label = (
     <span className="inline-flex items-center gap-1.5 flex-wrap">
       <span className="font-mono">{v.name}</span>
       {v.secret && (
-        <Chip tone="warn" icon="lock">
-          비밀
-        </Chip>
+        <span title="암호화해서 저장하고, 실행 기록에는 가려져요">
+          <Chip tone="warn" icon="lock">
+            비밀
+          </Chip>
+        </span>
       )}
     </span>
   );
   const def = v.default !== null && v.default !== "" ? v.default : null;
+  const list = isListDefault(def) || (!def && SSH_KEY_LIST.test(v.name));
+  const shownDef = list && def ? listLines(def) : def;
   const defLine = !v.required && (
     <span className="block">
-      기본값 {def ? <span className="font-mono text-fg">{def}</span> : "없음"}
-      {def && /^[[{]/.test(def) && <span className="text-faint"> · 바꿀 때는 전체를 같은 형식으로 (예: [a, b])</span>}
+      기본값 {shownDef ? <span className="font-mono text-fg">{list ? (shownDef.includes("\n") ? `${shownDef.split("\n").length}줄` : shownDef) : shownDef}</span> : "없음"}
     </span>
   );
-  const hint = (
-    <>
-      {v.desc}
-      {v.secret && <span className="block">암호화해서 저장하고, 실행 기록에는 가려져요.</span>}
-      {defLine}
-    </>
-  );
+  // the playbook's own example of how to fill it in a terminal (lookup('file', '~/.ssh/…')) means nothing here
+  const desc = v.desc.replace(/예\)?\s*"?\{\{\s*lookup\([^}]*\}\}"?/g, "").trim();
   if (v.bool) {
     const on = value ? value === "true" : (v.default ?? "false").toLowerCase() === "true";
     return (
-      <Field label={label} hint={v.desc || defLine ? <>{v.desc}{defLine}</> : undefined}>
+      <Field label={label} hint={desc || defLine ? <>{desc}{defLine}</> : undefined}>
         <label className="flex items-center gap-2.5 text-[13px]">
           <Switch checked={on} onChange={(x) => onChange(x ? "true" : "false")} label={v.name} />
           {on ? "켜기 (true)" : "끄기 (false)"}
@@ -829,8 +845,53 @@ function VarField({ v, value, onChange, saved, onClear }: { v: PlayVarInfo; valu
       </Field>
     );
   }
+  if (list) {
+    const sshKeys = SSH_KEY_LIST.test(v.name);
+    const addInvKey = async () => {
+      if (!invKey) return toast("배포할 서버(3번)에서 인벤토리를 먼저 골라 주세요.", "error");
+      try {
+        const r = await api.get<{ publicKey: string }>(`/keys/${invKey.id}/public`);
+        const lines = listLines(value).split("\n").filter(Boolean);
+        if (lines.includes(r.publicKey)) return toast("이미 들어 있어요.");
+        onChange(linesToList([...lines, r.publicKey].join("\n")));
+      } catch (e) {
+        toast(errMsg(e), "error");
+      }
+    };
+    return (
+      <Field
+        label={label}
+        htmlFor={id}
+        hint={
+          <>
+            {sshKeys ? "이 서버에 로그인할 수 있게 등록할 SSH 공개키예요. 한 줄에 하나 (ssh-ed25519 AAAA… 형식)." : desc || "한 줄에 하나씩 적어요."}
+            {sshKeys && desc && !/lookup/.test(v.desc) && <span className="block">{desc}</span>}
+            {defLine}
+          </>
+        }
+        right={
+          sshKeys ? (
+            <Button size="sm" variant="ghost" icon="key" onClick={addInvKey} title={invKey ? `${invKey.name}의 공개키` : "인벤토리를 먼저 골라 주세요"}>
+              인벤토리 키 넣기
+            </Button>
+          ) : undefined
+        }
+      >
+        <Textarea
+          id={id}
+          rows={Math.min(6, Math.max(2, listLines(value).split("\n").length + 1))}
+          spellCheck={false}
+          className="font-mono text-[12px] break-all"
+          value={listLines(value)}
+          onChange={(e) => onChange(e.target.value.trim() ? JSON.stringify(e.target.value.split("\n")) : "")}
+          onBlur={(e) => onChange(linesToList(e.target.value))}
+          placeholder={shownDef || (sshKeys ? "ssh-ed25519 AAAAC3Nza… you@laptop" : "한 줄에 하나")}
+        />
+      </Field>
+    );
+  }
   return (
-    <Field label={label} htmlFor={id} hint={hint} right={saved && !value ? <Chip tone="ok">저장된 값 있음</Chip> : undefined}>
+    <Field label={label} htmlFor={id} hint={desc || defLine ? <>{desc}{defLine}</> : undefined} right={saved && !value ? <Chip tone="ok">저장된 값 있음</Chip> : undefined}>
       <div className="flex gap-1.5">
         <Input
           id={id}

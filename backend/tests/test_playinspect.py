@@ -72,7 +72,7 @@ def test_finds_what_to_fill_in():
     assert v["staging_cert"]["bool"] and not v["staging_cert"]["required"]
     assert r["auto"] == ["image_ref"]  # Wharfline passes it
     assert r["warnings"] == []
-    assert any("sudo" in n for n in r["notes"])
+    assert r["notes"] == []  # sudo and hosts: need nothing from the person here
     # required ones come first, in the order the comments name them
     names = [x["name"] for x in r["vars"]]
     assert names.index("domain") < names.index("admin_email") < names.index("install_dir")
@@ -102,7 +102,7 @@ def test_roles_defaults_and_templates():
     assert v["db_url"]["required"]
     assert v["app_secret_token"]["secret"]
     assert r["warnings"] == []
-    assert any("hosts: web" in n for n in r["notes"])
+    assert not any("hosts" in n for n in r["notes"])
 
 
 def test_a_role_template_is_read_from_that_role_only():
@@ -178,7 +178,7 @@ def test_role_defaults_are_optional_unless_an_assert_needs_them():
     assert not v["app_cache_url"]["required"]
     assert v["app_confirm"]["required"]  # must be a given value
     # the role's comment: trailing, or the lines just above; a playbook line that only names it doesn't win
-    assert v["app_domain"]["desc"] == "필수. 예) app.example.com"
+    assert v["app_domain"]["desc"] == "예) app.example.com"  # "필수." goes: it is listed under 필수
     assert v["app_peers"]["desc"] == "접속할 기기 이름 (영문, 숫자)"
     assert v["app_version"]["default"] == "1.2" and v["app_version"]["desc"] == "https://example.com/releases"
     # lists as [..], yes/no as a switch; a yes/no named like a password is not a secret
@@ -288,8 +288,7 @@ def test_vars_prompt_becomes_inputs():
     assert out["account_sudo"]["default"] == "no" and out["account_sudo"]["bool"] and not out["account_sudo"]["required"]
     assert "account_shell" in out
     assert [n for n in out if n == "account_name"] == ["account_name"]  # the prompt, not also the role default
-    notes = playinspect.inspect(files, "13-user.yaml")["notes"]
-    assert any("고른 서버에서 실행돼요" in n for n in notes)
+    assert playinspect.inspect(files, "13-user.yaml")["notes"] == []
 
 
 def test_role_values_of_an_imported_playbook_say_where_they_come_from():
