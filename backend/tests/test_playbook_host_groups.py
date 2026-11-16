@@ -57,3 +57,22 @@ def test_inventory_puts_chosen_servers_in_the_playbook_groups():
     assert inv["servers"]["hosts"]["babyverse-ops"]["ansible_host"] == "10.0.0.5"
     assert list(inv["gitea"]["hosts"]) == ["babyverse-ops"]  # a group the playbook wants, filled with the chosen server
     assert list(inv) == ["servers", "gitea"]  # an existing group is left as it is
+
+
+def test_vaulted_vars_files_are_left_out(tmp_path):
+    vault = "$ANSIBLE_VAULT;1.1;AES256\n3132\n"
+    (tmp_path / "group_vars" / "all").mkdir(parents=True)
+    (tmp_path / "group_vars" / "all" / "vault.yaml").write_text(vault)
+    (tmp_path / "group_vars" / "all" / "main.yaml").write_text("app_port: 8080\n")
+    (tmp_path / "host_vars").mkdir()
+    (tmp_path / "host_vars" / "web1.yml").write_text(vault)
+    (tmp_path / "inventory").mkdir()
+    (tmp_path / "inventory" / "all.ini.vault").write_text(vault)  # not read by the run: Wharfline writes its own inventory
+    (tmp_path / "deploy" / "group_vars").mkdir(parents=True)
+    (tmp_path / "deploy" / "group_vars" / "web.yml").write_text(vault)
+
+    assert executor.skip_vaulted_vars(tmp_path, "deploy/site.yml") == [
+        "group_vars/all/vault.yaml", "host_vars/web1.yml", "deploy/group_vars/web.yml"]
+    assert (tmp_path / "group_vars" / "all" / "main.yaml").exists()  # plain vars stay
+    assert (tmp_path / "inventory" / "all.ini.vault").exists()
+    assert executor.skip_vaulted_vars(tmp_path, "site.yml") == []

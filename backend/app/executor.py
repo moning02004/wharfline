@@ -399,6 +399,38 @@ def _repo_reader(src: Path):
     return read
 
 
+VAULT_HEADER = b"$ANSIBLE_VAULT"
+
+
+def skip_vaulted_vars(src: Path, book: str) -> list[str]:
+    """Remove whole-file Ansible Vault files under group_vars/ and host_vars/ (next to the playbook and at the repo
+    root) from the run's checkout, and return their paths. Wharfline has no vault password: values like these come
+    in as the job's variables and secret variables instead, and Ansible would otherwise stop at
+    "Attempting to decrypt but no vault secrets found" just by loading them (group_vars/all is read for every host).
+    Only the temporary checkout changes."""
+    root = src.resolve()
+    skipped: list[str] = []
+    for base in dict.fromkeys([root, (root / Path(book).parent).resolve()]):
+        if base != root and root not in base.parents:
+            continue
+        for d in ("group_vars", "host_vars"):
+            top = base / d
+            if not top.is_dir() or top.is_symlink():
+                continue
+            for f in sorted(top.rglob("*")):
+                if not f.is_file() or f.is_symlink():
+                    continue
+                try:
+                    with f.open("rb") as fh:
+                        head = fh.read(len(VAULT_HEADER))
+                except OSError:
+                    continue
+                if head == VAULT_HEADER:
+                    f.unlink()
+                    skipped.append(f.relative_to(root).as_posix())
+    return skipped
+
+
 def playbook_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> dict[str, Any]:
     """Everything ansible-playbook gets with -e @vars.json, in order of who wins.
 
@@ -867,6 +899,8 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         xv["env_src"] = str(_write_secret(tmp / "app.env", text))
     # Secret variables reach ansible only through this 0600 file, never argv or the environment.
     vars_file = _write_secret(tmp / "vars.json", json.dumps(playbook_vars(plan, xv), ensure_ascii=False))
+    if vaulted := skip_vaulted_vars(src, plan.book):
+        out.line("y", f"암호화된(vault) 변수 파일은 읽지 않아요: {', '.join(vaulted)} · 필요한 값은 작업의 변수·비밀 변수로 넣어 주세요")
     servers = [t for t, _ in alive]
     wanted = playinspect.host_groups(_repo_reader(src), plan.book, playbook_vars(plan, xv))
     if added := [g for g in wanted if g not in {t.group for t in servers}]:
