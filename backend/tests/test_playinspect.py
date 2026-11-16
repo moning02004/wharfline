@@ -264,3 +264,29 @@ def test_a_windows_zip_drops_its_folder():
         z.writestr(r"infra\nginx\a.conf", "x")
     res = bundles.parse_upload("infra.zip", buf.getvalue(), playbook=True)
     assert [f["path"] for f in res["files"]] == ["nginx/a.conf", "stack.yml"]
+
+
+def test_vars_prompt_becomes_inputs():
+    """Without a terminal Ansible skips vars_prompt and goes on with nothing, so each prompt is asked in the job."""
+    book = "\n".join([
+        "- hosts: \"{{ account_hosts | default('all') }}\"",
+        "  become: true",
+        "  vars_prompt:",
+        "    - { name: account_name, prompt: 계정 이름, private: false }",
+        "    - { name: account_password, prompt: 비밀번호 (8자 이상), confirm: true }",
+        "    - { name: account_sudo, prompt: sudo 권한 (yes/no), private: false, default: 'no' }",
+        "  roles: [account]",
+    ])
+    files = [{"path": "13-user.yaml", "content": book},
+             {"path": "roles/account/defaults/main.yaml", "content": "account_name: \"\"\naccount_shell: /bin/bash\n"},
+             {"path": "roles/account/tasks/main.yaml",
+              "content": "- ansible.builtin.user: { name: \"{{ account_name }}\", shell: \"{{ account_shell }}\" }\n"}]
+    out = {v["name"]: v for v in playinspect.inspect(files, "13-user.yaml")["vars"]}
+    assert out["account_name"] == {"name": "account_name", "required": True, "secret": False, "default": None,
+                                   "bool": False, "desc": "계정 이름", "role": None}
+    assert out["account_password"]["required"] and out["account_password"]["secret"]  # private unless said otherwise
+    assert out["account_sudo"]["default"] == "no" and out["account_sudo"]["bool"] and not out["account_sudo"]["required"]
+    assert "account_shell" in out
+    assert [n for n in out if n == "account_name"] == ["account_name"]  # the prompt, not also the role default
+    notes = playinspect.inspect(files, "13-user.yaml")["notes"]
+    assert any("고른 서버에서 실행돼요" in n for n in notes)

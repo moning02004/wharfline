@@ -151,6 +151,7 @@ class _Walk:
         self.asserted: dict[str, str | None] = {}  # names an assert requires to be non-empty -> unless this switch is off
         self.roles_seen: set[str] = set()
         self.role_root: str | None = None  # the role whose tasks are being read
+        self.prompts: list[dict[str, Any]] = []  # vars_prompt entries: asked at a terminal, so Wharfline asks instead
 
     def value(self, v: Any, bare: bool = False) -> None:
         if isinstance(v, str):
@@ -204,6 +205,8 @@ class _Walk:
         for vp in p.get("vars_prompt") or []:
             if isinstance(vp, dict) and vp.get("name"):
                 self.defined.add(str(vp["name"]))
+                if all(x["name"] != str(vp["name"]) for x in self.prompts):
+                    self.prompts.append(vp)
         for key in ("hosts", "become", "become_user", "name", "environment"):
             self.value(p.get(key))
         for role in p.get("roles") or []:
@@ -390,6 +393,15 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
     auto: list[str] = []
     out: list[dict[str, Any]] = []
     # Role defaults the playbook does not set itself: optional (required when empty and asserted), with the default shown.
+    # vars_prompt: without a terminal Ansible skips the question and goes on with nothing (or the default), so each
+    # one is an input here. A prompt is private unless it says otherwise, as in Ansible.
+    for vp in walk.prompts:
+        name, default = str(vp["name"]), vp.get("default")
+        shown = None if default is None else str(default).lower() if isinstance(default, bool) else str(default)
+        secret = vp.get("private", True) is not False
+        yesno = shown is not None and shown.lower() in ("yes", "no", "true", "false")
+        out.append({"name": name, "required": shown in (None, ""), "secret": secret, "default": shown or None,
+                    "bool": yesno and not secret, "desc": str(vp.get("prompt") or "").strip(), "role": None})
     for name, d in walk.role_defaults.items():
         if name in walk.defined or name in WHARFLINE:
             continue
@@ -439,7 +451,7 @@ def inspect(files: list[dict[str, str]], book: str) -> dict[str, Any]:
         notes.append("서버에서 sudo(관리자 권한)로 실행해요. 서버를 추가할 때 sudo 전체 권한을 켜 두세요.")
     hosts = sorted({p["hosts"] for p in plays if p.get("hosts") and p["hosts"] not in ("all", "*")})
     if hosts:
-        notes.append(f"hosts: {', '.join(hosts)} — 인벤토리에서 그룹 이름이 이것과 같은 서버에서만 실행돼요.")
+        notes.append(f"hosts: {', '.join(hosts)} — 배포할 때 고른 서버에서 실행돼요. 그룹 이름은 맞추지 않아도 돼요.")
     if "env_src" in auto or "env_file" in auto:
         notes.append("이 플레이북은 환경 변수(.env)를 받아요. 작업을 만든 뒤 환경 변수를 연결할 수 있어요.")
     return {"book": book, "plays": plays, "vars": out, "auto": sorted(auto), "notes": notes, "warnings": warnings}
