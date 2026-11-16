@@ -12,16 +12,51 @@ def _table(*rows: tuple[str, str]) -> str:
 
 def test_parse_member_table():
     rows, errors = parse_member_table(_table(("ifdo", "Hong@Ermore.co.kr"), ("배치팀", "kim@ermore.co.kr")) + "\n\n그냥 줄\n| a |\n| x | not-an-email |")
-    assert [(g, e) for _, g, e in rows] == [("ifdo", "hong@ermore.co.kr"), ("배치팀", "kim@ermore.co.kr")]
+    assert [(g, e) for _, g, e, _ in rows] == [("ifdo", "hong@ermore.co.kr"), ("배치팀", "kim@ermore.co.kr")]
     assert [x["line"] for x in errors] == [6, 7, 8]
 
 
 def test_parse_plain_lines():
     text = "그룹 계정\nmarketing2 user1@a.com\nmarketing2\tUser2@A.com\nViewer 기본 user3@a.com\nops, user4@a.com\nuser5@a.com\n| x | y@a.com |"
     rows, errors = parse_member_table(text)
-    assert [(g, e) for _, g, e in rows] == [
+    assert [(g, e) for _, g, e, _ in rows] == [
         ("marketing2", "user1@a.com"), ("marketing2", "user2@a.com"), ("Viewer 기본", "user3@a.com"), ("ops", "user4@a.com"), ("x", "y@a.com")]
     assert [x["line"] for x in errors] == [6]  # an account with no group
+
+
+def test_parse_names():
+    text = "\n".join([
+        "그룹, 계정, 이름",
+        "전략기획실, Username@A.com, A 과장",
+        "전략기획실,  b@a.com ,  B   대리 ",
+        "영업팀\tc@a.com\tC 사원",
+        "영업팀 d@a.com D 주임",
+        "영업팀, e@a.com,",
+        "영업팀, f@a.com, x, y",
+    ])
+    rows, errors = parse_member_table(text)
+    assert [(g, e, nm) for _, g, e, nm in rows] == [
+        ("전략기획실", "username@a.com", "전략기획실 A 과장"),
+        ("전략기획실", "b@a.com", "전략기획실 B 대리"),
+        ("영업팀", "c@a.com", "영업팀 C 사원"),
+        ("영업팀", "d@a.com", "영업팀 D 주임"),
+        ("영업팀", "e@a.com", None),  # no name: the part before @ is used
+    ]
+    assert [x["line"] for x in errors] == [7]  # four cells
+
+
+def test_new_accounts_get_the_name(client, login):
+    login(OWNER, sudo=True)
+    tag = uuid.uuid4().hex[:6]
+    a, b = f"name-a-{tag}@ermore.co.kr", f"name-b-{tag}@ermore.co.kr"
+    text = "\n".join([f"전략기획실-{tag}, {a}, A 과장", f"전략기획실-{tag}, {b}", f"전략기획실-{tag}, {DEPLOYER}, 다른 이름"])
+    before = next(x["name"] for x in client.get("/api/members").json() if x["email"] == DEPLOYER)
+    p = client.post("/api/members/import", json={"text": text}).json()
+    assert p["errors"] == [] and p["names"] == {a: f"전략기획실-{tag} A 과장", b: f"name-b-{tag}"}
+    assert client.post("/api/members/import", json={"text": text, "apply": True}).json()["applied"] is True
+    members = {x["email"]: x["name"] for x in client.get("/api/members").json()}
+    assert members[a] == f"전략기획실-{tag} A 과장" and members[b] == f"name-b-{tag}"
+    assert members[DEPLOYER] == before  # an existing account keeps its name
 
 
 def test_preview_then_apply(client, login):

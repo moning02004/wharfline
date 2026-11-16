@@ -1,4 +1,4 @@
-"""Renaming members: Owner or Admin only (themselves included); everyone else, not even their own name."""
+"""Renaming and deleting members: renaming is for Owner or Admin (themselves included), deleting for the Owner."""
 
 import uuid
 
@@ -48,3 +48,26 @@ def test_bad_names(client, login):
     assert client.put(f"/api/members/{DEPLOYER}/name", json={"name": "   "}).status_code == 400
     assert client.put(f"/api/members/{DEPLOYER}/name", json={"name": "가" * 65}).status_code == 400
     assert client.put("/api/members/nobody@acme.kr/name", json={"name": "x"}).status_code == 404
+
+
+def test_owner_deletes_a_member(client, login):
+    from tests.conftest import builtin_job
+
+    login(OWNER, sudo=True)
+    gone = f"del-{uuid.uuid4().hex[:6]}@acme.kr"
+    assert client.post("/api/members/import", json={"text": f"삭제팀, {gone}, 홍길동", "apply": True}).status_code == 200
+    job = client.post("/api/jobs", json=builtin_job(f"del · {gone}", "staging", "nginx:1.27",
+                                                    editors={"groups": [], "members": [gone, DEPLOYER]})).json()
+
+    login(DEPLOYER, sudo=True)
+    assert client.delete(f"/api/members/{gone}").status_code == 403  # Owner only
+    login(OWNER)
+    assert client.delete(f"/api/members/{gone}").json()["detail"] == "sudo_required"
+    login(OWNER, sudo=True)
+    assert client.delete(f"/api/members/{OWNER}").status_code == 400  # never yourself
+    assert client.delete(f"/api/members/{gone}").status_code == 200
+    assert all(x["email"] != gone for x in client.get("/api/members").json())
+    assert all(gone not in g["members"] for g in client.get("/api/groups").json()["groups"])
+    edited = next(j for j in client.get("/api/jobs").json() if j["id"] == job["id"])
+    assert edited["editors"]["members"] == [DEPLOYER]
+    assert client.delete(f"/api/members/{gone}").status_code == 404

@@ -103,20 +103,34 @@ def set_member_groups(email: str, body: MemberGroupsIn, db: Session = Depends(ge
     return member.to_dict()
 
 
-# ---------- bulk add: one "그룹 계정" per line (a "| 그룹 | 계정 |" table works too) ----------
+# ---------- bulk add: one "그룹, 계정, 이름" per line ----------
 
 IMPORT_PASSWORD = "0000"  # everyone added in bulk starts here and must pick a new password at the first login
 IMPORT_MAX_ROWS = 1000
 NEW_GROUP_MENUS = ["jobs", "runs", "security"]  # a group made by the import; the Owner widens it afterwards
-_EMAIL_RE = re.compile(r"^[^@\s|]+@[^@\s|]+\.[^@\s|]+$")
+_EMAIL_RE = re.compile(r"^[^@\s|,]+@[^@\s|,]+\.[^@\s|,]+$")
 _SEPARATOR_RE = re.compile(r"^:?-{3,}:?$")
-_PLAIN_RE = re.compile(r"^(.*?)[\s,]+([^\s,]+)$")  # "그룹 계정", split at the last space, tab or comma
-_HEADERS = ({"그룹", "group"}, {"계정", "이메일", "account", "email"})
+_HEADERS = ({"그룹", "group"}, {"계정", "이메일", "account", "email"}, {"이름", "name"})
 
 
-def parse_member_table(text: str) -> tuple[list[tuple[int, str, str]], list[dict]]:
-    """Rows (line, group, email) and errors from lines "그룹 계정" or a Markdown table with the columns 그룹 and 계정."""
-    rows: list[tuple[int, str, str]] = []
+def _cells(line: str) -> list[str]:
+    """A line's cells: "| a | b | c |", "a, b, c" (or tabs), or words around the e-mail ("그룹 계정 이름")."""
+    if line.startswith("|"):
+        return [c.strip() for c in line.strip("|").split("|")]
+    if "," in line or "\t" in line:
+        return [c.strip() for c in re.split(r"[,\t]", line)]
+    words = line.split()
+    at = next((i for i, w in enumerate(words) if "@" in w), None)
+    if at is None:
+        return [line] if len(words) < 2 else [" ".join(words[:-1]), words[-1]]  # no e-mail: reported below
+    return [" ".join(words[:at]), words[at]] + ([" ".join(words[at + 1:])] if at + 1 < len(words) else [])
+
+
+def parse_member_table(text: str) -> tuple[list[tuple[int, str, str, str | None]], list[dict]]:
+    """Rows (line, group, email, name) and errors. A line is "그룹, 계정, 이름" — the name is optional and is saved
+    as "그룹 이름" (전략기획실, a@b.com, A 과장 → "전략기획실 A 과장"). Tabs, "| 그룹 | 계정 |" tables and
+    "그룹 계정 이름" with spaces work too."""
+    rows: list[tuple[int, str, str, str | None]] = []
     errors: list[dict] = []
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
@@ -126,30 +140,28 @@ def parse_member_table(text: str) -> tuple[list[tuple[int, str, str]], list[dict
         def bad(reason: str) -> None:
             errors.append({"line": n, "text": line[:200], "reason": reason})
 
-        if line.startswith("|"):
-            cells = [c.strip() for c in line.strip("|").split("|")]
-            if all(_SEPARATOR_RE.match(c) for c in cells):
-                continue
-        else:  # "marketing2 user1@a.com": the last word is the account, everything before it the group
-            parts = _PLAIN_RE.match(line)
-            if not parts:
-                bad("그룹 계정 형식으로 적어 주세요. 예: marketing2 user1@a.com")
-                continue
-            cells = [parts[1].strip(), parts[2]]
-        if len(cells) == 2 and cells[0].lower() in _HEADERS[0] and cells[1].lower() in _HEADERS[1]:
+        cells = _cells(line)
+        if line.startswith("|") and all(_SEPARATOR_RE.match(c) for c in cells):
             continue
-        if len(cells) != 2:
-            bad(f"칸이 {len(cells)}개예요. 그룹과 계정 두 칸만 적어 주세요.")
+        if len(cells) in (2, 3) and all(c.lower() in h for c, h in zip(cells, _HEADERS)):
+            continue  # a header row
+        if len(cells) == 3 and not cells[2]:
+            cells = cells[:2]
+        if len(cells) not in (2, 3):
+            bad(f"칸이 {len(cells)}개예요. 그룹, 계정, 이름 순서로 적어 주세요. 예: 전략기획실, user@a.com, 홍길동 과장")
             continue
-        group, email = cells[0], cells[1].lower()
+        group, email = " ".join(cells[0].split()), cells[1].lower()
+        name = f"{group} {' '.join(cells[2].split())}" if len(cells) == 3 else None
         if not group:
             bad("그룹이 비어 있어요.")
         elif len(group) > 64:
             bad("그룹 이름은 64자까지예요.")
         elif not _EMAIL_RE.match(email) or len(email) > 255:
             bad(f"계정은 이메일로 적어 주세요: {cells[1] or '(빈 칸)'}")
+        elif name and len(name) > NAME_MAX:
+            bad(f"이름(그룹명 포함)은 {NAME_MAX}자까지예요: {name}")
         else:
-            rows.append((n, group, email))
+            rows.append((n, group, email, name))
     if len(rows) > IMPORT_MAX_ROWS:
         errors.append({"line": 0, "text": "", "reason": f"한 번에 {IMPORT_MAX_ROWS}줄까지 올릴 수 있어요."})
     return rows, errors
@@ -162,13 +174,13 @@ class ImportIn(BaseModel):
 
 @router.post("/members/import", dependencies=[Depends(require_owner)])
 def import_members(body: ImportIn, db: Session = Depends(get_db)):
-    """Owner only. New accounts are Viewers with the password 0000 and must change it at the first login;
-    existing accounts keep their role and password and only join the listed groups. Missing groups are created."""
+    """Owner only. New accounts are Viewers named "그룹 이름" with the password 0000 and must change it at the first
+    login; existing accounts keep their name, role and password and only join the listed groups. Missing groups are created."""
     if body.apply and not s.sudo_active(db):
         raise HTTPException(403, "sudo_required")
     rows, errors = parse_member_table(body.text)
     if not rows and not errors:
-        errors.append({"line": 0, "text": "", "reason": "추가할 줄이 없어요. 한 줄에 하나씩 그룹 계정으로 적어 주세요."})
+        errors.append({"line": 0, "text": "", "reason": "추가할 줄이 없어요. 한 줄에 하나씩 그룹, 계정, 이름으로 적어 주세요."})
 
     groups = {g.name.lower(): g for g in db.scalars(select(m.Group))}
     new_groups: list[str] = []
@@ -176,18 +188,22 @@ def import_members(body: ImportIn, db: Session = Depends(get_db)):
     new_members: list[str] = []
     existing: list[str] = []
     joins: list[tuple[str, str]] = []  # (group name key, email)
-    for _, group, email in rows:
+    names: dict[str, str] = {}  # new accounts: email -> name (the first line that gives one)
+    for _, group, email, name in rows:
         key = group.lower()
         if key not in groups and key not in new_keys:
             new_groups.append(group)
             new_keys.add(key)
         if email not in new_members and email not in existing:
             (existing if db.get(m.Member, email) else new_members).append(email)
+        if name and email in new_members:
+            names.setdefault(email, name)
         g = groups.get(key)
         if (key, email) not in joins and not (g and any(x.email == email for x in g.members)):
             joins.append((key, email))
 
-    out = {"rows": len(rows), "newMembers": new_members, "existingMembers": existing, "newGroups": new_groups,
+    names = {e: names.get(e) or e.split("@", 1)[0] for e in new_members}  # no name given: the part before @
+    out = {"rows": len(rows), "newMembers": new_members, "names": names, "existingMembers": existing, "newGroups": new_groups,
            "joins": len(joins), "errors": errors, "applied": False}
     if not body.apply:
         return out
@@ -201,7 +217,7 @@ def import_members(body: ImportIn, db: Session = Depends(get_db)):
         groups[name.lower()] = g
     temp_hash = authn.hash_password(IMPORT_PASSWORD)  # one bcrypt for the whole upload
     for email in new_members:
-        db.add(m.Member(email=email, name=email.split("@", 1)[0], role="Viewer", tfa=False, last="-",
+        db.add(m.Member(email=email, name=names[email], role="Viewer", tfa=False, last="-",
                         password_hash=temp_hash, must_change_password=True))
     db.flush()
     for key, email in joins:
@@ -340,6 +356,26 @@ def save_policy(body: PolicyIn, db: Session = Depends(get_db)):
 
 class ResetPasswordIn(BaseModel):
     clearTfa: bool = False
+
+
+@router.delete("/members/{email}", dependencies=[Depends(require_owner), Depends(require_sudo)])
+def delete_member(email: str, db: Session = Depends(get_db)):
+    """Owner only, after a password re-check; never yourself (so an Owner always remains). Their sign-ins and group
+    memberships go with them, and they are taken off every job's editors. History (runs, activity, who made a job)
+    keeps the e-mail as it was."""
+    member = db.get(m.Member, email)
+    if not member:
+        raise HTTPException(404, "멤버를 찾을 수 없어요.")
+    if member.email == s.current_member(db).email:
+        raise HTTPException(400, "나 자신은 지울 수 없어요.")
+    for job in db.scalars(select(m.Job)):
+        ed = job.editors or {}
+        if member.email in (ed.get("members") or []):
+            job.editors = {**ed, "members": [x for x in ed["members"] if x != member.email]}
+    s.log_act(db, "멤버 삭제", f"{member.name} · {member.email} · {member.role}", "warn")
+    db.delete(member)  # login sessions and group memberships cascade
+    db.commit()
+    return {"ok": True}
 
 
 @router.post("/members/{email}/password", dependencies=[Depends(require_owner), Depends(require_sudo)])

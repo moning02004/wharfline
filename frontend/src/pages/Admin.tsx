@@ -202,6 +202,8 @@ export function Members() {
 interface ImportResult {
   rows: number;
   newMembers: string[];
+  /** New accounts' names: "그룹 이름", or the part before @ when no name was given */
+  names: Record<string, string>;
   existingMembers: string[];
   newGroups: string[];
   joins: number;
@@ -209,11 +211,11 @@ interface ImportResult {
   applied: boolean;
 }
 
-const IMPORT_EXAMPLE = `marketing2 user1@a.com
-marketing2 user2@a.com
-ifdo hong@ermore.co.kr`;
+const IMPORT_EXAMPLE = `전략기획실, username@a.com, A 과장
+전략기획실, kim@a.com, 김민수 대리
+브랜드마케팅2팀, lee@a.com, 이영희 사원`;
 
-/** Owner only: add accounts and group memberships from "그룹 계정" lines (typed, pasted or a .txt). */
+/** Owner only: add accounts and group memberships from "그룹, 계정, 이름" lines (typed, pasted or a .txt). */
 function ImportMembersModal({ onClose }: { onClose: () => void }) {
   const { toast, withSudo, refresh, reloadAccess } = useApp();
   const [text, setText] = useState("");
@@ -226,7 +228,7 @@ function ImportMembersModal({ onClose }: { onClose: () => void }) {
     if (f.size > 1024 * 1024) return toast("파일이 너무 커요 (최대 1MB)", "error");
     setText(await f.text());
   };
-  /** Check the lines first (no password needed); add only when every line reads as 그룹 계정. */
+  /** Check the lines first (no password needed); add only when every line reads as 그룹, 계정, 이름. */
   const add = async () => {
     setBusy(true);
     let r: ImportResult;
@@ -251,15 +253,15 @@ function ImportMembersModal({ onClose }: { onClose: () => void }) {
 
   return (
     <>
-      <ModalHead title="멤버 일괄 추가" sub="한 줄에 하나씩 그룹 계정 순서로 적어요. .txt 파일을 올려도 돼요." onClose={onClose} />
+      <ModalHead title="멤버 일괄 추가" sub="한 줄에 하나씩 그룹, 계정, 이름 순서로 쉼표로 나눠 적어요. .txt 파일을 올려도 돼요." onClose={onClose} />
       <ModalBody>
         <Banner icon="info">
-          새 계정은 <b>Viewer</b>, 비밀번호 <b className="font-mono">0000</b> 으로 만들어지고 처음 로그인할 때 새 비밀번호를 정해요. 이미 있는 계정은 역할과 비밀번호를 그대로 두고 그룹만 더해요. 없는 그룹은 새로 만들어요(작업·실행 기록·보안 메뉴만 보여요. 그룹 탭에서 넓혀 주세요).
+          이름은 <b>그룹명 이름</b>으로 저장돼요(예: 전략기획실 A 과장). 이름을 비우면 이메일 앞부분이 이름이 돼요. 새 계정은 <b>Viewer</b>, 비밀번호 <b className="font-mono">0000</b> 으로 만들어지고 처음 로그인할 때 새 비밀번호를 정해요. 이미 있는 계정은 이름·역할·비밀번호를 그대로 두고 그룹만 더해요. 없는 그룹은 새로 만들어요(작업·실행 기록·보안 메뉴만 보여요. 그룹 탭에서 넓혀 주세요).
         </Banner>
         <Field label=".txt 파일" htmlFor="impFile">
           <input id="impFile" type="file" accept=".txt,.md,text/plain" className="text-[13px]" onChange={(e) => readFile(e.target.files?.[0])} />
         </Field>
-        <Field label="그룹 계정" htmlFor="impText">
+        <Field label="그룹, 계정, 이름" htmlFor="impText">
           <Textarea id="impText" rows={10} className="font-mono" placeholder={IMPORT_EXAMPLE} value={text} onChange={(e) => setText(e.target.value)} />
         </Field>
         {fresh && (
@@ -272,7 +274,9 @@ function ImportMembersModal({ onClose }: { onClose: () => void }) {
               {fresh.errors.length > 0 && <Chip tone="bad">틀린 줄 {fresh.errors.length}개</Chip>}
             </div>
             {fresh.newGroups.length > 0 && <p className="m-0 text-muted">새 그룹: {fresh.newGroups.join(", ")}</p>}
-            {fresh.newMembers.length > 0 && <p className="m-0 text-muted break-all">새 멤버: {fresh.newMembers.join(", ")}</p>}
+            {fresh.newMembers.length > 0 && (
+              <p className="m-0 text-muted break-all">새 멤버: {fresh.newMembers.map((e) => `${fresh.names?.[e] ?? e} (${e})`).join(", ")}</p>
+            )}
             {fresh.errors.map((x, i) => (
               <p key={i} className="m-0 text-bad">
                 {x.line > 0 && <span className="font-mono">{x.line}줄 </span>}
@@ -331,6 +335,34 @@ function RenameModal({ member, onClose }: { member: { email: string; name: strin
         <Button onClick={onClose}>취소</Button>
         <Button variant="primary" type="submit" form="renameForm" disabled={busy || !clean || clean === member.name}>
           바꾸기
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+/** Owner only, after a password re-check. Never yourself (the menu doesn't offer it, and the server refuses). */
+function DeleteMemberModal({ member, onClose }: { member: Member; onClose: () => void }) {
+  const { withSudo, toast, refresh, reloadAccess } = useApp();
+  const remove = () =>
+    withSudo("멤버 삭제", async () => {
+      await api.del(`/members/${encodeURIComponent(member.email)}`);
+      toast(`${member.name}님을 지웠어요`);
+      refresh();
+      reloadAccess();
+      onClose();
+    });
+  return (
+    <>
+      <ModalHead title="멤버 삭제" sub={`${member.name} · ${member.email}`} onClose={onClose} />
+      <ModalBody>
+        <p className="m-0">이 멤버는 바로 로그아웃되고 다시 로그인할 수 없어요. 속한 그룹과 배포 작업의 편집 권한에서도 빠져요.</p>
+        <p className="m-0 text-muted text-[12.5px]">실행 기록, 활동 기록, 배포 작업의 생성자 같은 지난 기록은 이메일로 그대로 남아요. 같은 이메일로 다시 추가하면 새 계정이 돼요.</p>
+      </ModalBody>
+      <ModalFoot>
+        <Button onClick={onClose}>취소</Button>
+        <Button variant="danger" onClick={remove}>
+          삭제
         </Button>
       </ModalFoot>
     </>
@@ -442,7 +474,10 @@ function MembersTab({ members, groups, canEdit }: { members: Member[]; groups: G
                       ...(canRename ? [{ label: "이름 바꾸기", icon: "edit" as const, onClick: () => openModal((c) => <RenameModal member={u} onClose={c} />) }] : []),
                       ...(other ? [{ label: "이 멤버로 미리보기", icon: "eye" as const, disabled: viewAs?.email === u.email, onClick: () => preview(u) }] : []),
                       ...(other && canEdit
-                        ? [{ label: "비밀번호 재설정", icon: "key" as const, onClick: () => openModal((c) => <ResetPasswordModal member={u} onClose={c} onDone={refresh} />) }]
+                        ? [
+                            { label: "비밀번호 재설정", icon: "key" as const, onClick: () => openModal((c) => <ResetPasswordModal member={u} onClose={c} onDone={refresh} />) },
+                            { label: "멤버 삭제", icon: "trash" as const, danger: true, onClick: () => openModal((c) => <DeleteMemberModal member={u} onClose={c} />) },
+                          ]
                         : []),
                     ];
                     return items.length ? <MoreMenu items={items} label={`${u.name} 메뉴`} /> : null;
