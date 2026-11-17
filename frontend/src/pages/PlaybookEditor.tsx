@@ -385,8 +385,24 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
       />
 
       <div className="flex flex-col gap-5 max-w-[880px]">
-        {/* 1. the playbook */}
-        <Section no={1} title="플레이북" sub="실행할 플레이북과, 플레이북이 함께 쓰는 파일이에요.">
+        {/* 1. name, first: it follows the playbook and inventory until the member types one */}
+        <Section no={1} title="작업 이름" sub="배포 작업 목록에 이 이름으로 보여요. 비워 두면 플레이북과 인벤토리 이름으로 채워요.">
+          <Field label="이름" htmlFor="pbName">
+            <Input
+              id="pbName"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameTouched(e.target.value.trim() !== "");
+              }}
+              placeholder="stack · production"
+              autoFocus={!job}
+            />
+          </Field>
+        </Section>
+
+        {/* 2. the playbook */}
+        <Section no={2} title="플레이북" sub="실행할 플레이북과, 플레이북이 함께 쓰는 파일이에요.">
           {!editing && (
             <div>
             <Seg<From>
@@ -526,9 +542,9 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
           )}
         </Section>
 
-        {/* 2. the values */}
+        {/* 3. the values */}
         {book && (
-          <Section no={2} title="입력할 값">
+          <Section no={3} title="입력할 값">
             {inspecting && !info ? (
               <Loading />
             ) : !info ? (
@@ -590,9 +606,9 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
           </Section>
         )}
 
-        {/* 3. servers */}
+        {/* 4. servers */}
         {book && (
-          <Section no={3} title="배포할 서버" sub="플레이북을 실행할 서버예요.">
+          <Section no={4} title="배포할 서버" sub="플레이북을 실행할 서버예요.">
             <Field
               label="인벤토리"
               right={
@@ -642,20 +658,9 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
           </Section>
         )}
 
-        {/* 4. name */}
+        {/* 5. safety */}
         {book && (
-          <Section no={4} title="작업 이름" sub="배포 작업 목록에 이 이름으로 보여요. 실행은 만든 뒤 작업 화면에서 해요.">
-            <Field label="이름" htmlFor="pbName">
-              <Input
-                id="pbName"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setNameTouched(true);
-                }}
-                placeholder="stack · production"
-              />
-            </Field>
+          <Section no={5} title="운영 보호">
             <label className="flex items-center gap-2.5 text-[13px]">
               <Switch checked={prot} onChange={setProt} disabled={fixedSafety} label="운영 보호" />
               <span>
