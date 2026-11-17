@@ -47,7 +47,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
   const repos = (reposRes.data ?? []).filter((r) => r.kind === "git");
 
   const pb = job?.playbook;
-  const [from, setFrom] = useState<From>(pb && pb.kind !== "upload" ? "git" : "upload");
+  const [from, setFrom] = useState<From>(pb?.kind === "upload" ? "upload" : "git");
   // upload
   const [files, setFiles] = useState<BundleFile[] | null>(job ? null : []);
   const [filesChanged, setFilesChanged] = useState(false);
@@ -407,8 +407,8 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
             <div>
             <Seg<From>
               options={[
-                { value: "upload", label: "파일 올리기" },
                 { value: "git", label: "Git 저장소" },
+                { value: "upload", label: "파일 올리기" },
               ]}
               value={from}
               onChange={(v) => {
