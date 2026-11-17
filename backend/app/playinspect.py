@@ -320,9 +320,15 @@ def _comment_for(name: str, comments: list[str], defining_only: bool = False) ->
 
 
 def _describe(name: str, line: str) -> str:
-    """The comment line minus everything up to the name: "예) team.example.com → …"."""
+    """The comment line minus everything up to the name: "예) team.example.com → …". A line that only mentions
+    the name mid-sentence ("관리자 IP 는 NAME 에 넣어 …") is kept whole, so it still reads as a sentence."""
     m = re.search(rf"(?<![\w.]){re.escape(name)}(?![\w])", line)
-    return re.sub(r"\s+", " ", line[m.end():]).strip(" :-·") if m else ""
+    if not m:
+        return ""
+    rest = line[m.end():]
+    if re.search(r"\w", line[:m.start()]) and not re.match(r"\s{2,}|\s*[:=→·-]|\s*$", rest):
+        return re.sub(r"\s+", " ", line).strip()
+    return re.sub(r"\s+", " ", rest).strip(" :-·")
 
 
 def _local(path: str, base: str) -> str | None:
