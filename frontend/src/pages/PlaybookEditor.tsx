@@ -1094,13 +1094,7 @@ function RepoUrlInput({ id, value, onChange, repos, onPick }: { id: string; valu
                   className={cx("flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer", i === active && "bg-hover")}
                 >
                   <Icon name="git" className="size-3.5 flex-none text-muted" />
-                  <div className="flex-1 min-w-0">
-                    <div className={cx("font-mono text-[12.5px] truncate", on && "font-medium text-primary")}>{r.url}</div>
-                    <div className="text-[11.5px] text-muted truncate">
-                      {r.name} · {r.branch} · {r.auth}
-                      {r.usedBy.length > 0 && ` · 작업 ${r.usedBy.length}개`}
-                    </div>
-                  </div>
+                  <div className={cx("flex-1 min-w-0 font-mono text-[12.5px] truncate", on && "font-medium text-primary")}>{r.url}</div>
                   {on && <Icon name="check" className="size-3.5 flex-none" strokeWidth={2.4} />}
                 </div>
               );
