@@ -47,7 +47,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
   const repos = (reposRes.data ?? []).filter((r) => r.kind === "git");
 
   const pb = job?.playbook;
-  const [from, setFrom] = useState<From>(pb && pb.kind !== "upload" ? "git" : "upload");
+  const [from, setFrom] = useState<From>(pb?.kind === "upload" ? "upload" : "git");
   // upload
   const [files, setFiles] = useState<BundleFile[] | null>(job ? null : []);
   const [filesChanged, setFilesChanged] = useState(false);
@@ -385,14 +385,30 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
       />
 
       <div className="flex flex-col gap-5 max-w-[880px]">
-        {/* 1. the playbook */}
-        <Section no={1} title="플레이북" sub="실행할 플레이북과, 플레이북이 함께 쓰는 파일이에요.">
+        {/* 1. name, first: it follows the playbook and inventory until the member types one */}
+        <Section no={1} title="작업 이름" sub="배포 작업 목록에 이 이름으로 보여요. 비워 두면 플레이북과 인벤토리 이름으로 채워요.">
+          <Field label="이름" htmlFor="pbName">
+            <Input
+              id="pbName"
+              value={name}
+              onChange={(e) => {
+                setName(e.target.value);
+                setNameTouched(e.target.value.trim() !== "");
+              }}
+              placeholder="stack · production"
+              autoFocus={!job}
+            />
+          </Field>
+        </Section>
+
+        {/* 2. the playbook */}
+        <Section no={2} title="플레이북" sub="실행할 플레이북과, 플레이북이 함께 쓰는 파일이에요.">
           {!editing && (
             <div>
             <Seg<From>
               options={[
-                { value: "upload", label: "파일 올리기" },
                 { value: "git", label: "Git 저장소" },
+                { value: "upload", label: "파일 올리기" },
               ]}
               value={from}
               onChange={(v) => {
@@ -526,9 +542,9 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
           )}
         </Section>
 
-        {/* 2. the values */}
+        {/* 3. the values */}
         {book && (
-          <Section no={2} title="입력할 값">
+          <Section no={3} title="입력할 값">
             {inspecting && !info ? (
               <Loading />
             ) : !info ? (
@@ -590,9 +606,9 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
           </Section>
         )}
 
-        {/* 3. servers */}
+        {/* 4. servers */}
         {book && (
-          <Section no={3} title="배포할 서버" sub="플레이북을 실행할 서버예요.">
+          <Section no={4} title="배포할 서버" sub="플레이북을 실행할 서버예요.">
             <Field
               label="인벤토리"
               right={
@@ -642,20 +658,9 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
           </Section>
         )}
 
-        {/* 4. name */}
+        {/* 5. safety */}
         {book && (
-          <Section no={4} title="작업 이름" sub="배포 작업 목록에 이 이름으로 보여요. 실행은 만든 뒤 작업 화면에서 해요.">
-            <Field label="이름" htmlFor="pbName">
-              <Input
-                id="pbName"
-                value={name}
-                onChange={(e) => {
-                  setName(e.target.value);
-                  setNameTouched(true);
-                }}
-                placeholder="stack · production"
-              />
-            </Field>
+          <Section no={5} title="운영 보호">
             <label className="flex items-center gap-2.5 text-[13px]">
               <Switch checked={prot} onChange={setProt} disabled={fixedSafety} label="운영 보호" />
               <span>
@@ -1089,13 +1094,7 @@ function RepoUrlInput({ id, value, onChange, repos, onPick }: { id: string; valu
                   className={cx("flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer", i === active && "bg-hover")}
                 >
                   <Icon name="git" className="size-3.5 flex-none text-muted" />
-                  <div className="flex-1 min-w-0">
-                    <div className={cx("font-mono text-[12.5px] truncate", on && "font-medium text-primary")}>{r.url}</div>
-                    <div className="text-[11.5px] text-muted truncate">
-                      {r.name} · {r.branch} · {r.auth}
-                      {r.usedBy.length > 0 && ` · 작업 ${r.usedBy.length}개`}
-                    </div>
-                  </div>
+                  <div className={cx("flex-1 min-w-0 font-mono text-[12.5px] truncate", on && "font-medium text-primary")}>{r.url}</div>
                   {on && <Icon name="check" className="size-3.5 flex-none" strokeWidth={2.4} />}
                 </div>
               );

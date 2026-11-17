@@ -252,4 +252,4 @@ Authorization: <Gitea API 에 쓰는 것과 같은 값: Basic (git 에 저장된
 - Wharfline이 그 Authorization을 `WHARFLINE_GITEA_URL`(요청에서 받지 않아요)의 Gitea에 그대로 넘겨 로그인과 그 저장소의 push 권한을 확인해요. push 할 수 있어야 받아요. 이 값은 저장하거나 기록하지 않아요.
 - 처음이면 v1로 만들고, 바뀐 게 있으면 새 버전(이전 버전은 기록에 남아 되돌릴 수 있어요), 같으면 그대로 둬요. 같은 키가 두 번 있으면 뒤의 값을 써요.
 - 활동 기록에는 `<Gitea 계정> (Gitea)`와 바뀐 변수 이름만 남아요. 응답도 이름만 돌려줘요.
-- `WHARFLINE_GITEA_URL`이 비어 있으면 503으로 받지 않아요. 같은 서버의 Gitea면 `http://gitea:3000`.
+- `WHARFLINE_GITEA_URL`이 비어 있으면 503으로 받지 않아요. 보통 Gitea 주소 그대로(`https://git.example.com`) 넣어요. backend 컨테이너 안에서 닿아야 해요(ansible-deploy 03 은 자동으로 넣고, Traefik 이 그 도메인을 서버 안에서도 받아요). 같은 compose 네트워크에 있는 Gitea면 `http://gitea:3000`도 돼요.

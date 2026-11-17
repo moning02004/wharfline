@@ -23,6 +23,8 @@ x-backend-env: &backend-env
   WHARFLINE_OWNER_EMAIL: ${WHARFLINE_OWNER_EMAIL:-}
   WHARFLINE_OWNER_NAME: ${WHARFLINE_OWNER_NAME:-관리자}
   WHARFLINE_OWNER_PASSWORD: ${WHARFLINE_OWNER_PASSWORD:-}
+  # Gitea that checks .env uploads (POST /api/hooks/env). Empty: uploads are refused.
+  WHARFLINE_GITEA_URL: ${WHARFLINE_GITEA_URL:-}
 
 services:
   db:

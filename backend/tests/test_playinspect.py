@@ -252,6 +252,13 @@ def test_the_defining_comment_line_wins():
     assert v["init_password"]["secret"] and v["init_password"]["desc"] == "init_user 의 비밀번호"
 
 
+def test_a_mid_sentence_mention_keeps_the_whole_line():
+    book = ("# ⚠️ 관리자 IP 는 admin_ips 에 넣어 차단하지 않게 하세요\n"
+            "- hosts: all\n  tasks:\n    - ansible.builtin.debug:\n        msg: '{{ admin_ips | default([]) }}'\n")
+    v = _vars(playinspect.inspect([{"path": "a.yml", "content": book}], "a.yml"))
+    assert v["admin_ips"]["desc"] == "⚠️ 관리자 IP 는 admin_ips 에 넣어 차단하지 않게 하세요"
+
+
 def test_a_windows_zip_drops_its_folder():
     import io
     import zipfile
