@@ -1,16 +1,16 @@
 """Real deploy runner: runs a job against its servers and streams what happens.
 
-Playbook jobs: the repo is cloned (or copied) into a private temp folder, a temporary inventory,
-SSH key, known_hosts and extra-vars file are written next to it, and `ansible-playbook` runs with
-its output streamed into the run log. SSH script jobs: Wharfline logs in to every server with
-asyncssh, uploads the job's files and .env, and runs each script step in order.
+Every server deploys through its Wharfline agent (agent/wharfline_agent.py): Wharfline keeps no SSH key.
+The agent long-polls Wharfline; each task here goes on that server's queue (agenthub) sealed to the agent's
+key, and the agent runs it on the server as the job's account, the way an SSH login would, streaming output.
 
-Host keys are pinned: the fingerprint seen when the server was added (or on its first run) is kept
-on the host row. A server that answers with another key is marked "changed" and skipped until an
-Admin accepts the new key. The temp folder (key, .env, playbook copy) is deleted when the run ends.
+Script and compose jobs: the job's files and .env are written into the service folder, then each step runs
+in order on every server, as before. Playbook jobs: the repo is cloned (or copied) here, packed with the run's
+variables and sent to each server's agent, which runs ansible-playbook against its own server (127.0.0.1) and
+sends back any file the playbook fetched.
 
-Secrets (SSH key, registry token, .env values) are decrypted when the run starts, written only to
-files with mode 0600 inside the temp folder, and masked in every log line.
+Secrets (registry token, .env values, secret variables) are decrypted when the run starts, travel only inside
+sealed tasks, and are masked in every log line. The temp folder (playbook copy) is deleted when the run ends.
 
 `runner` decides whether a run is real or simulated (tests and demos: WHARFLINE_SSH_SIMULATE=1 or
 WHARFLINE_RUN_SIMULATE=1).
@@ -32,29 +32,30 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-import asyncssh
 import yaml
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from . import bundles
+from . import agentproto, bundles, registryclient
 from . import crypto
 from . import models as m
 from . import playinspect
 from . import store as s
+from .agenthub import HUB, AgentError
 from .db import SessionLocal
-from .sshcheck import HOST_KEY_ALGS
 
 Line = tuple[str, str]
 
-CONNECT_TIMEOUT = 15.0
+AGENT_WAIT = float(os.environ.get("WHARFLINE_AGENT_WAIT", "20"))  # how long a run waits for an offline agent
+STEP_TIMEOUT = 60 * 60.0  # one script step or one playbook run on one server
+MAX_BUNDLE = 32 * 1024 * 1024  # a packed playbook folder
 LINE_LIMIT = 1024 * 1024  # longest output line read from a process
 MASK = "••••••••"
 PLAYBOOK_STEPS = ["준비", "플레이북 가져오기", "서버 연결", "플레이북 실행", "마무리"]
 # Shipped in the image at store.BUILTIN_URL; a checkout (local dev) uses backend/playbooks/builtin.
 BUILTIN_FALLBACK = Path(__file__).resolve().parent.parent / "playbooks" / "builtin"
 
-# Servers in use by a running deploy: "ip:port" -> run number. One backend process (runs live in memory).
+# Servers in use by a running deploy: "host:<id>" -> run number. One backend process (runs live in memory).
 BUSY: dict[str, int] = {}
 
 
@@ -80,7 +81,7 @@ class Target:
 
     @property
     def addr(self) -> str:
-        return f"{self.ip}:{self.port}"
+        return f"host:{self.id}"
 
 
 @dataclass
@@ -100,8 +101,7 @@ class Plan:
     error: str | None = None
     targets: list[Target] = field(default_factory=list)
     skipped: list[tuple[str, str]] = field(default_factory=list)
-    ssh_key: str = ""
-    key_name: str = ""
+    run_user: str = ""
     # playbook jobs
     repo: dict[str, Any] = field(default_factory=dict)
     book: str = ""
@@ -123,6 +123,9 @@ class Plan:
     registries: list[Registry] = field(default_factory=list)
     done_label: str = ""
     secrets: list[str] = field(default_factory=list)
+    trigger: str = ""
+    # images this run deploys, pinned to the registry's digest when the run starts: [{ref, tag, role, var, tagVar}]
+    pins: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _registry_rows(db: Session, job: dict) -> list[m.Registry]:
@@ -222,19 +225,16 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
         raise PlanError(f"인벤토리 {job['inventory']}을(를) 찾을 수 없어요.")
     if plan.kind == "playbook" and (job.get("playbook") or {}).get("kind") != "builtin":
         _fill_play_options(db, plan, job)
-    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
-    if not key or not key.has_secret:
-        raise PlanError(f"인벤토리 {inv.name}의 SSH 키 {inv.key}를 찾을 수 없어요.")
-    plan.ssh_key, plan.key_name = key.get_secret() or "", key.name
-    key.last_used = time.strftime("%Y-%m-%d %H:%M")
+    row = db.get(m.Job, job["id"])
+    plan.run_user = (row.run_user if row and row.run_user else None) or inv.ssh_user
     for h in inv.hosts:
         if groups and h.grp not in groups:
             continue
-        reason = s.host_skip(h.to_dict())
+        reason = agent_skip(h, plan.run_user)
         if reason:
             plan.skipped.append((h.name, reason))
         else:
-            plan.targets.append(Target(h.id, h.name, h.ip, h.port, h.ssh_user, h.grp, h.host_fingerprint))
+            plan.targets.append(Target(h.id, h.name, h.ip, h.port, plan.run_user, h.grp, None))
     if not plan.targets:
         raise PlanError("배포할 수 있는 서버가 없어요.")
 
@@ -249,6 +249,12 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
     plan.registries = [Registry(host=r.host, user=r.user, password=r.get_secret() or "") for r in _registry_rows(db, job)]
     plan.secrets += [r.password for r in plan.registries]
     plan.done_label = f"{job['image'].split('/')[-1]}:{tag}" if job.get("image") else runner.method_label(job)
+    if job.get("image") and tag not in ("", "-"):
+        plan.pins.append({"ref": job["image"], "tag": tag, "role": "main"})
+    for x in job.get("extraImages") or []:
+        if x.get("var"):
+            xt = (job.get("extraTags") or {}).get(x["var"]) or x.get("defaultTag") or "latest"
+            plan.pins.append({"ref": x["ref"], "tag": xt, "role": "extra", "var": x["var"], "tagVar": x.get("tagVar")})
 
     if plan.kind == "script":
         row = db.get(m.Job, job["id"])
@@ -469,23 +475,12 @@ def shown_vars(plan: Plan, wharfline: dict[str, Any] | None = None) -> str:
     return " ".join(parts)
 
 
-def ssh_args(known_hosts: str | Path) -> str:
-    """ANSIBLE_SSH_ARGS: the host key stays pinned, only the job's key is offered."""
-    return f"-o UserKnownHostsFile={known_hosts} -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o BatchMode=yes -o ControlMaster=auto -o ControlPersist=60s"
-
-
 def access_lines(plan: Plan) -> list[Line]:
     """How a playbook run logs in, and which variables it adds (names only for secrets)."""
-    lines: list[Line] = [("", f"접속: SSH 키 {plan.key_name}")]
+    lines: list[Line] = [("", f"실행: 각 서버의 에이전트 · 서버 계정 {plan.run_user}")]
     if plan.play_vars or plan.secret_vars:
         lines.append(("", f"플레이북 변수: 일반 {len(plan.play_vars)}개 · 비밀 {len(plan.secret_vars)}개"))
     return lines
-
-
-def known_hosts_line(ip: str, port: int, key: asyncssh.SSHKey) -> str:
-    alg, blob = key.export_public_key("openssh").decode().split()[:2]
-    host = ip if port == 22 else f"[{ip}]:{port}"
-    return f"{host} {alg} {blob}"
 
 
 PLAIN_VALUE = re.compile(r"[A-Za-z0-9_./:@%+,=-]*")
@@ -623,52 +618,129 @@ def _save_host(host_id: int, **values: Any) -> None:
             db.commit()
 
 
-async def _host_key(t: Target) -> asyncssh.SSHKey:
-    key = await asyncio.wait_for(asyncssh.get_server_host_key(t.ip, t.port, server_host_key_algs=HOST_KEY_ALGS), CONNECT_TIMEOUT)
-    if key is None:
-        raise OSError("호스트 키를 보내지 않았어요")
-    return key
+def agent_skip(h: m.Host, user: str) -> str:
+    """Why a server can't take this run, or "" when its agent can."""
+    if h.status == "pending":
+        return "에이전트 등록을 기다리는 중이에요 (설치 명령을 서버에서 실행했는지 확인해 주세요)"
+    if not h.agent_id:
+        return "에이전트가 없어요. 서버 관리에서 '에이전트로 전환'을 눌러 주세요"
+    users = ((h.agent_info or {}).get("policy") or {}).get("users") or []
+    if users and user not in users:
+        return f"이 서버의 에이전트가 계정 {user}을(를) 허용하지 않아요 (허용: {', '.join(users)})"
+    return ""
 
 
-async def verify_hosts(plan: Plan, out: Out) -> list[tuple[Target, asyncssh.SSHKey]]:
-    """Read each server's host key and compare it with the pinned one; lock the servers that pass."""
-    async def one(t: Target):
-        try:
-            return t, await _host_key(t), None
-        except (OSError, asyncio.TimeoutError, asyncssh.Error) as e:
-            return t, None, ("연결 시간 초과" if isinstance(e, asyncio.TimeoutError) else str(e) or type(e).__name__)
-
-    ok: list[tuple[Target, asyncssh.SSHKey]] = []
-    for t, key, err in await asyncio.gather(*(one(t) for t in plan.targets)):
-        if key is None:
-            out.line("r", f"unreachable: [{t.name}] {t.user}@{t.addr} · {err}")
+async def connect_agents(plan: Plan, out: Out) -> list[Target]:
+    """Wait (up to AGENT_WAIT) for each server's agent and lock the servers that answer."""
+    results = await asyncio.gather(*(HUB.wait_online(t.id, AGENT_WAIT) for t in plan.targets))
+    ok: list[Target] = []
+    for t, online in zip(plan.targets, results):
+        if not online:
+            out.line("r", f"unreachable: [{t.name}] 에이전트가 {int(AGENT_WAIT)}초 안에 연결되지 않았어요. "
+                          "서버가 켜져 있는지, 서버에서 `docker ps`로 wharfline-agent가 도는지 확인해 주세요.")
             continue
-        fp = key.get_fingerprint("sha256")
-        if t.fingerprint and fp != t.fingerprint:
-            _save_host(t.id, host_key="changed")
-            out.line("r", f"failed: [{t.name}] 호스트 키가 바뀌었어요 ({fp}, 저장된 키 {t.fingerprint}). "
-                          "서버를 다시 설치한 게 맞으면 인벤토리에서 새 키를 승인해 주세요.")
-            continue
-        if not t.fingerprint:
-            _save_host(t.id, host_fingerprint=fp)
-            out.line("y", f"ok: [{t.name}] {t.user}@{t.addr} · 호스트 키를 처음 저장했어요 ({fp})")
-        else:
-            out.line("g", f"ok: [{t.name}] {t.user}@{t.addr} · 호스트 키 확인됨 ({fp})")
         holder = BUSY.get(t.addr)
         if holder is not None and holder != plan.no:
             out.line("r", f"failed: [{t.name}] 실행 #{holder}이(가) 이 서버에 배포하는 중이에요. 끝난 뒤 다시 실행해 주세요.")
             continue
         BUSY[t.addr] = plan.no
-        ok.append((t, key))
+        out.line("g", f"ok: [{t.name}] 에이전트 연결됨 · 서버 계정 {t.user}")
+        ok.append(t)
     for name, reason in plan.skipped:
         out.line("y", f"skipping: [{name}] {reason}")
     return ok
+
+
+class AgentConn:
+    """One server's agent, used like an SSH connection: run a command as the job's account, write files."""
+
+    def __init__(self, t: Target):
+        self.t = t
+
+    async def run(self, out: Out, command: str, stdin: str | None = None, echo: bool = True,
+                  timeout: float = STEP_TIMEOUT) -> int:
+        def on_line(text: str) -> None:
+            if echo and text.strip():
+                out.line("", f"  [{self.t.name}] {text}")
+
+        r = await HUB.call(self.t.id, {"op": "exec", "user": self.t.user, "cmd": command, "stdin": stdin}, timeout, on_line)
+        if r.get("error"):
+            raise ValueError(r["error"])
+        return int(r.get("rc", 255))
+
+    async def write(self, files: list[tuple[str, str, int]]) -> None:
+        """[(absolute path, text, mode)], written as the job's account inside the agent's allowed folders."""
+        payload = [{"path": p, "content": agentproto.b64(c.encode()), "mode": mode} for p, c, mode in files]
+        r = await HUB.call(self.t.id, {"op": "write", "user": self.t.user, "files": payload}, 300)
+        if not r.get("ok"):
+            raise ValueError(r.get("error") or "파일을 쓰지 못했어요")
 
 
 def _release(plan: Plan) -> None:
     for addr, no in list(BUSY.items()):
         if no == plan.no:
             del BUSY[addr]
+
+
+def _stored_digest(ref: str, tag: str) -> str:
+    with SessionLocal() as db:
+        img = db.scalar(select(m.Image).where(m.Image.ref == ref))
+        t = next((t for t in img.tags if t.name == tag), None) if img else None
+        return t.digest if t else ""
+
+
+def _save_digest(ref: str, tag: str, digest: str) -> None:
+    with SessionLocal() as db:
+        img = db.scalar(select(m.Image).where(m.Image.ref == ref))
+        t = next((t for t in img.tags if t.name == tag), None) if img else None
+        if t and not t.digest:
+            t.digest = digest
+            db.commit()
+
+
+def apply_pin(plan: Plan, pin: dict[str, Any], digest: str) -> None:
+    """Point the run's image variables at tag@digest: compose and docker then pull exactly that image."""
+    ref, tag = pin["ref"], pin["tag"]
+    pinned = f"{tag}@{digest}"
+    if plan.kind == "script":
+        v = plan.variables
+        if pin["role"] == "main":
+            v.update(IMAGE_TAG=pinned, IMAGE_REF=f"{ref}:{pinned}", IMAGE_VERSION=tag, IMAGE_DIGEST=digest)
+        else:
+            var = pin["var"]
+            v.update({f"{var}_TAG": pinned, f"{var}_IMAGE_REF": f"{ref}:{pinned}", f"{var}_VERSION": tag, f"{var}_DIGEST": digest})
+            if pin.get("tagVar"):
+                v[pin["tagVar"]] = pinned
+    else:
+        xv = plan.extra_vars
+        if pin["role"] == "main":
+            xv.update(image_ref=f"{ref}:{pinned}", image_digest=digest)
+        else:
+            var = pin["var"].lower()
+            xv.update({f"{var}_image_ref": f"{ref}:{pinned}", f"{var}_digest": digest})
+
+
+async def pin_images(plan: Plan, out: Out) -> bool:
+    """Ask each image's registry for the tag's digest and deploy that. False: stop the run (a re-pushed tag on
+    an auto-deploy). A registry that can't be asked leaves the tag as it is, with a warning."""
+    for pin in plan.pins:
+        ref, tag = pin["ref"], pin["tag"]
+        reg = next((r for r in plan.registries if ref.split("/")[0] == r.host), None)
+        digest = await asyncio.to_thread(registryclient.resolve, ref, tag, reg.user if reg else "", reg.password if reg else "")
+        if not digest:
+            out.line("y", f"⚠ {ref}:{tag}의 다이제스트를 레지스트리에서 확인하지 못해 태그로 배포해요 (레지스트리 접근이나 태그 이름을 확인해 주세요).")
+            continue
+        stored = await asyncio.to_thread(_stored_digest, ref, tag)
+        if stored and stored != digest:
+            out.line("r", f"⚠ {ref}:{tag}이(가) 다시 푸시됐어요: 처음 본 이미지 {stored[:19]}…, 지금 {digest[:19]}…")
+            if plan.trigger.startswith("새 이미지"):
+                out.line("r", "✘ 자동 배포는 같은 태그가 다른 이미지를 가리키면 멈춰요. 맞는 이미지면 수동으로 실행해 주세요.")
+                return False
+        elif not stored:
+            await asyncio.to_thread(_save_digest, ref, tag, digest)
+        apply_pin(plan, pin, digest)
+        out.line("", f"이미지 고정: {ref}:{tag} → {digest[:19]}…")
+    return True
 
 
 async def execute(plan: Plan) -> None:
@@ -684,6 +756,8 @@ async def execute(plan: Plan) -> None:
             out.line(cls, text)
         if plan.error:
             out.line("r", f"✘ {plan.error}")
+            out.end("준비", False)
+        elif not await pin_images(plan, out):
             out.end("준비", False)
         else:
             out.end("준비")
@@ -872,21 +946,48 @@ def sudo_hint(said: list[str], targets: list[Target]) -> list[str]:
     if not failed:
         return []
     hit = [t for t in targets if inventory_name(t.name) in failed] or targets
-    lines = ["⚠ 서버 계정이 sudo 할 때 비밀번호를 물어요. 플레이북이 become: true 라서 비밀번호 없는 sudo 가 필요해요.",
-             "  서버에서 한 번 실행해 주세요 (서버를 '새 서버 초기화'로 추가할 때 sudo 전체 권한을 켜도 같아요):"]
-    for user in dict.fromkeys(t.user for t in hit):
-        f = f"/etc/sudoers.d/wharfline-{user}"
-        lines.append(f"  echo '{user} ALL=(ALL) NOPASSWD:ALL' | sudo tee {f} && sudo chmod 440 {f} && sudo visudo -cf {f}")
-    return lines
+    users = ", ".join(dict.fromkeys(t.user for t in hit))
+    return ["⚠ 서버 계정이 sudo 할 때 비밀번호를 물어요. 플레이북이 become: true 라서 비밀번호 없는 sudo 가 필요해요.",
+            f"  인벤토리에서 서버({', '.join(t.name for t in hit)})의 '수정'을 열고 계정 {users}의 '비밀번호 없는 sudo'를 켠 뒤 다시 실행해 주세요."]
+
+
+def pack(src: Path, extra: dict[str, str]) -> bytes:
+    """The checked-out playbook folder (plus `extra` files) as a gzipped tar, without .git."""
+    import io
+    import tarfile
+
+    buf = io.BytesIO()
+    with tarfile.open(fileobj=buf, mode="w:gz") as tar:
+        tar.add(str(src), arcname=".", filter=lambda ti: None if ti.name.split("/")[1:2] == [".git"] else ti)
+        for name, text in extra.items():
+            data = text.encode()
+            info = tarfile.TarInfo(name)
+            info.size, info.mode = len(data), 0o600
+            tar.addfile(info, io.BytesIO(data))
+    return buf.getvalue()
+
+
+RUNDIR = "@@RUNDIR@@"  # the agent puts its run folder here (env_src points inside the bundle)
+
+
+def save_artifacts(no: int, host: str, items: list[dict[str, Any]]) -> list[tuple[str, int]]:
+    saved: list[tuple[str, int]] = []
+    with SessionLocal() as db:
+        for a in items[:50]:
+            path, data = str(a.get("path") or "")[:512], str(a.get("data") or "")
+            if not path or not data:
+                continue
+            row = m.RunArtifact(run_no=no, host=host, path=path, size=len(base64.b64decode(data)), created_at=time.time())
+            row.set_secret(data)
+            db.add(row)
+            saved.append((path, row.size))
+        db.commit()
+    return saved
 
 
 async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
     env = _base_env(tmp)
     out.start("플레이북 가져오기")
-    if shutil.which("ansible-playbook", path=env.get("PATH")) is None:
-        out.line("r", "✘ 실행기에 ansible-playbook이 없어요. backend 이미지에 ansible-core를 설치해 주세요.")
-        out.end("플레이북 가져오기", False)
-        return False
     if shutil.which("git", path=env.get("PATH")) is None and plan.repo["kind"] == "git":
         out.line("r", "✘ 실행기에 git이 없어요.")
         out.end("플레이북 가져오기", False)
@@ -897,130 +998,90 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         return False
 
     out.start("서버 연결")
-    alive = await verify_hosts(plan, out)
-    missing = len(plan.targets) - len(alive)  # unreachable or a changed host key: the deploy carries on, but fails
+    alive = await connect_agents(plan, out)
+    missing = len(plan.targets) - len(alive)  # an agent that didn't answer: the deploy carries on, but fails
     out.end("서버 연결", not missing)
     if not alive:
         out.line("r", "✘ 연결할 수 있는 서버가 없어요.")
         return False
 
     out.start("플레이북 실행")
-    key = _write_secret(tmp / "ssh_key", plan.ssh_key)
-    kh = tmp / "known_hosts"
-    kh.write_text("".join(known_hosts_line(t.ip, t.port, k) + "\n" for t, k in alive))
     xv = dict(plan.extra_vars)
+    extra: dict[str, str] = {}
     if plan.env_vars is not None:
         # The built-in playbook hands the file to `docker run --env-file`; other playbooks usually to compose.
         style = "docker" if plan.repo["kind"] == "builtin" else "compose"
         try:
-            text = env_file_text(plan.env_vars, style)
+            extra[".wharfline/app.env"] = env_file_text(plan.env_vars, style)
         except ValueError as e:
             out.line("r", f"✘ {e}")
             out.end("플레이북 실행", False)
             return False
-        xv["env_src"] = str(_write_secret(tmp / "app.env", text))
-    # Secret variables reach ansible only through this 0600 file, never argv or the environment.
-    vars_file = _write_secret(tmp / "vars.json", json.dumps(playbook_vars(plan, xv), ensure_ascii=False))
+        xv["env_src"] = f"{RUNDIR}/.wharfline/app.env"
     if vaulted := skip_vaulted_vars(src, plan.book):
         out.line("y", f"암호화된(vault) 변수 파일은 읽지 않아요: {', '.join(vaulted)} · 필요한 값은 작업의 변수·비밀 변수로 넣어 주세요")
-    servers = [t for t, _ in alive]
-    wanted = playinspect.host_groups(_repo_reader(src), plan.book, playbook_vars(plan, xv))
-    if added := [g for g in wanted if g not in {t.group for t in servers}]:
-        out.line("", f"플레이북 그룹 {', '.join(added)} → 고른 서버 {len(servers)}대 ({', '.join(t.name for t in servers)})")
-    inv = tmp / "inventory.yml"
-    inv.write_text(json.dumps(inventory(servers, wanted), ensure_ascii=False))
-    (tmp / "cp").mkdir(mode=0o700)
-    limit = ",".join(inventory_name(t.name) for t, _ in alive)
-    env.update(
-        ANSIBLE_HOST_KEY_CHECKING="True",
-        ANSIBLE_SSH_ARGS=ssh_args(kh),
-        ANSIBLE_SSH_CONTROL_PATH_DIR=str(tmp / "cp"),
-        ANSIBLE_LOCAL_TEMP=str(tmp / "ansible-local"),
-        ANSIBLE_NOCOLOR="1",
-        ANSIBLE_FORCE_COLOR="0",
-        ANSIBLE_RETRY_FILES_ENABLED="0",
-        ANSIBLE_STDOUT_CALLBACK="default",
-    )
-    argv = ["ansible-playbook", plan.book, "-i", str(inv), "--limit", limit, "-e", f"@{vars_file}"]
-    env["ANSIBLE_PRIVATE_KEY_FILE"] = str(key)
-    argv += ["--private-key", str(key)]
-    out.line("", f"$ ansible-playbook {plan.book} -i <임시 인벤토리> --limit {limit} {shown_vars(plan, xv)}")
-    said: list[str] = []
-    rc = await _stream(argv, out, src, env, seen=said)
+    variables = playbook_vars(plan, xv)
+    wanted = playinspect.host_groups(_repo_reader(src), plan.book, variables)
+    if added := [g for g in wanted if g not in {t.group for t in alive}]:
+        out.line("", f"플레이북 그룹 {', '.join(added)} → 고른 서버 {len(alive)}대 ({', '.join(t.name for t in alive)})")
+    bundle = pack(src, extra)
+    if len(bundle) > MAX_BUNDLE:
+        out.line("r", f"✘ 플레이북 폴더가 너무 커요 ({len(bundle) // (1024 * 1024)}MB). 32MB 이하로 줄여 주세요.")
+        out.end("플레이북 실행", False)
+        return False
+    out.line("", f"$ ansible-playbook {plan.book} -i <이 서버> {shown_vars(plan, xv)}   # 각 서버의 에이전트가 자기 서버에 실행")
+    bundle64 = agentproto.b64(bundle)
+
+    async def one(t: Target) -> tuple[Target, int, list[str]]:
+        said: list[str] = []
+
+        def on_line(text: str) -> None:
+            said.append(text)
+            if text.strip():
+                out.line(classify(text), f"[{t.name}] {text}" if len(alive) > 1 else text)
+
+        op = {"op": "playbook", "user": t.user, "bundle": bundle64, "book": plan.book, "vars": variables,
+              "inventory": inventory([t], wanted), "limit": inventory_name(t.name)}
+        try:
+            r = await HUB.call(t.id, op, STEP_TIMEOUT, on_line)
+        except AgentError as e:
+            out.line("r", f"failed: [{t.name}] {e}")
+            return t, 255, said
+        if r.get("error"):
+            out.line("r", f"failed: [{t.name}] {r['error']}")
+            return t, 255, said
+        if r.get("artifactError"):
+            out.line("y", f"[{t.name}] {r['artifactError']}")
+        for path, size in save_artifacts(plan.no, t.name, r.get("artifacts") or []):
+            out.line("y", f"[{t.name}] 가져온 파일: {path} ({size}바이트) · 실행 기록에서 받을 수 있어요")
+        return t, int(r.get("rc", 255)), said
+
+    results = await asyncio.gather(*(one(t) for t in alive))
+    failed = [t for t, rc, _ in results if rc != 0]
     # Exit code 0 with no host in the recap: every play was "skipping: no hosts matched". Nothing was deployed.
-    ran_nowhere = rc == 0 and not any(re.search(r"\bok=\d+", line) for line in said)
-    if ran_nowhere:
-        out.line("r", "✘ 플레이북이 어느 서버에서도 실행되지 않았어요 (no hosts matched). 플레이북의 hosts: 가 고른 서버를 가리키는지 확인해 주세요.")
-    for hint in sudo_hint(said, [t for t, _ in alive]):
+    nowhere = [t for t, rc, said in results if rc == 0 and not any(re.search(r"\bok=\d+", line) for line in said)]
+    for t in nowhere:
+        out.line("r", f"✘ [{t.name}] 플레이북이 실행되지 않았어요 (no hosts matched). 플레이북의 hosts: 가 고른 서버를 가리키는지 확인해 주세요.")
+    for hint in sudo_hint([line for _, _, said in results for line in said], alive):
         out.line("y", hint)
-    out.end("플레이북 실행", rc == 0 and not ran_nowhere)
+    out.end("플레이북 실행", not failed and not nowhere)
 
     out.start("마무리")
-    names = ", ".join(t.name for t, _ in alive)
-    out.line("", f"잠금 해제: {names}")
-    ok = rc == 0 and not missing and not ran_nowhere
+    out.line("", f"잠금 해제: {', '.join(t.name for t in alive)}")
+    ok = not failed and not nowhere and not missing
     if ok:
         out.line("g", f"✔ 배포 성공 · {plan.done_label} · 서버 {len(alive)}대")
-    elif ran_nowhere:
-        out.line("r", "✘ 배포 실패 · 실행된 서버가 없어요")
-    elif rc == 0:
+    elif nowhere and not failed:
+        out.line("r", "✘ 배포 실패 · 플레이북이 실행되지 않은 서버가 있어요")
+    elif not failed:
         out.line("r", f"✘ 배포 실패 · 서버 {len(alive)}대에는 배포했지만 {missing}대에 연결하지 못했어요")
     else:
-        out.line("r", f"✘ 배포 실패 · ansible-playbook 종료 코드 {rc}")
+        out.line("r", f"✘ 배포 실패 · 서버 {len(failed)}대에서 ansible-playbook이 실패했어요")
     out.end("마무리", ok)
     return ok
 
 
 # ---------- SSH script jobs ----------
-
-async def _connect(plan: Plan, t: Target, host_key: asyncssh.SSHKey) -> asyncssh.SSHClientConnection:
-    client_key = asyncssh.import_private_key(plan.ssh_key)
-    return await asyncio.wait_for(asyncssh.connect(
-        t.ip, t.port, username=t.user, client_keys=[client_key], known_hosts=([host_key], [], []), agent_path=None,
-        preferred_auth="publickey", server_host_key_algs=HOST_KEY_ALGS, config=[],
-    ), CONNECT_TIMEOUT)
-
-
-async def _remote(conn: asyncssh.SSHClientConnection, out: Out, t: Target, command: str, stdin: str | None = None,
-                  echo: bool = True) -> int:
-    """Run a command on one server, streaming its output (prefixed with the server name)."""
-    async with conn.create_process(command, stderr=asyncssh.STDOUT, errors="replace") as proc:
-        if stdin is not None:
-            proc.stdin.write(stdin)
-        proc.stdin.write_eof()
-        async for raw in proc.stdout:
-            text = raw.rstrip("\r\n")
-            if echo and text.strip():
-                out.line("", f"  [{t.name}] {text}")
-        await proc.wait()
-        return proc.exit_status if proc.exit_status is not None else 255
-
-
-def upload_error(what: str, path: str, user: str, e: asyncssh.SFTPError) -> ValueError:
-    """Which upload step failed, on which path, and as whom: "Permission denied" alone doesn't say."""
-    msg = f"{path} {what} 실패: {e.reason or type(e).__name__}"
-    if isinstance(e, asyncssh.SFTPPermissionDenied):
-        msg += (f" · {user} 사용자에게 이 경로의 쓰기 권한이 없어요. 서버에서 "
-                f"`ls -ld {shlex.quote(path)}`로 소유자를 확인하고, 필요하면 "
-                f"`sudo chown -R {user} {shlex.quote(path)}`로 바꿔 주세요.")
-    return ValueError(msg)
-
-
-async def _upload(conn: asyncssh.SSHClientConnection, path: str, content: str, mode: int, user: str) -> None:
-    folder = str(PurePosixPath(path).parent)
-    async with conn.start_sftp_client() as sftp:
-        try:
-            await sftp.makedirs(folder, exist_ok=True)
-        except asyncssh.SFTPError as e:
-            raise upload_error("폴더 만들기", folder, user, e) from e
-        try:
-            async with sftp.open(path, "w", asyncssh.SFTPAttrs(permissions=mode)) as f:
-                await f.write(content)
-            await sftp.chmod(path, mode)
-        except asyncssh.SFTPError as e:
-            # Writing into a folder that exists: the folder or the old file belongs to someone else.
-            raise upload_error("파일 쓰기", path, user, e) from e
-
 
 SHELL = "sh -c 'if command -v bash >/dev/null 2>&1; then exec bash -s; else exec sh -s; fi'"
 
@@ -1062,7 +1123,7 @@ async def refresh_compose(plan: Plan, out: Out) -> bool:
 
 async def _run_script(plan: Plan, out: Out) -> bool:
     tally: dict[str, dict[str, int]] = {}
-    conns: dict[str, asyncssh.SSHClientConnection] = {}
+    conns: dict[str, AgentConn] = {}
     alive: list[Target] = []
     failed_at: str | None = None
 
@@ -1082,7 +1143,7 @@ async def _run_script(plan: Plan, out: Out) -> bool:
         async def one(t: Target):
             try:
                 return t, await fn(t, conns[t.name]), None
-            except (OSError, asyncssh.Error, ValueError) as e:
+            except (OSError, AgentError, ValueError) as e:
                 return t, False, str(e) or type(e).__name__
 
         results = await asyncio.gather(*(one(t) for t in targets))
@@ -1113,16 +1174,11 @@ async def _run_script(plan: Plan, out: Out) -> bool:
             out.line("r", "✘ 배포 실패 · compose 파일을 받지 못했어요")
             out.end("마무리", False)
             return False
-        out.line("h", "TASK [SSH 연결] " + "*" * 30)
-        for t, hk in await verify_hosts(plan, out):
-            try:
-                conns[t.name] = await _connect(plan, t, hk)
-                alive.append(t)
-                bump(t, "ok")
-            except asyncssh.PermissionDenied:
-                out.line("r", f"failed: [{t.name}] {t.user} 사용자로 로그인하지 못했어요 (키 {plan.key_name}). authorized_keys를 확인해 주세요.")
-            except (OSError, asyncio.TimeoutError, asyncssh.Error) as e:
-                out.line("r", f"failed: [{t.name}] SSH 연결 실패: {str(e) or type(e).__name__}")
+        out.line("h", "TASK [에이전트 연결] " + "*" * 26)
+        for t in await connect_agents(plan, out):
+            conns[t.name] = AgentConn(t)
+            alive.append(t)
+            bump(t, "ok")
         out.line("", "환경 변수: " + " ".join(f"{k}={v}" for k, v in plan.variables.items()))
         out.end("서버 연결", bool(alive))
         if not alive:
@@ -1137,8 +1193,7 @@ async def _run_script(plan: Plan, out: Out) -> bool:
                 out.line("", f"  {f['path']}")
 
             async def upload_files(t, conn):
-                for f in plan.files:
-                    await _upload(conn, safe_remote_path(plan.service_path, f["path"]), f["content"], 0o644, t.user)
+                await conn.write([(safe_remote_path(plan.service_path, f["path"]), f["content"], 0o644) for f in plan.files])
                 return True
 
             await each("파일 올리기", upload_files)
@@ -1150,7 +1205,7 @@ async def _run_script(plan: Plan, out: Out) -> bool:
                 out.line("m", f"  {k}={MASK}")
 
             async def upload_env(t, conn):
-                await _upload(conn, plan.env_path, text, 0o600, t.user)
+                await conn.write([(plan.env_path, text, 0o600)])
                 return True
 
             await each(".env 전송", upload_env)
@@ -1160,8 +1215,8 @@ async def _run_script(plan: Plan, out: Out) -> bool:
 
             async def login(t, conn):
                 for r in plan.registries:
-                    rc = await _remote(conn, out, t, f"docker login {shlex.quote(r.host)} -u {shlex.quote(r.user)} --password-stdin",
-                                       stdin=r.password + "\n")
+                    rc = await conn.run(out, f"docker login {shlex.quote(r.host)} -u {shlex.quote(r.user)} --password-stdin",
+                                        stdin=r.password + "\n")
                     if rc != 0:
                         raise ValueError(f"docker login {r.host} 실패 (종료 코드 {rc})")
                 return True
@@ -1183,7 +1238,7 @@ async def _run_script(plan: Plan, out: Out) -> bool:
             body = script_text(plan.variables, st["run"])
 
             async def step(t, conn, body=body):
-                rc = await _remote(conn, out, t, SHELL, stdin=body)
+                rc = await conn.run(out, SHELL, stdin=body)
                 if rc != 0:
                     raise ValueError(f"exit {rc}")
                 return True
@@ -1197,7 +1252,10 @@ async def _run_script(plan: Plan, out: Out) -> bool:
                 conn = conns.get(t.name)
                 if conn:
                     for r in plan.registries:
-                        await _remote(conn, out, t, f"docker logout {shlex.quote(r.host)}", echo=False)
+                        try:
+                            await conn.run(out, f"docker logout {shlex.quote(r.host)}", echo=False, timeout=60)
+                        except (AgentError, ValueError):
+                            pass
                     out.line("g", f"ok: [{t.name}]")
         out.line("h", "PLAY RECAP " + "*" * 30)
         for t in plan.targets:
@@ -1217,5 +1275,4 @@ async def _run_script(plan: Plan, out: Out) -> bool:
         out.end("마무리", not bad)
         return not bad
     finally:
-        for conn in conns.values():
-            conn.close()
+        conns.clear()

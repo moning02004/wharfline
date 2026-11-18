@@ -20,6 +20,7 @@ _base = urlsplit(os.environ.get("DATABASE_URL", "postgresql+psycopg://wharfline:
 TEST_DB = os.environ.get("WHARFLINE_TEST_DB", "wharfline_test")
 os.environ["DATABASE_URL"] = urlunsplit(_base._replace(path=f"/{TEST_DB}"))
 os.environ["WHARFLINE_SSH_SIMULATE"] = "1"
+os.environ.setdefault("WHARFLINE_AGENT_URL", "https://deploy.test")  # where agents reach Wharfline (routers/agent.agent_url)
 os.environ["WHARFLINE_AUTO_DELAY"] = "0"  # auto-deploys start right away (they batch pushes for 20s otherwise)  # no reachable SSH servers in tests (see app/sshcheck.py)
 ADMIN_URL = urlunsplit(_base._replace(path="/postgres"))
 

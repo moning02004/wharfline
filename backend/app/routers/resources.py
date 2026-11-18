@@ -7,10 +7,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from .. import agentinstall, agentproto
 from .. import models as m
 from .. import serverinit, sshaccess, sshcheck, sshkeys
 from .. import store as s
-from ..db import get_db
+from ..agenthub import HUB, AgentError
+from ..db import SessionLocal, get_db
 from ..deps import require, require_login, require_sudo, viewer
 
 router = APIRouter(prefix="/api", tags=["resources"], dependencies=[Depends(require_login)])
@@ -276,7 +278,7 @@ class FirstHostIn(BaseModel):
 
 class InventoryIn(BaseModel):
     name: str
-    key: str
+    key: str = ""  # only for servers still deployed over SSH; agent servers need none
     user: str = "deploy"
     host: FirstHostIn | None = None  # the first server, checked with the connection check before this call
 
@@ -288,17 +290,18 @@ def add_inventory(body: InventoryIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "인벤토리 이름은 production처럼 영문 소문자, 숫자, -, _ 로 넣어 주세요.")
     if db.scalar(select(m.Inventory).where(m.Inventory.name == name)):
         raise HTTPException(400, "같은 이름의 인벤토리가 있어요.")
-    key = db.scalar(select(m.Key).where(m.Key.name == body.key, m.Key.kind == "ssh"))
-    if not key:
-        raise HTTPException(400, "서버 접속에 쓸 SSH 키를 골라 주세요.")
+    key = db.scalar(select(m.Key).where(m.Key.name == body.key, m.Key.kind == "ssh")) if body.key.strip() else None
+    if body.key.strip() and not key:
+        raise HTTPException(400, f"SSH 키 {body.key}를 찾을 수 없어요.")
     user = check_ssh_user(body.user or "deploy")
-    inv = m.Inventory(id=s.new_id("i"), name=name, key=key.name, ssh_user=user)
+    inv = m.Inventory(id=s.new_id("i"), name=name, key=key.name if key else "", ssh_user=user)
     if body.host:
         h = body.host
         inv.hosts.append(new_host(inv, h.name, h.ip, h.port, user, h.group, h.fingerprint))
-    key.used_count += 1
+    if key:
+        key.used_count += 1
     db.add(inv)
-    s.log_act(db, "인벤토리 생성", f"{name} · {user} · 키 {key.name}" + (f" · 서버 {body.host.name.strip()}" if body.host else ""))
+    s.log_act(db, "인벤토리 생성", f"{name} · {user}" + (f" · 키 {key.name}" if key else "") + (f" · 서버 {body.host.name.strip()}" if body.host else ""))
     db.commit()
     return inv.to_dict()
 
@@ -407,15 +410,52 @@ class InitHostIn(BaseModel):
     fingerprint: str  # the host key the person confirmed; the password is sent only to this server
     account: str  # an account the server already has; root is fine here, it is used once and not kept
     password: str
-    fullSudo: bool = False  # for playbooks with become: true
+    fullSudo: bool = False  # password-less sudo for the inventory's account (playbooks with become: true)
+    users: str = ""  # accounts the agent may run as; the inventory's account always comes first
+    paths: str = agentinstall.DEFAULT_PATHS  # folders the agent may write to
 
 
 MAX_INIT_PASSWORD = 1024
 
 
+def agent_policy(inv: m.Inventory, users: str, paths: str) -> tuple[str, str]:
+    """(users, paths) for a new agent: the inventory's account first, then any others asked for."""
+    try:
+        return agentinstall.clean_users(",".join([inv.ssh_user, users])), agentinstall.clean_paths(paths)
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from e
+
+
+def new_token(db: Session, h: m.Host) -> str:
+    token, digest = agentproto.new_token()
+    db.add(m.EnrollToken(token_hash=digest, host_id=h.id, expires_at=time.time() + agentproto.ENROLL_TTL,
+                         created_by=s.actor_name(db)))
+    return token
+
+
+def enrolled_check(host_id: int, before: str | None):
+    """An `enrolled(timeout)` for serverinit: True once the server's agent has (re-)enrolled and is polling."""
+    async def wait(timeout: float) -> bool:
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            with SessionLocal() as db:
+                h = db.get(m.Host, host_id)
+                if h and h.agent_id and h.agent_id != before and HUB.online(host_id):
+                    return True
+            await asyncio.sleep(1)
+        return False
+    return wait
+
+
+def simulate_enroll(db: Session, h: m.Host, users: str, paths: str) -> None:
+    """Tests and demos (WHARFLINE_SSH_SIMULATE=1): the server looks like it has an agent."""
+    h.agent_id, h.agent_version, h.agent_seen, h.status = agentproto.new_agent_id(), "simulated", time.time(), "on"
+    h.agent_info = {"hostname": h.name, "policy": {"users": users.split(","), "paths": paths.split(",")}, "sudo": {}}
+
+
 @router.post("/inventory/{inv_id}/hosts/init", dependencies=[Depends(require("resources")), Depends(require_sudo)])
 async def init_host(inv_id: str, body: InitHostIn, db: Session = Depends(get_db)):
-    """Set up a new server with its first account and password, then add it. The password is never stored."""
+    """Set up a new server with its first account and password and start its agent. The password is never stored."""
     inv = db.get(m.Inventory, inv_id)
     if not inv:
         raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
@@ -427,33 +467,210 @@ async def init_host(inv_id: str, body: InitHostIn, db: Session = Depends(get_db)
         raise HTTPException(400, "서버에 이미 있는 계정 이름을 넣어 주세요. 예: ubuntu")
     if not 1 <= len(body.password) <= MAX_INIT_PASSWORD:
         raise HTTPException(400, f"비밀번호를 1~{MAX_INIT_PASSWORD}자로 넣어 주세요.")
-    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
-    if not key or not key.public_key:
-        raise HTTPException(400, f"인벤토리의 SSH 키 {inv.key}를 찾을 수 없어요.")
-    line = sshaccess.authorized_keys_line(key.public_key, sshaccess.get_addresses(db))
-    r = await serverinit.init_server(h.ip, h.port, h.host_fingerprint, account, body.password, inv.ssh_user, line,
-                                     key.get_secret() or "", body.fullSudo)
-    if r["ok"]:
-        inv.hosts.append(h)
-    s.log_act(db, "서버 초기화", f"{inv.name} · {h.name} ({h.ip}) · 계정 {account}", "ok" if r["ok"] else "warn")
+    users, paths = agent_policy(inv, body.users, body.paths)
+    url = agent_url_of(db)
+    if not url:
+        raise HTTPException(400, "에이전트가 접속할 Wharfline 주소를 먼저 정해 주세요 (서버 관리 → 에이전트 접속 주소).")
+    h.status = "pending"
+    inv.hosts.append(h)
+    db.flush()
+    token = new_token(db, h)
     db.commit()
-    return {**r, "host": h.to_dict() if r["ok"] else None}
+    host_id = h.id
+    r = await serverinit.init_server(h.ip, h.port, h.host_fingerprint, account, body.password, token, users, paths, body.fullSudo,
+                                     url, agentinstall.agent_image(), enrolled_check(host_id, None))
+    db.expire_all()
+    h = db.get(m.Host, host_id)
+    if r["ok"] and serverinit.sshcheck.simulated() and h and not h.agent_id:
+        simulate_enroll(db, h, users, paths)
+    if not r["ok"] and h and not h.agent_id:
+        inv.hosts.remove(h)  # nothing half-made stays behind
+        h = None
+    s.log_act(db, "서버 초기화", f"{inv.name} · {body.name or body.ip} ({body.ip}) · 계정 {account} · 실행 계정 {users}", "ok" if r["ok"] else "warn")
+    db.commit()
+    return {**r, "host": h.to_dict() if r["ok"] and h else None}
+
+
+class PendingHostIn(BaseModel):
+    name: str
+    group: str = ""
+    users: str = ""
+    paths: str = agentinstall.DEFAULT_PATHS
+
+
+def install_command(db: Session, token: str, users: str, paths: str) -> str:
+    url = agent_url_of(db)
+    return f"curl -fsSL {url}/api/agent/install.sh | sudo sh -s -- {token} {users} {paths}"
+
+
+@router.post("/inventory/{inv_id}/hosts/pending", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def add_pending_host(inv_id: str, body: PendingHostIn, db: Session = Depends(get_db)):
+    """A server Wharfline can't SSH into: it shows up once someone runs the install command on it."""
+    inv = _inv_or_404(db, inv_id)
+    name, group = body.name.strip(), body.group.strip() or "default"
+    if not name or len(name) > 128 or any(h.name == name for h in inv.hosts):
+        raise HTTPException(400, "서버 이름이 비었거나 이 인벤토리에 이미 있어요.")
+    if not re.match(r"^[a-z0-9][a-z0-9_-]{0,31}$", group):
+        raise HTTPException(400, "그룹 이름은 web, worker처럼 영문 소문자로 넣어 주세요.")
+    if not agent_url_of(db):
+        raise HTTPException(400, "에이전트가 접속할 Wharfline 주소를 먼저 정해 주세요 (서버 관리 → 에이전트 접속 주소).")
+    users, paths = agent_policy(inv, body.users, body.paths)
+    h = m.Host(name=name, ip="", port=22, ssh_user=inv.ssh_user, grp=group, status="pending")
+    inv.hosts.append(h)
+    db.flush()
+    token = new_token(db, h)
+    s.log_act(db, "서버 추가 (설치 명령)", f"{inv.name} · {name} · 실행 계정 {users}")
+    db.commit()
+    return {"host": h.to_dict(), "command": install_command(db, token, users, paths), "expiresIn": agentproto.ENROLL_TTL}
+
+
+class AgentTokenIn(BaseModel):
+    users: str = ""
+    paths: str = agentinstall.DEFAULT_PATHS
+
+
+@router.post("/inventory/{inv_id}/hosts/{ix}/agent-token", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def agent_token(inv_id: str, ix: int, body: AgentTokenIn, db: Session = Depends(get_db)):
+    """A new install command for this server (first install, re-install, or after the server was rebuilt)."""
+    inv = _inv_or_404(db, inv_id)
+    h = _host_or_404(inv, ix)
+    users, paths = agent_policy(inv, body.users, body.paths)
+    token = new_token(db, h)
+    s.log_act(db, "에이전트 설치 명령 발급", f"{inv.name} · {h.name}")
+    db.commit()
+    return {"command": install_command(db, token, users, paths), "expiresIn": agentproto.ENROLL_TTL}
+
+
+class ConvertIn(BaseModel):
+    users: str = ""
+    paths: str = agentinstall.DEFAULT_PATHS
+
+
+@router.post("/inventory/{inv_id}/hosts/{ix}/convert", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+async def convert_host(inv_id: str, ix: int, body: ConvertIn, db: Session = Depends(get_db)):
+    """Move a server that deploys over SSH to an agent: one last SSH login with the inventory's key starts it."""
+    inv = _inv_or_404(db, inv_id)
+    h = _host_or_404(inv, ix)
+    if h.agent_id:
+        raise HTTPException(400, "이미 에이전트로 배포하는 서버예요.")
+    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh")) if inv.key else None
+    if not key or not key.has_secret:
+        raise HTTPException(400, "이 인벤토리에 SSH 키가 없어요. '설치 명령'으로 서버에서 직접 설치해 주세요.")
+    if not agent_url_of(db):
+        raise HTTPException(400, "에이전트가 접속할 Wharfline 주소를 먼저 정해 주세요 (서버 관리 → 에이전트 접속 주소).")
+    users, paths = agent_policy(inv, body.users, body.paths)
+    token = new_token(db, h)
+    db.commit()
+    host_id = h.id
+    r = await serverinit.convert_server(h.ip, h.port, h.host_fingerprint, h.ssh_user, key.get_secret() or "", token, users, paths,
+                                        agent_url_of(db), agentinstall.agent_image(), enrolled_check(host_id, None))
+    db.expire_all()
+    h = db.get(m.Host, host_id)
+    if r["ok"] and serverinit.sshcheck.simulated() and h and not h.agent_id:
+        simulate_enroll(db, h, users, paths)
+    s.log_act(db, "에이전트로 전환", f"{inv.name} · {h.name if h else host_id} · {'성공' if r['ok'] else '실패'}", "ok" if r["ok"] else "warn")
+    db.commit()
+    return {**r, "host": h.to_dict() if h else None}
+
+
+class SudoIn(BaseModel):
+    user: str
+    enable: bool
+
+
+@router.put("/inventory/{inv_id}/hosts/{ix}/sudo", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+async def set_sudo(inv_id: str, ix: int, body: SudoIn, db: Session = Depends(get_db)):
+    """Give or take password-less sudo for one of the agent's accounts (playbooks with become: true need it)."""
+    inv = _inv_or_404(db, inv_id)
+    h = _host_or_404(inv, ix)
+    if not h.agent_id:
+        raise HTTPException(400, "에이전트가 있는 서버에서만 바꿀 수 있어요.")
+    user = check_ssh_user(body.user)
+    if serverinit.sshcheck.simulated():
+        result = {"ok": True, "sudo": {**((h.agent_info or {}).get("sudo") or {}), user: body.enable}}
+    else:
+        try:
+            result = await HUB.call(h.id, {"op": "sudo", "user": user, "enable": body.enable}, 60)
+        except AgentError as e:
+            raise HTTPException(400, f"{h.name}: {e}") from e
+    if not result.get("ok"):
+        raise HTTPException(400, f"{h.name}: {result.get('error') or 'sudo 설정을 바꾸지 못했어요'}")
+    h.agent_info = {**(h.agent_info or {}), "sudo": result.get("sudo") or {}}
+    s.log_act(db, "sudo 권한 " + ("부여" if body.enable else "회수"), f"{inv.name} · {h.name} · {user}", "warn" if body.enable else "ok")
+    db.commit()
+    return h.to_dict()
+
+
+@router.post("/inventory/{inv_id}/hosts/{ix}/agent-update", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+async def update_agent(inv_id: str, ix: int, db: Session = Depends(get_db)):
+    """Swap the agent for Wharfline's current agent image (it pulls the image and replaces its own container)."""
+    inv = _inv_or_404(db, inv_id)
+    h = _host_or_404(inv, ix)
+    if not h.agent_id:
+        raise HTTPException(400, "에이전트가 있는 서버에서만 업데이트할 수 있어요.")
+    image = agentinstall.agent_image()
+    try:
+        result = await HUB.call(h.id, {"op": "update", "image": image}, 600)
+    except AgentError as e:
+        raise HTTPException(400, f"{h.name}: {e}") from e
+    if not result.get("ok"):
+        raise HTTPException(400, f"{h.name}: {result.get('error') or '업데이트하지 못했어요'}")
+    s.log_act(db, "에이전트 업데이트", f"{inv.name} · {h.name} → {image}")
+    db.commit()
+    return {"ok": True, "image": image}
+
+
+# ---------- where agents reach Wharfline ----------
+
+def agent_url_of(db: Session) -> str:
+    from .agent import agent_url
+    return agent_url(db)
+
+
+class AgentSettingsIn(BaseModel):
+    url: str
+
+
+@router.get("/agent-settings")
+def get_agent_settings(db: Session = Depends(get_db)):
+    return {"url": agent_url_of(db), "saved": s.get_setting(db, "agent").get("url") or "", "image": agentinstall.agent_image()}
+
+
+@router.put("/agent-settings", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def put_agent_settings(body: AgentSettingsIn, db: Session = Depends(get_db)):
+    url = body.url.strip().rstrip("/")
+    if url and not re.match(r"^https?://[A-Za-z0-9.\-\[\]:]+(/[A-Za-z0-9._~/-]*)?$", url):
+        raise HTTPException(400, "주소는 https://deploy.example.com 처럼 적어 주세요.")
+    s.set_setting(db, "agent", url=url)
+    s.log_act(db, "에이전트 접속 주소 변경", url or "기본값")
+    db.commit()
+    return {"url": agent_url_of(db), "saved": url, "image": agentinstall.agent_image()}
 
 
 @router.post("/inventory/{inv_id}/ping", dependencies=[Depends(require("resources"))])
 async def ping(inv_id: str, db: Session = Depends(get_db)):
-    """Connect to every server with the inventory's key: answering servers are on, others off (deploys skip them).
+    """Agent servers: is the agent connected now. Servers still on SSH: log in with the inventory's key.
 
     A server whose host key differs from the pinned one is marked changed and blocked until someone approves the new key.
     """
     inv = db.get(m.Inventory, inv_id)
     if not inv:
         raise HTTPException(404, "인벤토리를 찾을 수 없어요.")
-    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh"))
+    key = db.scalar(select(m.Key).where(m.Key.name == inv.key, m.Key.kind == "ssh")) if inv.key else None
     private = (key.get_secret() if key else None) or ""
-    results = await asyncio.gather(*(sshcheck.check(h.ip, h.port, h.ssh_user, private) for h in inv.hosts))
+    ssh_hosts = [h for h in inv.hosts if not h.agent_id and h.status != "pending"]
+    results = dict(zip((h.id for h in ssh_hosts), await asyncio.gather(*(sshcheck.check(h.ip, h.port, h.ssh_user, private) for h in ssh_hosts))))
     out = []
-    for h, r in zip(inv.hosts, results):
+    for h in inv.hosts:
+        if h.status == "pending":
+            out.append({"name": h.name, "ok": False, "error": "에이전트 등록을 기다리는 중이에요"})
+            continue
+        if h.agent_id:
+            online = HUB.online(h.id) or h.agent_version == "simulated"
+            seen = f"마지막 연결 {time.strftime('%m-%d %H:%M', time.localtime(h.agent_seen))}" if h.agent_seen else "연결된 적 없음"
+            out.append({"name": h.name, "ok": online, "error": None if online else f"에이전트가 연결돼 있지 않아요 ({seen})"})
+            continue
+        r = results[h.id]
         changed = bool(h.host_fingerprint and r["fingerprint"] and r["fingerprint"] != h.host_fingerprint)
         if changed:
             h.host_key = "changed"
@@ -461,7 +678,7 @@ async def ping(inv_id: str, db: Session = Depends(get_db)):
             h.host_fingerprint = r["fingerprint"]  # first contact: pin it
         h.status = "on" if r["login"] and not changed else "off"
         error = "호스트 키가 저장된 값과 달라요" if changed else r["error"]
-        out.append({"name": h.name, "ok": h.status == "on", "error": error})
+        out.append({"name": h.name, "ok": h.status == "on", "error": (error + " · " if error else "") + "에이전트로 전환하면 키 없이 배포해요"})
     ok = sum(1 for x in out if x["ok"])
     s.log_act(db, "연결 테스트", f"{inv.name} · {len(out)}대 중 {ok}대 응답", "ok" if ok == len(out) else "warn")
     db.commit()
@@ -492,7 +709,8 @@ def delete_host(inv_id: str, ix: int, db: Session = Depends(get_db)):
     if not inv or not (0 <= ix < len(inv.hosts)):
         raise HTTPException(404, "서버를 찾을 수 없어요.")
     h = inv.hosts[ix]
-    s.log_act(db, "서버 삭제", f"{inv.name} · {h.name} ({h.ip})", "warn")
+    s.log_act(db, "서버 삭제", f"{inv.name} · {h.name} ({h.ip})" + (" · 서버의 wharfline-agent 컨테이너는 직접 지워 주세요" if h.agent_id else ""), "warn")
+    HUB.kick(h.id)
     inv.hosts.remove(h)  # delete-orphan removes the row
     db.commit()
     return {"ok": True}
@@ -541,12 +759,24 @@ def _busy_jobs(db: Session, inv: m.Inventory) -> list[str]:
     return sorted(set(db.scalars(select(m.Run.job).where(m.Run.job_id.in_(ids), m.Run.status.in_(("run", "approval"))))))
 
 
-async def _logins_ok(hosts: list[m.Host], user: str, key: m.Key) -> list[str]:
-    """Each server must log in as `user` with `key` and show its pinned host key; returns the failures."""
+def agent_user_problem(h: m.Host, user: str) -> str | None:
+    users = ((h.agent_info or {}).get("policy") or {}).get("users") or []
+    if users and user not in users:
+        return f"{h.name}: 에이전트가 계정 {user}을(를) 허용하지 않아요 (허용: {', '.join(users)}). 서버에서 WHARFLINE_ALLOWED_USERS에 더해 주세요"
+    return None
+
+
+async def _logins_ok(hosts: list[m.Host], user: str, key: m.Key | None) -> list[str]:
+    """Agent servers must allow `user`; servers still on SSH must log in as `user` with `key` (pinned host key)."""
+    bad = [p for h in hosts if h.agent_id and (p := agent_user_problem(h, user))]
+    ssh = [h for h in hosts if not h.agent_id and h.status != "pending"]
+    if not ssh:
+        return bad
+    if key is None:
+        return bad + [f"{h.name}: SSH로 배포하는 서버라 SSH 키가 필요해요 (에이전트로 전환하면 필요 없어요)" for h in ssh]
     private = key.get_secret() or ""
-    results = await asyncio.gather(*(sshcheck.check(h.ip, h.port, user, private) for h in hosts))
-    bad = []
-    for h, r in zip(hosts, results):
+    results = await asyncio.gather(*(sshcheck.check(h.ip, h.port, user, private) for h in ssh))
+    for h, r in zip(ssh, results):
         if h.host_fingerprint and r.get("fingerprint") and r["fingerprint"] != h.host_fingerprint:
             bad.append(f"{h.name}: 호스트 키가 저장된 값과 달라요")
         elif not r.get("login"):
@@ -581,7 +811,7 @@ def edit_host(inv_id: str, ix: int, body: HostEditIn, db: Session = Depends(get_
 class InventoryEditIn(BaseModel):
     name: str
     user: str
-    key: str
+    key: str = ""
 
 
 @router.put("/inventory/{inv_id}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
@@ -594,10 +824,11 @@ async def edit_inventory(inv_id: str, body: InventoryEditIn, db: Session = Depen
     if name != inv.name and db.scalar(select(m.Inventory).where(m.Inventory.name == name)):
         raise HTTPException(400, "같은 이름의 인벤토리가 있어요.")
     user = check_ssh_user(body.user)
-    key = db.scalar(select(m.Key).where(m.Key.name == body.key, m.Key.kind == "ssh"))
-    if not key:
-        raise HTTPException(400, "서버 접속에 쓸 SSH 키를 골라 주세요.")
-    login_changes = user != inv.ssh_user or key.name != inv.key or any(h.ssh_user != user for h in inv.hosts)
+    key = db.scalar(select(m.Key).where(m.Key.name == body.key, m.Key.kind == "ssh")) if body.key.strip() else None
+    if body.key.strip() and not key:
+        raise HTTPException(400, f"SSH 키 {body.key}를 찾을 수 없어요.")
+    key_name = key.name if key else ""
+    login_changes = user != inv.ssh_user or key_name != inv.key or any(h.ssh_user != user for h in inv.hosts)
     if (name != inv.name or login_changes) and (busy := _busy_jobs(db, inv)):
         raise HTTPException(400, f"이 인벤토리로 배포 중이거나 승인을 기다리는 작업이 있어요: {_names(busy)}. 끝난 뒤에 바꿔 주세요.")
     if login_changes and inv.hosts and (bad := await _logins_ok(inv.hosts, user, key)):
@@ -613,13 +844,14 @@ async def edit_inventory(inv_id: str, body: InventoryEditIn, db: Session = Depen
         inv.ssh_user = user
     for h in inv.hosts:
         h.ssh_user = user
-    if key.name != inv.key:
-        old = db.scalar(select(m.Key).where(m.Key.name == inv.key))
+    if key_name != inv.key:
+        old = db.scalar(select(m.Key).where(m.Key.name == inv.key)) if inv.key else None
         if old and old.used_count:
             old.used_count -= 1
-        key.used_count += 1
-        changes.append(f"키 {inv.key} → {key.name}")
-        inv.key = key.name
+        if key:
+            key.used_count += 1
+        changes.append(f"키 {inv.key or '없음'} → {key_name or '없음'}")
+        inv.key = key_name
     if changes:
         s.log_act(db, "인벤토리 수정", f"{inv.name} · " + " · ".join(changes), "warn" if login_changes else "ok")
     db.commit()
@@ -658,9 +890,13 @@ def _move_checks(db: Session, src: m.Inventory, h: m.Host, dst: m.Inventory) -> 
 
 async def _move_login(db: Session, h: m.Host, dst: m.Inventory) -> dict:
     """Can the server log in with the target inventory's user and key (and show its pinned host key)?"""
-    key = db.scalar(select(m.Key).where(m.Key.name == dst.key, m.Key.kind == "ssh"))
+    if h.agent_id or h.status == "pending":
+        bad = await _logins_ok([h], dst.ssh_user, None)
+        return {"key": "login", "label": "서버 계정", "ok": not bad,
+                "detail": bad[0].split(": ", 1)[-1] if bad else f"에이전트가 계정 {dst.ssh_user}을(를) 허용해요."}
+    key = db.scalar(select(m.Key).where(m.Key.name == dst.key, m.Key.kind == "ssh")) if dst.key else None
     if not key:
-        return {"key": "login", "label": "서버 연결", "ok": False, "detail": f"{dst.name}의 SSH 키 {dst.key}를 찾을 수 없어요."}
+        return {"key": "login", "label": "서버 연결", "ok": False, "detail": f"{dst.name}에 SSH 키가 없어요. 이 서버를 먼저 에이전트로 전환해 주세요."}
     bad = await _logins_ok([h], dst.ssh_user, key)
     return {"key": "login", "label": "서버 연결", "ok": not bad,
             "detail": bad[0].split(": ", 1)[-1] + f" ({dst.ssh_user} · 키 {dst.key})" if bad else f"{dst.ssh_user}@{h.ip} 로그인돼요 (키 {dst.key})."}

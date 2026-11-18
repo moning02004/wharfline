@@ -1,0 +1,9 @@
+# Ansible collections baked into the agent image (copy of backend/ansible-collections.yml) (see Dockerfile). ansible-core has none of its own.
+# Add one here when a playbook needs it; keep versions pinned and compatible with requirements.txt's ansible-core.
+collections:
+  - name: ansible.posix          # authorized_key, sysctl, mount, firewalld, synchronize, …
+    version: "1.6.2"
+  - name: community.general      # ufw, timezone, locale_gen, npm, …
+    version: "9.5.4"
+  - name: community.docker       # docker_container, docker_compose_v2, docker_image, …
+    version: "3.13.6"

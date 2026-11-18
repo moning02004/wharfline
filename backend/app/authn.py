@@ -237,7 +237,7 @@ def describe_agent(ua: str) -> str:
 # ---------- middleware ----------
 
 WRITE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
-CSRF_EXEMPT = ("/api/hooks/",)  # called by Git hosts, authenticated by the webhook secret
+CSRF_EXEMPT = ("/api/hooks/", "/api/agent/")  # Git hosts (webhook secret) and agents (one-time token, then signed requests)
 
 
 class AuthMiddleware:
