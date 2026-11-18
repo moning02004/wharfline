@@ -9,6 +9,7 @@ import { FileTree } from "../components/FileTree";
 import { readEntry, skipPath, toBase64 } from "../lib/folder";
 import { Icon } from "../components/Icon";
 import { NewHostModal, NewInventoryModal, NewKeyModal } from "../modals/ResourceModals";
+import { RunUserField } from "../modals/AgentModals";
 import { Banner, Button, Card, CardHeader, Chip, ErrorText, Field, Hint, Input, Loading, PageHeader, Select, Seg, Switch, Textarea, cx } from "../components/ui";
 
 /*
@@ -75,6 +76,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
   const [inv, setInv] = useState(job?.inventory ?? "");
   const [targets, setTargets] = useState<string[]>(job ? [...job.targets] : []);
   const [name, setName] = useState(copying ? `${job!.name} 복사본` : job?.name ?? "");
+  const [runUser, setRunUser] = useState(job?.runUser ?? "");
   const [nameTouched, setNameTouched] = useState(!!job);
   const [prot, setProt] = useState(job ? job.protected : true);
   const [busy, setBusy] = useState(false);
@@ -294,6 +296,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
       files: from === "upload" && (!editing || filesChanged) ? (files ?? []).map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
       inventory: inv,
       targets,
+      runUser: runUser.trim(),
       image: editing ? imageText : "",
       extraImages: editing ? job!.extraImages.map((x) => ({ image: x.defaultTag && x.defaultTag !== "latest" ? `${x.ref}:${x.defaultTag}` : x.ref, var: x.var, sourceRepo: null })) : [],
       envMode: editing ? "keep" : copying && job!.env ? "copy" : "none",
@@ -655,6 +658,7 @@ export function PlaybookEditor({ mode, job, onClose }: { mode: Mode; job?: Job; 
                 </div>
               )}
             </Field>
+            <RunUserField value={runUser} onChange={setRunUser} inventory={invObj} />
           </Section>
         )}
 

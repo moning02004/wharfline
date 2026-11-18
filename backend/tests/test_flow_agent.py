@@ -3,6 +3,7 @@
 import base64
 import importlib.util
 import json
+import os
 import time
 from pathlib import Path
 
@@ -41,10 +42,12 @@ class FakeAgent:
             self.id, self.server_key = r.json()["id"], r.json()["serverKey"]
         return r
 
-    def headers(self, path: str, body: bytes, ts: float | None = None) -> dict:
+    def headers(self, path: str, body: bytes, ts: float | None = None, nonce: str | None = None) -> dict:
         t = str(int(ts if ts is not None else time.time()))
-        sig = base64.b64encode(self.sign.sign(agentproto.canonical("POST", path, t, body))).decode()
-        return {agentproto.HDR_ID: self.id, agentproto.HDR_TIME: t, agentproto.HDR_SIG: sig, "Content-Type": "application/json"}
+        n = nonce or os.urandom(16).hex()
+        sig = base64.b64encode(self.sign.sign(agentproto.canonical("POST", path, t, n, body))).decode()
+        return {agentproto.HDR_ID: self.id, agentproto.HDR_TIME: t, agentproto.HDR_NONCE: n, agentproto.HDR_SIG: sig,
+                "Content-Type": "application/json"}
 
     def post(self, client, path: str, data: dict, ts: float | None = None):
         body = json.dumps(data).encode()
@@ -115,6 +118,9 @@ def test_polls_must_be_signed_fresh_and_not_replayed(client, login):
     h = a.headers(path, body)
     assert client.post(path, content=body, headers=h).json() == {"task": None}
     assert client.post(path, content=body, headers=h).status_code == 401  # the same signature again
+    # the same body in the same second with a new nonce is a new request
+    assert client.post(path, content=body, headers=a.headers(path, body)).json() == {"task": None}
+    assert client.post(path, content=body, headers=a.headers(path, body)).json() == {"task": None}
 
 
 def test_a_task_reaches_the_agent_sealed_and_signed(client, login):
@@ -217,7 +223,7 @@ def test_agent_and_wharfline_seal_the_same_way(agent_mod):
     pub = _raw_pub(box)
     assert agent_mod.unseal(box, agentproto.seal(pub, b"from wharfline")) == b"from wharfline"
     assert agentproto.unseal(box, agent_mod.seal(pub, b"from agent")) == b"from agent"
-    assert agent_mod.canonical("POST", "/p", "1", b"x") == agentproto.canonical("POST", "/p", "1", b"x")
+    assert agent_mod.canonical("POST", "/p", "1", "n" * 32, b"x") == agentproto.canonical("POST", "/p", "1", "n" * 32, b"x")
 
 
 def test_install_lines_keep_the_token_off_the_command_line():

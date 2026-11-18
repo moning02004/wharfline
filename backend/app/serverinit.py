@@ -78,9 +78,11 @@ def init_script(users: str, paths: str, full_sudo: bool, url: str, image: str) -
         f"else rm -f {ROLLOUT_PATH}; echo 'docker rollout을 받지 못했어요. 일반 배포에는 영향이 없어요.'; fi",
         "fi",
         _mark(names, 3),
+        f"USERS_CSV={q(users)}",
         f"for P in {' '.join(q(p) for p in paths.split(','))}; do",
-        '  if [ ! -e "$P" ]; then mkdir -p "$P" && chown "$FIRST:$FIRST" "$P"; '
-        'elif [ "$P" = /srv ] && [ "$(stat -c %U /srv)" = root ]; then chown "$FIRST:$FIRST" /srv; fi',
+        *[line.replace('$USERS"', '$USERS_CSV"') for line in agentinstall.OWNER_LINES],
+        '  if [ ! -e "$P" ]; then mkdir -p "$P" && chown "$O:$O" "$P"; '
+        'elif [ "$P" = /srv ] && [ "$(stat -c %U /srv)" = root ]; then chown "$O:$O" /srv; fi',
         "done",
     ]
     i = 4

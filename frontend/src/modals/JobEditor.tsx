@@ -10,6 +10,7 @@ import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead, YesNoModal } from "../components/Modal";
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
+import { RunUserField } from "./AgentModals";
 import { GroupModal } from "./AccessModals";
 import { FileWorkspaceModal, NEW_FILE, riskyIn, useBundleUpload, type FileUpdate } from "./FileWorkspace";
 import { PlaybookEditor } from "../pages/PlaybookEditor";
@@ -409,6 +410,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
   const [path, setPath] = useState(isRepo ? pb.path : repoCompose ? job!.composePath! : "");
   const [steps, setSteps] = useState<StepDraft[]>(() => (job?.script ?? []).map((st) => ({ ...st, id: ++stepSeq })));
   const [servicePath, setServicePath] = useState(job?.servicePath ?? "");
+  const [runUser, setRunUser] = useState(job?.runUser ?? "");
   const [files, setFiles] = useState<BundleFile[]>(() => (job?.files ?? []).map((f) => ({ ...f })));
   const [filesTouched, setFilesTouched] = useState(false);
   // Tracked images in one list. The row with an empty variable name is the main image ($IMAGE_TAG).
@@ -779,6 +781,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     compose: source === "compose" ? { url: composeFrom === "git" ? url.trim() : "", branch: branch.trim() || "main", path: composeFrom === "git" ? composePath : "", key: composeFrom === "git" && !reused ? key : NO_KEY } : null,
     script: source === "script" ? steps.map(({ name: n, run }) => ({ name: n.trim(), run })) : [],
     servicePath: scriptLike ? servicePath.trim() : "",
+    runUser: runUser.trim(),
     files: !scriptLike ? [] : mode !== "edit" || filesTouched ? files.map((f) => ({ path: f.path, content: f.content ?? "" })) : undefined,
     // SSH script jobs: the server reads the tracked images from the files.
     extraImages: scriptLike ? [] : extras.map((x) => ({ image: x.image.trim(), var: x.var, sourceRepo: canResources ? (x.repo ?? "").trim() : null })),
@@ -1517,11 +1520,15 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
               </Field>
             )}
             {targetField}
+            <RunUserField value={runUser} onChange={setRunUser} inventory={invObj} />
             {deployFiles}
             {renderStep("env")}
           </>
         ) : (
-          targetField
+          <>
+            {targetField}
+            <RunUserField value={runUser} onChange={setRunUser} inventory={invObj} />
+          </>
         );
       }
 

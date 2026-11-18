@@ -49,17 +49,27 @@ def run_lines(url: str, image: str, users: str, paths: str, token_var: str = "TO
     """POSIX sh, run as root, with the token in the shell variable `token_var`. Safe to run again."""
     q = shlex.quote
     return [
-        f"docker pull {q(image)}",
+        f"docker pull {q(image)} || docker image inspect {q(image)} >/dev/null",  # a local or mirrored image works too
         f"docker volume create {VOLUME} >/dev/null",
         f'printf \'%s\' "${token_var}" | docker run --rm -i -v {VOLUME}:/data --entrypoint sh {q(image)} '
         "-c 'umask 077; cat > /data/enroll.token'",
         f"docker rm -f {CONTAINER} >/dev/null 2>&1 || true",
+        # removal can still be finishing: wait until the name is free
+        f"i=0; while docker inspect {CONTAINER} >/dev/null 2>&1 && [ $i -lt 20 ]; do sleep 1; "
+        f"docker rm -f {CONTAINER} >/dev/null 2>&1 || true; i=$((i+1)); done",
         f"docker run -d --name {CONTAINER} --restart unless-stopped --privileged --pid host --network host "
         f"-v /var/run/docker.sock:/var/run/docker.sock -v {VOLUME}:/data "
         f"-e WHARFLINE_URL={q(url)} -e WHARFLINE_ALLOWED_USERS={q(users)} -e WHARFLINE_ALLOWED_PATHS={q(paths)} "
         f"--label wharfline.agent=1 {q(image)} >/dev/null",
     ]
 
+
+# A new allowed folder belongs to the run account whose home it is in (/home/ubuntu/apps → ubuntu), else the first.
+OWNER_LINES = [
+    '  O="$FIRST"',
+    '  for U in $(echo "$USERS" | tr "," " "); do H=$(getent passwd "$U" | cut -d: -f6); '
+    'case "$P" in "$H"/*) O="$U";; esac; done',
+]
 
 ROLLOUT_URL = "https://github.com/wowu/docker-rollout/releases/latest/download/docker-rollout"
 ROLLOUT_PATH = "/usr/local/lib/docker/cli-plugins/docker-rollout"
@@ -98,7 +108,8 @@ def install_script(url: str, image: str) -> str:
         "done",
         "echo '==> folders'",
         'for P in $(echo "$PATHS" | tr "," " "); do',
-        '  if [ ! -e "$P" ]; then mkdir -p "$P" && chown "$FIRST:$FIRST" "$P"; fi',
+        *OWNER_LINES,
+        '  if [ ! -e "$P" ]; then mkdir -p "$P" && chown "$O:$O" "$P"; fi',
         "done",
         "echo '==> agent'",
         *run_lines("@@URL@@", "@@IMAGE@@", "@@USERS@@", "@@PATHS@@"),

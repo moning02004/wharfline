@@ -1,8 +1,8 @@
 """How Wharfline and its agents trust each other.
 
 Agent → Wharfline: every request after enrollment is signed with the agent's Ed25519 key over
-    METHOD \\n PATH \\n UNIX_TIME \\n SHA256(body)
-and sent as X-Wharfline-Agent (the agent id), X-Wharfline-Time and X-Wharfline-Sig. Wharfline keeps only the
+    METHOD \\n PATH \\n UNIX_TIME \\n NONCE \\n SHA256(body)
+and sent as X-Wharfline-Agent (the agent id), X-Wharfline-Time, X-Wharfline-Nonce and X-Wharfline-Sig. Wharfline keeps only the
 public key, so nothing it stores lets anyone act as an agent. Requests older or newer than SKEW seconds, and a
 signature seen before, are refused.
 
@@ -38,7 +38,7 @@ from . import store as s
 SKEW = 120.0
 SETTING = "agent_keys"
 CONTEXT = "setting:agent_keys"
-HDR_ID, HDR_TIME, HDR_SIG = "x-wharfline-agent", "x-wharfline-time", "x-wharfline-sig"
+HDR_ID, HDR_TIME, HDR_NONCE, HDR_SIG = "x-wharfline-agent", "x-wharfline-time", "x-wharfline-nonce", "x-wharfline-sig"
 ENROLL_TTL = 15 * 60  # an enrollment token is good for 15 minutes
 
 
@@ -50,8 +50,9 @@ def unb64(text: str) -> bytes:
     return base64.b64decode(text, validate=True)
 
 
-def canonical(method: str, path: str, ts: str, body: bytes) -> bytes:
-    return f"{method.upper()}\n{path}\n{ts}\n{hashlib.sha256(body).hexdigest()}".encode()
+def canonical(method: str, path: str, ts: str, nonce: str, body: bytes) -> bytes:
+    """What an agent signs. The nonce makes two identical requests in the same second two different signatures."""
+    return f"{method.upper()}\n{path}\n{ts}\n{nonce}\n{hashlib.sha256(body).hexdigest()}".encode()
 
 
 def public_key(text: str) -> Ed25519PublicKey:
@@ -88,7 +89,8 @@ class Replay:
 REPLAY = Replay()
 
 
-def check_request(key_b64: str, method: str, path: str, ts: str, sig: str, body: bytes, now: float | None = None) -> str | None:
+def check_request(key_b64: str, method: str, path: str, ts: str, nonce: str, sig: str, body: bytes,
+                  now: float | None = None) -> str | None:
     """None when the request is the agent's and fresh; otherwise why not."""
     now = time.time() if now is None else now
     try:
@@ -97,7 +99,9 @@ def check_request(key_b64: str, method: str, path: str, ts: str, sig: str, body:
         return "bad time"
     if abs(now - t) > SKEW:
         return "clock skew: check the server's time (NTP)"
-    if not verify(key_b64, sig, canonical(method, path, ts, body)):
+    if not 16 <= len(nonce) <= 64:
+        return "missing nonce"
+    if not verify(key_b64, sig, canonical(method, path, ts, nonce, body)):
         return "bad signature"
     if not REPLAY.fresh(sig, now):
         return "replayed request"

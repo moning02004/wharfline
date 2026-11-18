@@ -25,6 +25,10 @@ x-backend-env: &backend-env
   WHARFLINE_OWNER_PASSWORD: ${WHARFLINE_OWNER_PASSWORD:-}
   # Gitea that checks .env uploads (POST /api/hooks/env). Empty: uploads are refused.
   WHARFLINE_GITEA_URL: ${WHARFLINE_GITEA_URL:-}
+  # Agents: the image servers run (same release as Wharfline) and where they reach Wharfline (default WHARFLINE_URL).
+  WHARFLINE_AGENT_IMAGE: ${WHARFLINE_AGENT_IMAGE:-ghcr.io/moning02004/wharfline-agent:${WHARFLINE_VERSION:-latest}}
+  WHARFLINE_AGENT_URL: ${WHARFLINE_AGENT_URL:-}
+  WHARFLINE_URL: ${WHARFLINE_URL:-}
 
 services:
   db:

@@ -678,7 +678,8 @@ async def ping(inv_id: str, db: Session = Depends(get_db)):
             h.host_fingerprint = r["fingerprint"]  # first contact: pin it
         h.status = "on" if r["login"] and not changed else "off"
         error = "호스트 키가 저장된 값과 달라요" if changed else r["error"]
-        out.append({"name": h.name, "ok": h.status == "on", "error": (error + " · " if error else "") + "에이전트로 전환하면 키 없이 배포해요"})
+        out.append({"name": h.name, "ok": h.status == "on",
+                    "error": (error + " · 에이전트로 전환하면 키 없이 배포해요") if error else None})
     ok = sum(1 for x in out if x["ok"])
     s.log_act(db, "연결 테스트", f"{inv.name} · {len(out)}대 중 {ok}대 응답", "ok" if ok == len(out) else "warn")
     db.commit()

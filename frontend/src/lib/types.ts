@@ -39,6 +39,27 @@ export interface DeviceSession {
   current: boolean;
 }
 
+/** A container the agent saw running on its server (with the image digest it runs). */
+export interface AgentContainer {
+  name: string;
+  image: string;
+  digests: string[];
+  state: string;
+  project: string;
+  dir: string;
+}
+
+/** What a server's Wharfline agent reports. Users and paths are fixed on the server, not in Wharfline. */
+export interface AgentInfo {
+  version: string | null;
+  /** epoch seconds of its last poll */
+  seen: number | null;
+  hostname?: string | null;
+  policy: { users?: string[]; paths?: string[] };
+  sudo: Record<string, boolean>;
+  containers: AgentContainer[];
+}
+
 export interface Host {
   name: string;
   ip: string;
@@ -46,7 +67,10 @@ export interface Host {
   user: string;
   group: string;
   hostKey: "ok" | "changed";
-  status: "on" | "off";
+  status: "on" | "off" | "pending";
+  /** agent: deploys through its agent · pending: waiting for the agent to enroll · ssh: old server, needs converting */
+  mode?: "agent" | "pending" | "ssh";
+  agent?: AgentInfo | null;
   skip?: string;
 }
 
@@ -54,7 +78,7 @@ export interface Inventory {
   id: string;
   name: string;
   key: string;
-  /** SSH user its servers deploy as */
+  /** The server account its jobs run as (each server's agent must allow it) */
   user: string;
   hosts: Host[];
 }
@@ -115,6 +139,8 @@ export interface Job {
   script: { name: string; run: string }[] | null;
   /** SSH script jobs: the folder on the servers (SERVICE_PATH). */
   servicePath: string | null;
+  /** The server account the job runs as; null: the inventory's account. */
+  runUser?: string | null;
   /** SSH script jobs: files uploaded to SERVICE_PATH (contents via GET /jobs/{id}/files). */
   files: { path: string; size: number }[];
   /** Current version of the files (each save that changes them makes a new one). */

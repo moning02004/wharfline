@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Host, Image, Inventory, Key, PublicKeyInfo, Registry } from "../lib/types";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, Check, ErrorText, Field, Hint, Input, KV, Select, Seg, Textarea, cx } from "../components/ui";
 import { Icon } from "../components/Icon";
+import { AgentPanel, InstallCommand, PolicyFields, StepsResult, type InitResult } from "./AgentModals";
 
 export function copyText(text: string, toast: (m: string) => void) {
   try {
@@ -506,58 +507,39 @@ export function NewImageModal({ registries, onClose }: { registries: Registry[];
 /* ---------- hosts ---------- */
 
 /** A server list (inventory) with the SSH key used to reach its servers. */
-const NEW_KEY = "\u0000new";
 
 /** Make an inventory: its name, deploy user and SSH key (made here when there is none). Its servers are added next. */
 export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void; onCreated?: (inv: Inventory) => void }) {
-  const { openModal, refresh, toast, withSudo } = useApp();
-  const keysRes = useApi<Key[]>("/keys");
-  const keys = (keysRes.data ?? []).filter((k) => k.kind === "ssh");
+  const { openModal, refresh, toast } = useApp();
   const all = useApi<Inventory[]>("/inventory").data ?? [];
   const [name, setName] = useState("");
   const [user, setUser] = useState("deploy");
-  const [key, setKey] = useState("");
   const [busy, setBusy] = useState(false);
-  useEffect(() => {
-    if (!key && keysRes.data) setKey(keys[0]?.name ?? NEW_KEY);
-  }, [keysRes.data, key]);
 
   const basicError = (): string => {
     if (!/^[a-z0-9][a-z0-9_-]{0,63}$/.test(name.trim())) return "인벤토리 이름은 production처럼 영문 소문자, 숫자, -, _ 로 넣어 주세요.";
     if (all.some((i) => i.name === name.trim())) return "같은 이름의 인벤토리가 있어요.";
-    return userError(user) || (key ? "" : "서버 접속에 쓸 SSH 키를 골라 주세요.");
+    return userError(user);
   };
 
-  const create = async () => {
+  const submit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (busy) return;
+    const bad = basicError();
+    if (bad) return toast(bad, "error");
     setBusy(true);
     try {
-      let keyName = key;
-      if (key === NEW_KEY) {
-        keyName = `${name.trim()}-deploy`;
-        await api.post<Key>("/keys", { mode: "gen", name: keyName });
-        setKey(keyName); // a retry uses the key just made
-      }
-      const inv = await api.post<Inventory>("/inventory", { name: name.trim(), key: keyName, user: user.trim() });
+      const inv = await api.post<Inventory>("/inventory", { name: name.trim(), user: user.trim() });
       refresh();
       onCreated?.(inv);
       onClose();
       toast("인벤토리를 만들었어요. 이제 서버를 추가해요.");
       openModal((c) => <NewHostModal inventory={inv} onClose={c} />);
-    } catch (e) {
-      if ((e as { sudoRequired?: boolean }).sudoRequired) throw e;
-      toast(errMsg(e), "error");
+    } catch (err) {
+      toast(errMsg(err), "error");
     } finally {
       setBusy(false);
     }
-  };
-
-  const submit = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (busy) return;
-    const bad = basicError();
-    if (bad) return toast(bad, "error");
-    if (key === NEW_KEY) withSudo("SSH 키 만들기", create);
-    else create();
   };
 
   return (
@@ -568,27 +550,10 @@ export function NewInventoryModal({ onClose, onCreated }: { onClose: () => void;
           <Field label="이름" htmlFor="iName" hint="영문 소문자, 숫자, -, _">
             <Input id="iName" mono autoFocus placeholder="production" value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="배포 사용자" htmlFor="iUser" hint="서버에 이 사용자로 접속해서 배포해요. 없으면 초기화할 때 만들어요. root는 안 돼요.">
+          <Field label="실행 계정" htmlFor="iUser" hint="서버의 에이전트가 배포 명령을 이 계정으로 실행해요. 없으면 서버를 추가할 때 만들어요. root는 안 돼요.">
             <Input id="iUser" mono value={user} onChange={(e) => setUser(e.target.value)} />
           </Field>
-          <Field
-            label="SSH 키"
-            htmlFor="iKey"
-            right={
-              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
-                키 추가
-              </Button>
-            }
-          >
-            <Select id="iKey" value={key} onChange={(e) => setKey(e.target.value)}>
-              {keys.map((k) => (
-                <option key={k.id} value={k.name}>
-                  {k.name}
-                </option>
-              ))}
-              <option value={NEW_KEY}>새로 만들기</option>
-            </Select>
-          </Field>
+          <Hint>SSH 키는 필요 없어요. 서버마다 에이전트가 Wharfline에 접속해서 배포해요.</Hint>
         </ModalBody>
       </form>
       <ModalFoot>
@@ -669,109 +634,44 @@ function GroupField({ value, onChange, groups }: { value: string; onChange: (g: 
   );
 }
 
-/** What to run on a new server, then the connection check (host key + login with the key). */
-function PrepAndCheck({ user, keyObj, ip, port, result, setResult, optional }: {
-  user: string;
-  keyObj: Key | undefined;
-  ip: string;
-  port: string;
-  result: ConnCheck | null;
-  setResult: (r: ConnCheck | null) => void;
-  optional?: boolean;
-}) {
-  const { toast } = useApp();
-  const info = usePublicKey(keyObj?.id, keyObj?.publicKey);
-  const [checking, setChecking] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (result) ref.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
-  }, [result]);
-  const connect = async () => {
-    setChecking(true);
-    setResult(null);
-    try {
-      setResult(await api.post<ConnCheck>("/inventory/check", { ip, port: +port, user, key: keyObj?.name ?? "" }));
-    } catch (e) {
-      toast(errMsg(e), "error");
-    } finally {
-      setChecking(false);
-    }
-  };
-  return (
-    <>
-      <ServerPrepSteps user={user} info={info} />
-      <div ref={ref} className="flex flex-col gap-2.5 rounded-lg border border-line p-3.5">
-        <div className="flex items-center gap-2.5">
-          <span className="grid place-items-center size-[22px] rounded-full bg-primary-soft text-primary text-[11.5px] font-semibold">6</span>
-          <span className="text-[13px] font-medium flex-1">
-            연결 확인 {optional && <span className="text-muted font-normal text-[12px]">선택</span>}
-          </span>
-          <Button size="sm" variant={result?.login || optional ? "ghost" : "primary"} icon="refresh" disabled={checking} onClick={connect}>
-            {checking ? "확인 중…" : result ? "다시 확인" : "연결 확인"}
-          </Button>
-        </div>
-        {!result && !checking && (
-          <span className="text-[12.5px] text-muted pl-[32px]">
-            {optional ? "건너뛰면 첫 배포 때 지문을 저장해요." : `${user}@${ip}:${port}에 접속해 지문을 읽고 이 키로 로그인해 봐요.`}
-          </span>
-        )}
-        {result && <CheckResult r={result} user={user} />}
-      </div>
-    </>
-  );
-}
-
-interface ConnCheck {
-  reachable: boolean;
-  type: string | null;
-  fingerprint: string | null;
-  login: boolean;
-  loginUser: string | null;
-  /** docker: usable by the user · noperm: installed, but not for this user · none: not installed */
-  docker: "docker" | "noperm" | "none" | null;
-  error: string | null;
-  keyName: string;
-  keyFingerprint: string;
-}
-
-interface InitStep {
-  name: string;
-  status: "ok" | "fail" | "skip";
-}
-interface InitResult {
-  ok: boolean;
-  steps: InitStep[];
-  log: string[];
-  error: string | null;
-}
-
-/** Add a server to an inventory. A new one is set up once with its first account and password; one that is ready is just added. */
+/** Add a server to an inventory. Either Wharfline sets it up once over SSH with its first account and password, or
+ *  someone runs an install command on it. Both end with the server's agent connected; Wharfline keeps no SSH key. */
 export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory; onClose: () => void }) {
-  const { runAction, toast, withSudo, refresh } = useApp();
-  const keys = (useApi<Key[]>("/keys").data ?? []).filter((k) => k.kind === "ssh");
-  const [how, setHow] = useState<"init" | "ready">("init");
-  const [step, setStep] = useState<"info" | "prep" | "confirm" | "running" | "done">("info");
+  const { toast, withSudo, refresh } = useApp();
+  const [how, setHow] = useState<"init" | "install">("init");
+  const [step, setStep] = useState<"info" | "confirm" | "running" | "done" | "command">("info");
   const [srv, setSrv] = useState<ServerDraft>({ name: "", group: "", ip: "", port: "22" });
-  const [result, setResult] = useState<ConnCheck | null>(null);
   const [account, setAccount] = useState("");
   const [password, setPassword] = useState("");
   const [fullSudo, setFullSudo] = useState(false);
+  const [users, setUsers] = useState("");
+  const [paths, setPaths] = useState("/srv");
   const [hostKey, setHostKey] = useState<{ type: string; fingerprint: string } | null>(null);
   const [outcome, setOutcome] = useState<InitResult | null>(null);
+  const [made, setMade] = useState<{ host: Host; command: string; expiresIn: number } | null>(null);
   const [busy, setBusy] = useState(false);
-  const keyObj = keys.find((k) => k.name === inv.key);
   const user = inv.user || "deploy";
+  const listOf = (t: string) => t.split(/[,\s]+/).map((x) => x.trim()).filter(Boolean).join(",");
 
   const next = async (e: React.FormEvent) => {
     e.preventDefault();
     if (busy) return;
+    if (how === "install") {
+      if (!srv.name.trim()) return toast("서버 이름을 넣어 주세요.", "error");
+      if (inv.hosts.some((h) => h.name === srv.name.trim())) return toast("이 인벤토리에 같은 이름의 서버가 있어요.", "error");
+      return withSudo("서버 추가", async () => {
+        try {
+          setMade(await api.post(`/inventory/${inv.id}/hosts/pending`, { name: srv.name.trim(), group: srv.group.trim(), users: listOf(users), paths: listOf(paths) }));
+          setStep("command");
+          refresh();
+        } catch (err) {
+          if ((err as { sudoRequired?: boolean }).sudoRequired) throw err;
+          toast(errMsg(err), "error");
+        }
+      });
+    }
     const bad = serverError(srv, inv.hosts.map((h) => h.name));
     if (bad) return toast(bad, "error");
-    if (how === "ready") {
-      setResult(null);
-      setStep("prep");
-      return;
-    }
     if (!LOGIN_USER_RE.test(account.trim())) return toast("서버에 이미 있는 계정 이름을 넣어 주세요. 예: ubuntu", "error");
     if (!password) return toast("비밀번호를 넣어 주세요.", "error");
     setBusy(true);
@@ -783,14 +683,6 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
     } finally {
       setBusy(false);
     }
-  };
-
-  const save = async () => {
-    const ok = await runAction(
-      () => api.post(`/inventory/${inv.id}/hosts`, { name: srv.name.trim(), ip: srv.ip.trim(), port: srv.port.trim(), group: srv.group.trim(), fingerprint: result?.login ? result.fingerprint : "" }),
-      "서버를 추가했어요",
-    );
-    if (ok) onClose();
   };
 
   const init = () =>
@@ -806,6 +698,8 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
           account: account.trim(),
           password,
           fullSudo,
+          users: listOf(users),
+          paths: listOf(paths),
         });
         setOutcome(r);
         setStep("done");
@@ -820,24 +714,18 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
       }
     });
 
-  const sub = `${inv.name} · ${user} · 키 ${inv.key}`;
-  if (step === "prep")
+  const sub = `${inv.name} · 실행 계정 ${user}`;
+  if (step === "command" && made)
     return (
       <>
-        <ModalHead title="서버 준비" sub={sub} onClose={onClose} />
+        <ModalHead title="설치 명령" sub={`${inv.name} · ${made.host.name}`} onClose={onClose} />
         <ModalBody>
-          <PrepAndCheck user={user} keyObj={keyObj} ip={srv.ip.trim()} port={srv.port.trim()} result={result} setResult={setResult} optional />
+          <InstallCommand inventoryId={inv.id} hostName={made.host.name} command={made.command} expiresIn={made.expiresIn} />
         </ModalBody>
-        <ModalFoot between>
-          <Button variant="ghost" onClick={() => setStep("info")}>
-            이전
+        <ModalFoot>
+          <Button variant="primary" onClick={onClose}>
+            닫기
           </Button>
-          <div className="flex gap-2">
-            <Button onClick={onClose}>취소</Button>
-            <Button variant="primary" onClick={save}>
-              {result?.login ? "지문이 같아요, 저장" : "저장"}
-            </Button>
-          </div>
         </ModalFoot>
       </>
     );
@@ -854,7 +742,8 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
             서버 콘솔에서 비교할 수 있어요: <span className="font-mono">ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub</span>
           </Hint>
           <Banner tone="neutral" icon="server" title="이 일을 해요">
-            <span className="font-mono">{user}</span> 사용자를 만들고 공개 키를 넣은 뒤 Docker와 docker rollout을 설치해요. 몇 분 걸릴 수 있고, 다시 실행해도 괜찮아요. 비밀번호는 저장하지 않아요.
+            실행 계정(<span className="font-mono">{[user, ...listOf(users).split(",").filter((u) => u && u !== user)].join(", ")}</span>)을 만들고 Docker와 docker rollout을 설치한 뒤, 에이전트를 띄워요. 몇 분 걸릴 수 있고, 다시 실행해도 괜찮아요.
+            비밀번호는 저장하지 않고, SSH 키도 남기지 않아요.
           </Banner>
         </ModalBody>
         <ModalFoot between>
@@ -876,7 +765,7 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
       <>
         <ModalHead title="서버 초기화" sub={`${srv.ip.trim()}:${srv.port.trim()}`} onClose={onClose} />
         <ModalBody>
-          <p className="m-0 text-[13px] text-muted">서버를 설정하고 있어요. Docker를 새로 설치하면 몇 분 걸려요. 창을 닫지 말아 주세요.</p>
+          <p className="m-0 text-[13px] text-muted">서버를 설정하고 에이전트를 띄우고 있어요. Docker를 새로 설치하면 몇 분 걸려요. 창을 닫지 말아 주세요.</p>
         </ModalBody>
       </>
     );
@@ -886,18 +775,8 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
       <>
         <ModalHead title={outcome.ok ? "서버를 준비했어요" : "초기화하지 못했어요"} sub={`${srv.ip.trim()}:${srv.port.trim()}`} onClose={onClose} />
         <ModalBody>
-          {outcome.error && <ErrorText>{outcome.error}</ErrorText>}
-          <ol className="m-0 p-0 list-none flex flex-col rounded-lg border border-line divide-y divide-line">
-            {outcome.steps.map((st) => (
-              <li key={st.name} className="flex items-center gap-2 px-3.5 py-2 text-[13px]">
-                <Icon name={st.status === "ok" ? "check" : st.status === "fail" ? "x" : "skip"} className={`size-4 flex-none ${st.status === "ok" ? "text-accent" : st.status === "fail" ? "text-bad" : "text-faint"}`} />
-                <span className={st.status === "skip" ? "text-muted" : undefined}>{st.name}</span>
-              </li>
-            ))}
-          </ol>
-          {!outcome.ok && outcome.log.length > 0 && (
-            <pre className="m-0 max-h-[220px] overflow-auto scroll-soft rounded-lg bg-surface-2 border border-line p-3 font-mono text-[12px] whitespace-pre-wrap break-all">{outcome.log.join("\n")}</pre>
-          )}
+          <StepsResult r={outcome} />
+          {outcome.ok && <Hint>이제 이 서버는 에이전트로 배포해요. 서버의 SSH 포트를 Wharfline에 열어 둘 필요가 없어요.</Hint>}
         </ModalBody>
         <ModalFoot>
           {outcome.ok ? (
@@ -921,19 +800,29 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
       <ModalHead title="서버 추가" sub={sub} onClose={onClose} />
       <form id="hostForm" onSubmit={next} className="contents">
         <ModalBody>
-          <Field label="서버 상태">
+          <Field label="추가 방법">
             <div>
               <Seg
                 options={[
                   { value: "init", label: "새 서버 초기화" },
-                  { value: "ready", label: "이미 준비된 서버" },
+                  { value: "install", label: "설치 명령으로 추가" },
                 ]}
                 value={how}
                 onChange={setHow}
               />
             </div>
           </Field>
-          <ServerFields value={srv} onChange={setSrv} groups={[...new Set(inv.hosts.map((h) => h.group))]} />
+          {how === "init" ? (
+            <ServerFields value={srv} onChange={setSrv} groups={[...new Set(inv.hosts.map((h) => h.group))]} />
+          ) : (
+            <>
+              <Field label="이름" htmlFor="hName" hint="화면과 실행 기록에서 부르는 이름이에요.">
+                <Input id="hName" autoFocus placeholder="web-1" value={srv.name} onChange={(e) => setSrv({ ...srv, name: e.target.value })} />
+              </Field>
+              <GroupField value={srv.group} onChange={(g) => setSrv({ ...srv, group: g })} groups={[...new Set(inv.hosts.map((h) => h.group))]} />
+              <Hint>Wharfline이 서버에 SSH로 들어갈 수 없을 때 써요. 명령을 서버에서 직접 실행하면 에이전트가 연결돼요.</Hint>
+            </>
+          )}
           {how === "init" && (
             <>
               <Field label="서버의 기존 계정" htmlFor="hAccount" hint="서버를 받을 때 있던 계정이에요. root여도 돼요. 초기화에 한 번만 써요.">
@@ -942,67 +831,33 @@ export function NewHostModal({ inventory: inv, onClose }: { inventory: Inventory
               <Field label="비밀번호" htmlFor="hPassword" hint="저장하지 않아요. sudo가 비밀번호를 물으면 이 값을 써요.">
                 <Input id="hPassword" type="password" autoComplete="new-password" value={password} onChange={(e) => setPassword(e.target.value)} />
               </Field>
-              <Check
-                checked={fullSudo}
-                onChange={setFullSudo}
-                title={<>배포 사용자에게 sudo 전체 권한 주기</>}
-                desc="become: true를 쓰는 Git 플레이북을 돌릴 때만 켜요. Compose 배포에는 필요 없어요."
-              />
             </>
+          )}
+          <PolicyFields invUser={user} users={users} setUsers={setUsers} paths={paths} setPaths={setPaths} />
+          {how === "init" && (
+            <Check
+              checked={fullSudo}
+              onChange={setFullSudo}
+              title={
+                <>
+                  <span className="font-mono">{user}</span>에게 비밀번호 없는 sudo 주기
+                </>
+              }
+              desc="become: true를 쓰는 플레이북을 돌릴 때만 켜요. Compose 배포에는 필요 없어요. 나중에 서버 수정에서 바꿀 수 있어요."
+            />
           )}
         </ModalBody>
       </form>
       <ModalFoot>
         <Button onClick={onClose}>취소</Button>
         <Button variant="primary" type="submit" form="hostForm" disabled={busy}>
-          {busy ? "확인하는 중…" : "다음"}
+          {busy ? "확인하는 중…" : how === "install" ? "설치 명령 만들기" : "다음"}
         </Button>
       </ModalFoot>
     </>
   );
 }
 
-function CheckResult({ r, user }: { r: ConnCheck; user: string }) {
-  const row = (ok: boolean | null, text: ReactNode) => (
-    <li className="flex items-start gap-2">
-      <span className={ok === null ? "text-faint" : ok ? "text-ok" : "text-bad"}>{ok === null ? "–" : ok ? "✓" : "✕"}</span>
-      <span className="min-w-0">{text}</span>
-    </li>
-  );
-  return (
-    <ul className="m-0 p-0 pl-[32px] list-none flex flex-col gap-1.5 text-[12.5px]">
-      {row(r.reachable, r.reachable ? "서버에 연결했어요" : r.error)}
-      {r.fingerprint && (
-        <li className="flex flex-col gap-1">
-          <span className="text-muted">서버가 보낸 지문 ({r.type}) · 5번 결과와 같은지 보세요</span>
-          <span className="font-mono rounded-md bg-surface-2 border border-line px-2.5 py-1.5 break-all">{r.fingerprint}</span>
-        </li>
-      )}
-      {r.reachable && row(r.login, r.login ? <><span className="font-mono">{r.loginUser}</span>(으)로 로그인했어요</> : r.error)}
-      {r.reachable && !r.login && (
-        <li className="flex flex-col gap-1">
-          <span className="text-muted">
-            시도한 키 <span className="font-mono">{r.keyName}</span> · 서버에서 아래 명령의 결과에 이 지문이 있어야 해요
-          </span>
-          <span className="font-mono rounded-md bg-surface-2 border border-line px-2.5 py-1.5 break-all">{r.keyFingerprint}</span>
-          <CmdBlock cmd={`sudo ssh-keygen -lf /home/${user}/.ssh/authorized_keys`} label="서버 키 지문 명령" />
-          <span className="text-faint">없으면 위 2번 명령을 다시 실행하거나, 이전으로 가서 서버에 넣은 키를 골라요.</span>
-        </li>
-      )}
-      {r.login &&
-        row(
-          r.docker === "docker" ? true : r.docker ? false : null,
-          r.docker === "docker"
-            ? "docker를 쓸 수 있어요"
-            : r.docker === "noperm"
-              ? "docker는 있지만 이 사용자는 쓸 수 없어요. SSH 스크립트 배포라면 3번을 실행하고 다시 로그인해요."
-              : r.docker === "none"
-                ? "docker가 없어요. SSH 스크립트 배포라면 설치해 주세요."
-                : "docker 여부를 확인하지 못했어요",
-        )}
-    </ul>
-  );
-}
 
 export function HostKeyModal({ invId, ix, host, onClose }: { invId: string; ix: number; host: Host; onClose: () => void }) {
   const { withSudo, refresh, toast } = useApp();
@@ -1067,14 +922,14 @@ export function EditHostModal({ inventory: inv, ix, onClose }: { inventory: Inve
   };
   return (
     <>
-      <ModalHead title="서버 수정" sub={`${inv.name} · ${h.ip}:${h.port}`} onClose={onClose} />
+      <ModalHead title="서버 수정" sub={`${inv.name} · ${h.ip || "주소 대기"}`} onClose={onClose} />
       <form id="hostEdit" onSubmit={save} className="contents">
         <ModalBody>
           <Field label="이름" htmlFor="hName" hint="화면과 실행 기록에서 부르는 이름이에요. 비우면 IP로 해요.">
             <Input id="hName" autoFocus placeholder={h.ip} value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
           <GroupField value={group} onChange={setGroup} groups={groups} />
-          <Hint>주소, 포트, 사용자는 바꿀 수 없어요. 다른 서버가 되니 지우고 새로 추가해 주세요.</Hint>
+          {h.mode === "agent" && <AgentPanel inventory={inv} ix={ix} />}
         </ModalBody>
       </form>
       <ModalFoot>
@@ -1109,7 +964,7 @@ export function EditInventoryModal({ inventory: inv, onClose }: { inventory: Inv
         await api.put(`/inventory/${inv.id}`, { name: name.trim(), user: user.trim(), key });
         refresh();
         onClose();
-        toast(loginChange ? `서버 ${inv.hosts.length}대 모두 새 설정으로 접속돼서 바꿨어요` : "인벤토리를 고쳤어요");
+        toast(loginChange ? "서버마다 새 설정을 확인하고 바꿨어요" : "인벤토리를 고쳤어요");
       } catch (err) {
         if ((err as { sudoRequired?: boolean }).sudoRequired) throw err;
         toast(errMsg(err), "error");
@@ -1127,30 +982,34 @@ export function EditInventoryModal({ inventory: inv, onClose }: { inventory: Inv
           <Field label="이름" htmlFor="ieName" hint="바꾸면 이 인벤토리를 쓰는 배포 작업도 따라 바뀌어요.">
             <Input id="ieName" mono value={name} onChange={(e) => setName(e.target.value)} />
           </Field>
-          <Field label="배포 사용자" htmlFor="ieUser">
+          <Field label="실행 계정" htmlFor="ieUser" hint="작업이 따로 정하지 않으면 이 계정으로 실행해요. 서버마다 에이전트가 이 계정을 허용해야 해요.">
             <Input id="ieUser" mono value={user} onChange={(e) => setUser(e.target.value)} />
           </Field>
-          <Field
-            label="SSH 키"
-            htmlFor="ieKey"
-            right={
-              <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
-                키 추가
-              </Button>
-            }
-          >
-            <Select id="ieKey" value={key} onChange={(e) => setKey(e.target.value)}>
-              {!keys.some((k) => k.name === key) && <option value={key}>{key}</option>}
-              {keys.map((k) => (
-                <option key={k.id} value={k.name}>
-                  {k.name}
-                </option>
-              ))}
-            </Select>
-          </Field>
+          {(inv.key || inv.hosts.some((h) => h.mode === "ssh")) && (
+            <Field
+              label="SSH 키 (전환 전 서버용)"
+              htmlFor="ieKey"
+              hint="아직 SSH로 배포하는 서버를 에이전트로 바꿀 때 한 번 써요. 모두 바꾼 뒤에는 '없음'으로 두세요."
+              right={
+                <Button size="sm" variant="ghost" icon="plus" onClick={() => openModal((c) => <NewKeyModal onClose={c} onCreated={(k) => setKey(k.name)} />)}>
+                  키 추가
+                </Button>
+              }
+            >
+              <Select id="ieKey" value={key} onChange={(e) => setKey(e.target.value)}>
+                <option value="">없음</option>
+                {key && !keys.some((k) => k.name === key) && <option value={key}>{key}</option>}
+                {keys.map((k) => (
+                  <option key={k.id} value={k.name}>
+                    {k.name}
+                  </option>
+                ))}
+              </Select>
+            </Field>
+          )}
           {loginChange && inv.hosts.length > 0 && (
-            <Banner tone="info" icon="info" title="저장할 때 서버마다 접속해 봐요">
-              새 사용자·키로 {inv.hosts.length}대 모두 로그인되면 바꾸고, 하나라도 안 되면 그대로 둬요. 서버의 authorized_keys에 새 키를 먼저 넣어 주세요.
+            <Banner tone="info" icon="info" title="저장할 때 서버마다 확인해요">
+              에이전트 서버는 새 계정을 허용하는지, 아직 SSH로 배포하는 서버는 새 계정·키로 로그인되는지 확인하고, 하나라도 안 되면 그대로 둬요.
             </Banner>
           )}
         </ModalBody>

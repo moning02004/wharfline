@@ -105,8 +105,8 @@ async def signed_host(request: Request) -> tuple[int, bytes]:
         h = db.scalar(select(m.Host).where(m.Host.agent_id == aid)) if aid else None
         if not h or not h.agent_key:
             raise HTTPException(401, "unknown agent: enroll again")
-        why = agentproto.check_request(h.agent_key, request.method, request.url.path,
-                                       request.headers.get(agentproto.HDR_TIME, ""), request.headers.get(agentproto.HDR_SIG, ""), body)
+        why = agentproto.check_request(h.agent_key, request.method, request.url.path, request.headers.get(agentproto.HDR_TIME, ""),
+                                       request.headers.get(agentproto.HDR_NONCE, ""), request.headers.get(agentproto.HDR_SIG, ""), body)
         if why:
             raise HTTPException(401, why)
         return h.id, body

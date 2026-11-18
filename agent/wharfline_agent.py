@@ -125,8 +125,8 @@ def normalize(path: str) -> str:
 
 # ---------- crypto, the agent side of backend/app/agentproto.py ----------
 
-def canonical(method: str, path: str, ts: str, body: bytes) -> bytes:
-    return f"{method.upper()}\n{path}\n{ts}\n{hashlib.sha256(body).hexdigest()}".encode()
+def canonical(method: str, path: str, ts: str, nonce: str, body: bytes) -> bytes:
+    return f"{method.upper()}\n{path}\n{ts}\n{nonce}\n{hashlib.sha256(body).hexdigest()}".encode()
 
 
 def _box_key(shared: bytes, epk: bytes, rpk: bytes) -> bytes:
@@ -159,9 +159,9 @@ class Identity:
         self.server_box = d["serverBox"]
 
     def headers(self, method: str, path: str, body: bytes) -> dict[str, str]:
-        ts = str(int(time.time()))
-        return {"X-Wharfline-Agent": self.id, "X-Wharfline-Time": ts,
-                "X-Wharfline-Sig": b64(self.sign.sign(canonical(method, path, ts, body)))}
+        ts, nonce = str(int(time.time())), os.urandom(16).hex()
+        return {"X-Wharfline-Agent": self.id, "X-Wharfline-Time": ts, "X-Wharfline-Nonce": nonce,
+                "X-Wharfline-Sig": b64(self.sign.sign(canonical(method, path, ts, nonce, body)))}
 
     def open_task(self, sealed: str, sig: str) -> dict[str, Any]:
         try:
@@ -360,8 +360,14 @@ class Agent:
                 backoff = min(backoff * 2, 30)
                 continue
             if code == 401:
-                log(f"Wharfline refused this agent: {data}. Re-enroll with a new token (re-run the install command).")
-                await asyncio.sleep(30)
+                detail = str((data or {}).get("detail") if isinstance(data, dict) else data)
+                if "enroll" in detail:
+                    log(f"Wharfline doesn't know this agent ({detail}). Re-enroll: run the install command from Wharfline again.")
+                    await asyncio.sleep(30)
+                else:  # a clock off by minutes, or a request seen twice: try again
+                    log(f"Wharfline refused a poll: {detail}; retry in {backoff:.0f}s")
+                    await asyncio.sleep(backoff)
+                    backoff = min(backoff * 2, 30)
                 continue
             if code != 200 or not isinstance(data, dict):
                 log(f"poll answered {code}; retry in {backoff:.0f}s")
@@ -515,7 +521,7 @@ class Agent:
         if not re.match(r"^[A-Za-z0-9._/:@-]+$", image):
             return {"ok": False, "error": "이미지 이름이 이상해요"}
         rc = await self.stream(tid, ["docker", "pull", image])
-        if rc != 0:
+        if rc != 0 and not docker_cli("image", "inspect", image).strip():  # a local or mirrored image works too
             return {"ok": False, "error": f"docker pull {image} 실패"}
         cid = docker_cli("ps", "-q", "--filter", "label=wharfline.agent=1").split()
         if not cid:
@@ -670,12 +676,23 @@ def replace(old: str, image: str) -> None:
     env = [e for e in (cfg.get("Config") or {}).get("Env") or [] if e.split("=", 1)[0].startswith("WHARFLINE_")
            and not e.startswith("WHARFLINE_AGENT_VERSION=")]
     name = (cfg.get("Name") or "/wharfline-agent").lstrip("/")
-    subprocess.run(["docker", "rm", "-f", old], check=False)
     argv = ["docker", "run", "-d", "--name", name, "--restart", "unless-stopped", "--privileged", "--pid", "host", "--network", "host",
             "-v", "/var/run/docker.sock:/var/run/docker.sock", "-v", "wharfline-agent:/data", "--label", "wharfline.agent=1"]
     for e in env:
         argv += ["-e", e]
-    subprocess.run([*argv, image], check=True)
+    for _ in range(30):  # removal can still be finishing when rm returns: wait until the name is free
+        subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
+        if subprocess.run(["docker", "inspect", name], capture_output=True).returncode != 0:
+            break
+        time.sleep(1)
+    for attempt in range(5):
+        if subprocess.run([*argv, image]).returncode == 0:
+            return
+        time.sleep(2)
+        subprocess.run(["docker", "rm", "-f", name], check=False, capture_output=True)
+    # Never leave the server without an agent: bring the old image back up under the same name.
+    old_image = (cfg.get("Config") or {}).get("Image") or image
+    subprocess.run([*argv, old_image], check=False)
 
 
 if __name__ == "__main__":

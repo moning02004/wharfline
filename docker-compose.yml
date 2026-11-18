@@ -30,6 +30,9 @@ services:
       WHARFLINE_COOKIE_SECURE: ${WHARFLINE_COOKIE_SECURE:-0}
       # Gitea that checks .env uploads (POST /api/hooks/env). Empty: uploads are refused.
       WHARFLINE_GITEA_URL: ${WHARFLINE_GITEA_URL:-}
+      # Agents: the image servers run (`make agent` builds wharfline-agent:dev) and where they reach Wharfline.
+      WHARFLINE_AGENT_IMAGE: ${WHARFLINE_AGENT_IMAGE:-wharfline-agent:dev}
+      WHARFLINE_AGENT_URL: ${WHARFLINE_AGENT_URL:-}
     secrets: [master_keys]
     depends_on:
       db:
