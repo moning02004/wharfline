@@ -9,12 +9,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from sqlalchemy import select, union
 
-from . import authn, crypto
+from . import agentproto, authn, crypto
 from . import models as m
 from .db import SessionLocal, engine
 from .prestart import alembic_config
 from . import githooks, notify
-from .routers import admin, auth, deploy, envs, integrations, notifications, resources
+from .routers import admin, agent, auth, deploy, envs, integrations, notifications, resources
 from .runner import mark_interrupted
 
 log = logging.getLogger("wharfline")
@@ -40,6 +40,10 @@ def check_keys() -> None:
         notify_secret = notify.secret_envelope(db)
         if notify_secret:
             used.add(notify_secret.kek_id)
+        signing = agentproto.envelope(db)
+        if signing:
+            used.add(signing.kek_id)
+        used |= set(db.scalars(select(m.RunArtifact.kek_id).where(m.RunArtifact.kek_id.is_not(None))))
     missing = used - set(ring.ids)
     if missing:
         raise RuntimeError(f"encrypted data uses master key(s) {sorted(missing)} that are not loaded")
@@ -68,7 +72,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-for r in (auth, deploy, resources, envs, admin, integrations, notifications):
+for r in (auth, deploy, resources, envs, admin, integrations, notifications, agent):
     app.include_router(r.router)
 app.include_router(integrations.hooks)
 

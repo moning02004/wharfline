@@ -1,13 +1,15 @@
-"""The real deploy runner (app/executor.py): helpers, and an SSH script run against a local asyncssh server."""
+"""The real deploy runner (app/executor.py): helpers, and script runs through a fake agent on the task hub."""
 
 import asyncio
+import base64
 import os
 import stat
+import subprocess
 
-import asyncssh
 import pytest
 
-from app import executor, runner, sshkeys
+from app import executor, runner
+from app.agenthub import HUB
 
 
 def test_mask_hides_every_secret():
@@ -34,12 +36,6 @@ def test_inventory_groups_hosts_with_safe_names():
     t = executor.Target(1, "web 1", "10.0.0.5", 2222, "deploy", "web", None)
     inv = executor.inventory([t])
     assert inv == {"all": {"children": {"web": {"hosts": {"web-1": {"ansible_host": "10.0.0.5", "ansible_port": 2222, "ansible_user": "deploy"}}}}}}
-
-
-def test_known_hosts_line_uses_brackets_for_other_ports():
-    key = asyncssh.generate_private_key("ssh-ed25519")
-    assert executor.known_hosts_line("10.0.0.5", 22, key).startswith("10.0.0.5 ssh-ed25519 ")
-    assert executor.known_hosts_line("10.0.0.5", 2222, key).startswith("[10.0.0.5]:2222 ssh-ed25519 ")
 
 
 ENV_CASES = [["A", "plain-v1.2"], ["B", "has space"], ["C", 'q"uote'], ["D", "pa$word"], ["E", "it's $x"], ["F", "a #b"], ["G", ""]]
@@ -77,7 +73,7 @@ def test_step_names_follow_the_job():
 # ---------- playbook variables ----------
 
 def _play_plan(**kw) -> executor.Plan:
-    return executor.Plan(no=990100, kind="playbook", job_name="t", steps=list(executor.PLAYBOOK_STEPS), key_name="deploy-key",
+    return executor.Plan(no=990100, kind="playbook", job_name="t", steps=list(executor.PLAYBOOK_STEPS), run_user="deploy",
                          extra_vars={"app_name": "shop", "registry_password": "reg-token-1"}, **kw)
 
 
@@ -111,16 +107,10 @@ def test_shown_vars_masks_secrets():
         assert secret not in shown
 
 
-def test_ssh_args_keep_the_host_key_pinned():
-    assert executor.ssh_args("/tmp/r/known_hosts") == (
-        "-o UserKnownHostsFile=/tmp/r/known_hosts -o StrictHostKeyChecking=yes -o IdentitiesOnly=yes -o BatchMode=yes "
-        "-o ControlMaster=auto -o ControlPersist=60s")
-
-
-def test_access_lines_name_keys_not_secrets():
-    assert executor.access_lines(_play_plan()) == [("", "접속: SSH 키 deploy-key")]
+def test_access_lines_name_the_account_not_secrets():
+    assert executor.access_lines(_play_plan()) == [("", "실행: 각 서버의 에이전트 · 서버 계정 deploy")]
     lines = executor.access_lines(_play_plan(play_vars={"region": "kr"}, secret_vars={"db_pass": "s3cret-db"}))
-    assert lines == [("", "접속: SSH 키 deploy-key"), ("", "플레이북 변수: 일반 1개 · 비밀 1개")]
+    assert lines[1] == ("", "플레이북 변수: 일반 1개 · 비밀 1개")
 
 
 # ---------- compose file from a repo ----------
@@ -184,158 +174,132 @@ def test_refresh_compose_stops_when_the_repo_cannot_be_read(monkeypatch):
     assert plan.files == [] and any(c == "r" and "로그인" in t for c, t in out.seen)
 
 
-# ---------- an SSH script run against a real (local) SSH server ----------
+# ---------- script runs through a fake agent ----------
+# The fake agent takes tasks off the hub the way routers/agent.py hands them out, writes files under the test's
+# folder and runs commands with sh, so the executor ↔ agent protocol is exercised without a server.
 
-def _server(authorized_line: str, commands: list[str]):
-    host_key = asyncssh.generate_private_key("ssh-ed25519")
+def _fake_agent(host_id: int, ran: list[str], deny_under: str | None = None):
+    async def serve():
+        while True:
+            task = await HUB.next_task(host_id, 5)
+            if task is None:
+                continue
+            op = task.op
+            if op["op"] == "write":
+                result = {"ok": True}
+                for f in op["files"]:
+                    if deny_under and f["path"].startswith(deny_under):
+                        result = {"ok": False, "error": f"{f['path']} 은(는) 이 서버의 에이전트가 허용한 경로 밖이에요"}
+                        break
+                    os.makedirs(os.path.dirname(f["path"]), exist_ok=True)
+                    with open(f["path"], "wb") as fh:
+                        fh.write(base64.b64decode(f["content"]))
+                    os.chmod(f["path"], f["mode"])
+            elif op["op"] == "exec":
+                ran.append(op.get("stdin") or op["cmd"])
+                r = subprocess.run(["sh", "-c", "sh -s" if op.get("stdin") else op["cmd"]], input=op.get("stdin") or "",
+                                   capture_output=True, text=True)
+                for line in (r.stdout + r.stderr).splitlines():
+                    HUB.line(task.id, line)
+                result = {"ok": r.returncode == 0, "rc": r.returncode}
+            else:
+                result = {"ok": False, "error": "unknown"}
+            HUB.finish(task.id, result)
+    return serve
 
-    class Server(asyncssh.SSHServer):
-        def begin_auth(self, username):
-            return True
 
-        def public_key_auth_supported(self):
-            return True
-
-        def validate_public_key(self, username, key):
-            return username == "deploy" and key.export_public_key("openssh").split()[1] == authorized_line.split()[1].encode()
-
-    async def handle(process):
-        body = await process.stdin.read()
-        commands.append(body)
-        if "exit 1" in body:
-            process.stdout.write("boom\n")
-            process.exit(1)
-            return
-        process.stdout.write("ran\n")
-        process.exit(0)
-
-    async def start():
-        server = await asyncssh.create_server(Server, "127.0.0.1", 0, server_host_keys=[host_key], process_factory=handle,
-                                              sftp_factory=True)
-        return server, server.sockets[0].getsockname()[1]
-
-    return start, host_key
-
-
-def _plan(port: int, fingerprint: str, key: str, svc: str, script: list[dict]) -> executor.Plan:
+def _plan(svc: str, script: list[dict], host_id: int = 7001) -> executor.Plan:
     job = {"script": script, "files": [{"path": "compose.yml"}]}
     return executor.Plan(
         no=990001, kind="script", job_name="t", steps=executor.script_steps(job, True, False),
-        targets=[executor.Target(1, "web-1", "127.0.0.1", port, "deploy", "web", fingerprint)],
-        ssh_key=key, key_name="k", script=script, files=[{"path": "compose.yml", "content": "services: {}\n"}],
+        targets=[executor.Target(host_id, "web-1", "10.0.0.5", 22, "deploy", "web", None)],
+        run_user="deploy", script=script, files=[{"path": "compose.yml", "content": "services: {}\n"}],
         service_path=svc, variables={"SERVICE_PATH": svc}, env_vars=[["DB_PASSWORD", "s3cret-value"]],
         env_path=f"{svc}/.env", env_label="t v1", done_label="t", secrets=["s3cret-value"],
     )
 
 
-@pytest.mark.skipif(os.name != "posix", reason="the test SFTP server writes POSIX paths")
-def test_script_run_uploads_files_and_runs_each_step(tmp_path):
-    key = sshkeys.generate("t@wharfline")
-    commands: list[str] = []
-    start, host_key = _server(key.public_line, commands)
-    svc = str(tmp_path / "svc")
-    script = [{"name": "받기", "run": "docker compose pull"}, {"name": "올리기", "run": "docker compose up -d"}]
-
+def _run(plan: executor.Plan, ran: list[str], deny_under: str | None = None, online: bool = True):
     async def go():
-        server, port = await start()
-        plan = _plan(port, host_key.get_fingerprint("sha256"), key.private_openssh, svc, script)
         runner.live[plan.no] = {"events": [], "done": False, "cancelled": False}
+        agent = asyncio.get_running_loop().create_task(_fake_agent(plan.targets[0].id, ran, deny_under)()) if online else None
         try:
-            return plan, await executor._run_script(plan, executor.Out(plan))
+            return await executor._run_script(plan, executor.Out(plan))
         finally:
-            server.close()
-
-    plan, ok = asyncio.run(go())
+            if agent:
+                agent.cancel()
+    ok = asyncio.run(go())
     events = runner.live.pop(plan.no)["events"]
     executor._release(plan)
+    HUB.seen.clear()
+    HUB.queues.clear()
+    return ok, events
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the fake agent runs sh")
+def test_script_run_writes_files_and_runs_each_step(tmp_path):
+    svc = str(tmp_path / "svc")
+    ran: list[str] = []
+    script = [{"name": "받기", "run": "echo pulled"}, {"name": "올리기", "run": "echo up"}]
+    plan = _plan(svc, script)
+    ok, events = _run(plan, ran)
     texts = [e.get("text", "") for e in events]
     assert ok, texts
     assert (tmp_path / "svc" / "compose.yml").read_text() == "services: {}\n"
     env = tmp_path / "svc" / ".env"
     assert env.read_text() == "DB_PASSWORD=s3cret-value\n"
     assert stat.S_IMODE(env.stat().st_mode) == 0o600
-    assert len(commands) == 2 and "docker compose pull" in commands[0] and f"export SERVICE_PATH={svc}" in commands[0]
+    assert len(ran) == 2 and "echo pulled" in ran[0] and f"export SERVICE_PATH={svc}" in ran[0]
+    assert any("[web-1] pulled" in t for t in texts)
     assert any("✔ 배포 성공" in t for t in texts)
     assert not any("s3cret-value" in t for t in texts)
     steps = [e for e in events if e["t"] == "step" and e["state"] != "run"]
     assert [e["state"] for e in steps] == ["ok"] * len(plan.steps[1:])
 
 
-@pytest.mark.skipif(os.name != "posix", reason="the test SFTP server writes POSIX paths")
+@pytest.mark.skipif(os.name != "posix", reason="the fake agent runs sh")
 def test_script_run_stops_a_server_after_a_failed_step(tmp_path):
-    key = sshkeys.generate("t@wharfline")
-    commands: list[str] = []
-    start, host_key = _server(key.public_line, commands)
-    script = [{"name": "실패", "run": "exit 1"}, {"name": "다음", "run": "echo never"}]
-
-    async def go():
-        server, port = await start()
-        plan = _plan(port, host_key.get_fingerprint("sha256"), key.private_openssh, str(tmp_path / "svc"), script)
-        runner.live[plan.no] = {"events": [], "done": False, "cancelled": False}
-        try:
-            return plan, await executor._run_script(plan, executor.Out(plan))
-        finally:
-            server.close()
-
-    plan, ok = asyncio.run(go())
-    events = runner.live.pop(plan.no)["events"]
-    executor._release(plan)
+    ran: list[str] = []
+    plan = _plan(str(tmp_path / "svc"), [{"name": "실패", "run": "exit 1"}, {"name": "다음", "run": "echo never"}])
+    ok, events = _run(plan, ran)
     texts = [e.get("text", "") for e in events]
     assert not ok
-    assert len(commands) == 1  # the second step never ran
+    assert len(ran) == 1  # the second step never ran
     assert any("failed: [web-1] exit 1" in t for t in texts)
     assert any("skipping: [web-1]" in t for t in texts)
     assert any("✘ 배포 실패" in t for t in texts)
 
 
-@pytest.mark.skipif(os.name != "posix" or (hasattr(os, "geteuid") and os.geteuid() == 0), reason="needs POSIX permissions (root ignores them)")
-def test_a_folder_the_user_cannot_write_names_the_path(tmp_path):
-    key = sshkeys.generate("t@wharfline")
-    start, host_key = _server(key.public_line, [])
-    locked = tmp_path / "locked"
-    locked.mkdir(mode=0o500)  # exists, not writable: like a service folder owned by another user
-
-    async def go():
-        server, port = await start()
-        plan = _plan(port, host_key.get_fingerprint("sha256"), key.private_openssh, str(locked / "svc"), [{"name": "x", "run": "true"}])
-        runner.live[plan.no] = {"events": [], "done": False, "cancelled": False}
-        try:
-            return plan, await executor._run_script(plan, executor.Out(plan))
-        finally:
-            server.close()
-
-    try:
-        plan, ok = asyncio.run(go())
-    finally:
-        locked.chmod(0o700)
-    texts = [e.get("text", "") for e in runner.live.pop(plan.no)["events"]]
-    executor._release(plan)
+def test_a_path_the_agent_refuses_names_the_reason(tmp_path):
+    plan = _plan(str(tmp_path / "svc"), [{"name": "x", "run": "true"}])
+    ok, events = _run(plan, [], deny_under=str(tmp_path))
+    texts = [e.get("text", "") for e in events]
     assert not ok
     failed = next(t for t in texts if t.startswith("failed: [web-1]"))
-    assert f"{locked}/svc 폴더 만들기 실패" in failed and "deploy 사용자에게" in failed and "chown" in failed, failed
+    assert "허용한 경로 밖" in failed, failed
 
 
-def test_a_changed_host_key_skips_the_server(tmp_path, monkeypatch):
-    key = sshkeys.generate("t@wharfline")
-    start, _ = _server(key.public_line, [])
-    saved: list[dict] = []
-    monkeypatch.setattr(executor, "_save_host", lambda host_id, **v: saved.append(v))
-
-    async def go():
-        server, port = await start()
-        plan = _plan(port, "SHA256:" + "A" * 43, key.private_openssh, str(tmp_path / "svc"), [{"name": "x", "run": "true"}])
-        runner.live[plan.no] = {"events": [], "done": False, "cancelled": False}
-        try:
-            return plan, await executor._run_script(plan, executor.Out(plan))
-        finally:
-            server.close()
-
-    plan, ok = asyncio.run(go())
-    texts = [e.get("text", "") for e in runner.live.pop(plan.no)["events"]]
-    executor._release(plan)
+def test_an_offline_agent_is_unreachable(tmp_path, monkeypatch):
+    monkeypatch.setattr(executor, "AGENT_WAIT", 0.2)
+    plan = _plan(str(tmp_path / "svc"), [{"name": "x", "run": "true"}], host_id=7002)
+    ok, events = _run(plan, [], online=False)
+    texts = [e.get("text", "") for e in events]
     assert not ok
-    assert saved == [{"host_key": "changed"}]
-    assert any("호스트 키가 바뀌었어요" in t for t in texts)
+    assert any(t.startswith("unreachable: [web-1]") and "wharfline-agent" in t for t in texts)
+
+
+def test_apply_pin_points_tags_at_the_digest():
+    d = "sha256:" + "a" * 64
+    plan = _plan("/srv/x", [])
+    plan.variables.update(IMAGE="ghcr.io/a/api", IMAGE_TAG="v1", IMAGE_REF="ghcr.io/a/api:v1", WEB_TAG="v2", APP_VERSION="v2")
+    executor.apply_pin(plan, {"ref": "ghcr.io/a/api", "tag": "v1", "role": "main"}, d)
+    executor.apply_pin(plan, {"ref": "ghcr.io/a/web", "tag": "v2", "role": "extra", "var": "WEB", "tagVar": "APP_VERSION"}, d)
+    v = plan.variables
+    assert v["IMAGE_REF"] == f"ghcr.io/a/api:v1@{d}" and v["IMAGE_TAG"] == f"v1@{d}" and v["IMAGE_VERSION"] == "v1"
+    assert v["WEB_TAG"] == f"v2@{d}" and v["APP_VERSION"] == f"v2@{d}" and v["WEB_DIGEST"] == d
+    pb = _play_plan()
+    executor.apply_pin(pb, {"ref": "ghcr.io/a/api", "tag": "v1", "role": "main"}, d)
+    assert pb.extra_vars["image_ref"] == f"ghcr.io/a/api:v1@{d}" and pb.extra_vars["image_digest"] == d
 
 
 @pytest.mark.parametrize("url,expected", [

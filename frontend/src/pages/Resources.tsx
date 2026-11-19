@@ -4,6 +4,7 @@ import { api, errMsg } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import type { Build, GitProvider, Image, ImageUsage, Inventory as Inv, Key, Registry, Repo } from "../lib/types";
 import { EditHostModal, EditInventoryModal, HostKeyModal, MoveHostModal, NewHostModal, NewImageModal, NewInventoryModal, NewKeyModal, NewRegistryModal, PubKeyModal, copyText } from "../modals/ResourceModals";
+import { AgentSettingsModal, AgentState, AgentTokenModal, ConvertHostModal } from "../modals/AgentModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
 import { Banner, Button, Card, CardHeader, cx, Chip, Dot, ErrorText, Field, Input, KV, Loading, PageHeader, Seg, Select, TableWrap, Textarea } from "../components/ui";
@@ -804,8 +805,8 @@ export function Inventory() {
           })
         }
       >
-        <span className="font-mono font-medium">{h.name}</span> ({h.ip})을(를) {inv.name}에서 지워요. 이 서버의 <span className="font-mono">{h.group}</span> 그룹에 배포하는 작업은 이제 이 서버에 배포하지
-        않아요.
+        <span className="font-mono font-medium">{h.name}</span> ({h.ip || "주소 대기"})을(를) {inv.name}에서 지워요. 이 서버의 <span className="font-mono">{h.group}</span> 그룹에 배포하는 작업은 이제 이 서버에 배포하지
+        않아요. {h.mode === "agent" && <>서버의 에이전트는 연결을 거부당해요. 서버에서 <span className="font-mono">docker rm -f wharfline-agent</span>로 지워 주세요.</>}
       </ConfirmDelete>
     ));
   };
@@ -818,6 +819,9 @@ export function Inventory() {
       >
         {manage && (
           <>
+            <Button icon="server" onClick={() => openModal((c) => <AgentSettingsModal onClose={c} />)}>
+              에이전트 설정
+            </Button>
             <Button variant="primary" icon="plus" onClick={() => openModal((c) => <NewInventoryModal onClose={c} />)}>
               인벤토리 추가
             </Button>
@@ -869,11 +873,17 @@ export function Inventory() {
               title={
                 <span className="flex items-center gap-2 flex-wrap">
                   {inv.name}
-                  <span className="inline-flex items-center gap-1 text-xs text-muted font-mono font-normal" title="SSH 키">
-                    <Icon name="key" className="size-[13px]" />
-                    {inv.key}
+                  <span className="inline-flex items-center gap-1 text-xs text-muted font-mono font-normal" title="실행 계정">
+                    <Icon name="users" className="size-[13px]" />
+                    {inv.user}
                   </span>
-                  {sharedWith.length > 0 && <SharedKeyChip others={sharedWith} />}
+                  {inv.key && (
+                    <span className="inline-flex items-center gap-1 text-xs text-muted font-mono font-normal" title="SSH 키 (전환 전 서버용)">
+                      <Icon name="key" className="size-[13px]" />
+                      {inv.key}
+                    </span>
+                  )}
+                  {inv.key && sharedWith.length > 0 && <SharedKeyChip others={sharedWith} />}
                 </span>
               }
             >
@@ -902,8 +912,7 @@ export function Inventory() {
                     <th>그룹</th>
                     <th>이름</th>
                     <th>주소</th>
-                    <th>SSH 사용자</th>
-                    <th>호스트 키</th>
+                    <th>에이전트</th>
                     <th>상태</th>
                     <th />
                   </tr>
@@ -937,15 +946,24 @@ export function Inventory() {
                         </Chip>
                       </td>
                       <td className="font-medium">{h.name}</td>
-                      <td className="font-mono">
-                        {h.ip}:{h.port}
+                      <td className="font-mono">{h.ip || <span className="text-faint">-</span>}</td>
+                      <td className="font-mono text-[12.5px]">{h.mode === "agent" ? h.agent?.version ?? "-" : <span className="text-faint">-</span>}</td>
+                      <td>
+                        <AgentState h={h} />
                       </td>
-                      <td className="font-mono">{h.user}</td>
-                      <td>{h.hostKey === "ok" ? <Dot tone="ok">지문 일치</Dot> : <Dot tone="bad">지문 변경됨</Dot>}</td>
-                      <td>{h.status === "on" ? <Dot tone="ok">응답</Dot> : <Dot>응답 없음</Dot>}</td>
                       <td className="text-right">
                         <div className="inline-flex items-center gap-1.5">
-                          {h.hostKey === "changed" && manage && (
+                          {h.mode === "ssh" && manage && (
+                            <Button size="sm" variant="primary" onClick={() => openModal((c) => <ConvertHostModal inventory={inv} ix={ix} onClose={c} />)}>
+                              에이전트로 전환
+                            </Button>
+                          )}
+                          {h.mode === "pending" && manage && (
+                            <Button size="sm" onClick={() => openModal((c) => <AgentTokenModal inventory={inv} ix={ix} onClose={c} />)}>
+                              설치 명령
+                            </Button>
+                          )}
+                          {h.mode === "ssh" && h.hostKey === "changed" && manage && (
                             <Button size="sm" variant="danger" onClick={() => openModal((c) => <HostKeyModal invId={inv.id} ix={ix} host={h} onClose={c} />)}>
                               지문 확인
                             </Button>
@@ -955,6 +973,7 @@ export function Inventory() {
                               label={`${h.name} 서버 메뉴`}
                               items={[
                                 { label: "수정", icon: "edit", onClick: () => openModal((c) => <EditHostModal inventory={inv} ix={ix} onClose={c} />) },
+                                { label: "설치 명령", icon: "key" as const, onClick: () => openModal((c) => <AgentTokenModal inventory={inv} ix={ix} onClose={c} />) },
                                 ...(data.length > 1
                                   ? [{ label: "다른 인벤토리로 옮기기", icon: "arrow" as const, onClick: () => askMove(inv, ix) }]
                                   : []),

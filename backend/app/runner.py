@@ -432,6 +432,7 @@ def launch(db: Session, rec: m.Run, job: dict, groups: list[str], requested_tag:
     else:
         head = real_head(db, job, groups, rec, requested_tag, note)
         plan = executor.build_plan(db, job, groups, rec.no, rec.tag, head)
+        plan.trigger = rec.trigger
         step_names = plan.steps
     rec.status, rec.time, rec.steps, rec.started_at = "run", "방금", step_names, time.time()
     mark_job(db, job["id"], "run")
@@ -511,10 +512,30 @@ async def _auto_after(job_id: str) -> None:
         if not [h for h in s.target_hosts(s.inv_of(db, j), j["targets"]) if not s.host_skip(h)]:
             return
         main = p["tag"] or (job.tag_now if job.tag_now not in ("", "-") else job.default_tag)
+        missing = await _missing_at_registry(db, j, p["tag"], p["extra"])
+        if missing:
+            s.log_act(db, "자동 배포 건너뜀", f"{job.name} · 레지스트리에 없는 태그: {', '.join(missing)}", "warn")
+            db.commit()
+            return
         if job.protected:
             request_approval(db, j, j["targets"], main, "새 이미지 push", None, extra_tags=p["extra"])
         else:
             start_run(db, j, j["targets"], main, "새 이미지 push", extra_tags=p["extra"])
+
+
+async def _missing_at_registry(db: Session, job: dict, main_tag: str | None, extra: dict[str, str]) -> list[str]:
+    """A webhook is a hint: the pushed tags must exist at the registry before an auto-deploy starts."""
+    from . import registryclient
+    wanted = ([(job["image"], main_tag)] if main_tag and job.get("image") else []) + [
+        (x["ref"], extra[x["var"]]) for x in job.get("extraImages") or [] if x.get("var") and x["var"] in extra]
+    regs = list(db.scalars(select(m.Registry).order_by(m.Registry.ord)))
+    missing = []
+    for ref, tag in wanted:
+        reg = s.registry_for(db, ref, regs)
+        user, pw = (reg.user, reg.get_secret() or "") if reg and reg.has_secret else ("", "")
+        if not await asyncio.to_thread(registryclient.resolve, ref, tag, user, pw):
+            missing.append(f"{ref}:{tag}")
+    return missing
 
 
 def start_run(db: Session, job: dict, groups: list[str], requested_tag: str, trigger: str, requested_by: str | None = None,

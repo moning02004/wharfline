@@ -9,48 +9,55 @@ from app import serverinit
 from tests.conftest import OWNER
 
 FP = "SHA256:pX0c7Lq2vRz9Hn4Wb1Ke8YsT3mJ6fDaUgQ5iEoN"
-KEY = 'from="10.0.0.1",no-port-forwarding ssh-ed25519 AAAA deploy'
+URL = "https://deploy.example.com"
+IMAGE = "ghcr.io/moning02004/wharfline-agent:v1"
 
 
 def test_script_quotes_values_and_can_run_twice():
-    text = serverinit.init_script("deploy", KEY, False)
-    assert text.startswith("set -eu\n")
-    assert "U=deploy\n" in text
-    assert "KEY='from=\"10.0.0.1\",no-port-forwarding ssh-ed25519 AAAA deploy'\n" in text
-    assert 'id -u "$U" >/dev/null 2>&1 || useradd' in text  # an existing user is left alone
-    assert 'grep -qxF -- "$KEY"' in text  # the key is added once
+    text = serverinit.init_script("deploy,ubuntu", "/srv,/home/ubuntu/apps", False, URL, IMAGE)
+    assert text.startswith("set -eu\nIFS= read -r TOKEN\nexec </dev/null\n")  # the token comes on stdin, then stdin closes
+    assert "USERS='deploy ubuntu'\n" in text and "FIRST=deploy\n" in text
+    assert 'id -u "$U" >/dev/null 2>&1 || useradd' in text  # an existing account is left alone
     assert "if ! command -v docker" in text  # Docker is installed only when missing
     assert "sudoers" not in text
+    assert "docker rm -f wharfline-agent" in text and "--restart unless-stopped" in text
+    assert "WHARFLINE_ALLOWED_USERS=deploy,ubuntu" in text and "WHARFLINE_ALLOWED_PATHS=/srv,/home/ubuntu/apps" in text
+    assert "cat > /data/enroll.token" in text and "TOKEN=" not in text  # never in the environment or a command line
+    assert "authorized_keys" not in text  # Wharfline keeps no SSH key
 
 
 def test_full_sudo_is_a_choice():
     names = serverinit.step_names(True)
-    assert names[-1] == "sudo 권한"
-    text = serverinit.init_script("deploy", KEY, True)
+    assert names[-2:] == ["sudo 권한", "에이전트"]
+    text = serverinit.init_script("deploy", "/srv", True, URL, IMAGE)
     assert "NOPASSWD:ALL" in text and 'visudo -cf "$F"' in text
 
 
-def test_the_password_never_travels_with_the_script():
+def test_the_password_and_token_never_travel_with_the_script():
     cmd = serverinit.remote_command("echo hi\n", as_root=False)
     assert cmd.startswith("sudo -S -p '' sh -c ")
     encoded = re.search(r"echo (\S+) \| base64 -d", cmd).group(1)
     assert base64.b64decode(encoded).decode() == "echo hi\n"
-    assert 'sh "$f" </dev/null' in cmd  # nothing the script starts can read stdin
     assert serverinit.remote_command("echo hi\n", as_root=True).startswith("sh -c ")
 
 
-def test_read_output_marks_the_failed_step_and_masks_the_password():
+def test_read_output_marks_the_failed_step_and_masks_secrets():
     names = serverinit.step_names(False)
-    out = f"{serverinit.MARK}배포 사용자\n{serverinit.MARK}공개 키\n{serverinit.MARK}Docker\nboom hunter2 boom\n"
-    r = serverinit.read_output(out, 1, names, "hunter2")
-    assert [x["status"] for x in r["steps"]] == ["ok", "ok", "fail", "skip", "skip"]
-    assert r["ok"] is False and r["log"] == [f"boom {serverinit.MASK} boom"]
+    out = f"{serverinit.MARK}실행 계정\n{serverinit.MARK}Docker\nboom hunter2 wfe_tok boom\n"
+    r = serverinit.read_output(out, 1, names, ["hunter2", "wfe_tok"])
+    assert [x["status"] for x in r["steps"]] == ["ok", "fail", "skip", "skip", "skip"]
+    assert r["ok"] is False and r["log"] == [f"boom {serverinit.MASK} {serverinit.MASK} boom"]
 
 
 def test_read_output_all_done():
     names = serverinit.step_names(False)
-    r = serverinit.read_output("".join(f"{serverinit.MARK}{n}\n" for n in names), 0, names, "pw")
+    r = serverinit.read_output("".join(f"{serverinit.MARK}{n}\n" for n in names), 0, names, ["pw"])
     assert r["ok"] is True and all(x["status"] == "ok" for x in r["steps"])
+
+
+def test_convert_script_needs_no_root():
+    text = serverinit.convert_script("deploy", "/srv", URL, IMAGE)
+    assert "sudo" not in text and "useradd" not in text and "docker run -d --name wharfline-agent" in text
 
 
 def _inventory(client, name: str) -> dict:
@@ -66,7 +73,8 @@ def test_init_endpoint_adds_a_pinned_server_and_keeps_no_password(client, login)
     inv = _inventory(client, "staging")
     r = client.post(f"/api/inventory/{inv['id']}/hosts/init", json=_body(name="init-1", group="web"))
     assert r.status_code == 200, r.text
-    assert r.json()["ok"] is True and r.json()["steps"][-1] == {"name": "접속 확인", "status": "ok"}
+    assert r.json()["ok"] is True and r.json()["steps"][-1] == {"name": "에이전트 연결", "status": "ok"}
+    assert r.json()["host"]["mode"] == "agent" and r.json()["host"]["agent"]["policy"]["users"] == [inv["user"]]
     assert "first-pw-1" not in r.text
 
     host = next(h for h in _inventory(client, "staging")["hosts"] if h["name"] == "init-1")

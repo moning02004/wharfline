@@ -1,6 +1,6 @@
 # Wharfline
 
-셀프호스팅 배포 콘솔 프로토타입. React + Tailwind 프론트엔드, FastAPI 백엔드, PostgreSQL(Alembic 마이그레이션)로 구성돼요. 환경 변수, SSH 비공개 키, 액세스·레지스트리 토큰은 봉투 암호화(AES-256-GCM)로 저장하고, 마스터 키는 DB 밖의 로컬 키 파일(Docker secret)에 둬요.
+셀프호스팅 배포 콘솔 프로토타입. React + Tailwind 프론트엔드, FastAPI 백엔드, PostgreSQL(Alembic 마이그레이션)로 구성돼요. 서버마다 **Wharfline 에이전트**(Docker 컨테이너)가 Wharfline에 접속해서 배포하므로, Wharfline은 서버의 SSH 키를 갖지 않아요. 환경 변수, 액세스·레지스트리 토큰은 봉투 암호화(AES-256-GCM)로 저장하고, 마스터 키는 DB 밖의 로컬 키 파일(Docker secret)에 둬요.
 
 배포 작업은 **배포 작업 → 새 배포 작업** 모달에서 단계별(기본 정보 → 대상 → 방식 → .env → 안전장치 → 확인)로 만들어요. 제목 옆 ⓘ를 누르면 그 단계에서 무엇을 어디서 발급받는지 매뉴얼이 보여요.
 
@@ -10,11 +10,16 @@ backend/
     authn.py          비밀번호(bcrypt), TOTP, 세션 토큰, CSRF 미들웨어
     crypto.py         봉투 암호화 (마스터 키 파일)
     keys.py           마스터 키 상태 확인, 검증, 교체
-    sshkeys.py        SSH 키 생성·가져오기, 지문
+    sshkeys.py        SSH 키 생성·가져오기, 지문 (Git 저장소, 전환 전 서버용)
+    agentproto.py     에이전트와 서로 믿는 법: 서명, 봉인, 등록 토큰
+    agenthub.py       서버마다의 작업 큐 (에이전트가 long-poll로 가져가요)
+    agentinstall.py   서버에 에이전트를 띄우는 명령 (서버 초기화, install.sh)
+    registryclient.py 레지스트리에 태그의 다이제스트를 물어봐요
   migrations/         Alembic 마이그레이션
   tests/              pytest (암호화, SSH 키, TOTP, 로그인·권한·배포·웹훅 흐름)
   alembic.ini
 frontend/             Vite + React + TypeScript + Tailwind v4, nginx로 서빙
+agent/                Wharfline 에이전트 이미지 (서버마다 하나, `make agent`로 빌드)
 docker-compose.yml       db + backend + frontend
 docker-compose.dev.yml   로컬 개발용: DB 포트를 localhost:55432에 열어요
 Makefile                 자주 쓰는 명령 (`make`로 목록 보기)
@@ -132,65 +137,67 @@ Gitea(Forgejo), GitHub, GitLab의 CI가 이미지를 빌드하는 동안 배포 
 - 실제 Git 호스트 없이 확인하려면 Git 연동 카드에서 호스트를 고른 뒤 이미지 표의 **시험 빌드** / **실패 시험**을 누르면 그 호스트 형식의 이벤트가 같은 처리 경로로 흘러가요.
 - 웹훅 비밀값도 `make key-status` / `key-verify` / `key-rotate` 대상이에요.
 
+## 서버와 에이전트
+
+서버마다 에이전트 컨테이너 하나가 Wharfline에 **밖으로** 접속해(long-poll) 할 일을 받아 가요. Wharfline은 서버의 SSH 키를 갖지 않고, 서버는 Wharfline으로 나가는 HTTP(S)만 있으면 돼요. 배포 작업을 몇 개 추가하든 에이전트는 서버당 하나예요.
+
+- **서버 추가 (인벤토리 → 서버 추가)**
+  - **새 서버 초기화**: 서버에 원래 있던 계정과 비밀번호로 SSH에 한 번 들어가서(비밀번호는 저장하지 않아요) 실행 계정을 만들고, Docker와 docker rollout을 설치하고, 허용 경로를 만들고, 에이전트를 띄워요. 호스트 키 지문을 확인한 뒤에만 비밀번호를 보내요.
+  - **설치 명령으로 추가**: Wharfline이 SSH로 들어갈 수 없는 서버. 화면에 나온 한 줄을 서버에서 root로 실행해요: `curl -fsSL <Wharfline>/api/agent/install.sh | sudo sh -s -- <토큰> <계정> <경로>`.
+  - **에이전트로 전환**: 예전처럼 SSH 키로 배포하던 서버는 목록에 "SSH · 전환 필요"로 보여요. 버튼을 누르면 인벤토리의 키로 마지막으로 한 번 접속해 에이전트를 띄워요. 모두 바꾼 뒤 인벤토리에서 키를 빼고 서버의 authorized_keys에서도 지워요.
+- **등록**: 설치 명령에 든 토큰은 15분 동안 한 번만 쓸 수 있고, Wharfline에는 해시만 남아요. 토큰은 명령줄이나 컨테이너 환경 변수에 남지 않게 에이전트 볼륨의 0600 파일로 넘기고, 등록하자마자 지워요.
+- **실행 계정과 허용 경로는 서버에서 정해요**: 설치할 때 `WHARFLINE_ALLOWED_USERS`(예: `deploy,ubuntu`, root는 안 돼요)와 `WHARFLINE_ALLOWED_PATHS`(예: `/srv,/home/ubuntu/apps`)가 에이전트에 들어가요. 에이전트는 그 밖의 계정으로 실행하거나 그 밖의 경로에 파일을 쓰는 작업을 거부해요. 바꾸려면 서버 수정의 '설치 명령 다시 받기'로 서버에서 다시 실행해요. 홈 폴더 아래 허용 경로는 그 계정 소유로 만들어요.
+- **작업의 실행 계정**: 배포 작업마다 고를 수 있어요(비우면 인벤토리 계정). 에이전트는 `nsenter`로 서버에 들어가 `runuser -u <계정>`으로 실행해서, SSH로 그 계정에 로그인한 것과 똑같이 동작해요.
+- **비밀번호 없는 sudo**: `become: true` 플레이북에 필요해요. 서버 수정에서 허용 계정마다 켜고 끌 수 있어요(`/etc/sudoers.d/wharfline-<계정>`).
+- **에이전트 업데이트**: 서버 수정의 '에이전트 업데이트'를 누르면 에이전트가 Wharfline의 에이전트 이미지(`WHARFLINE_AGENT_IMAGE`, 릴리스와 같은 태그)를 받아 자기 컨테이너를 바꿔요. 등록 정보는 볼륨에 남아서 다시 등록하지 않아요.
+- **에이전트 접속 주소**: 기본은 `WHARFLINE_URL`. 서버에서 닿는 주소가 다르면(사내망 주소 등) 인벤토리의 '에이전트 설정'에서 바꿔요. 이미 설치된 에이전트는 설치할 때의 주소를 써요.
+
 ## 배포 실행
 
-배포 작업을 실행하면 backend가 서버에 실제로 배포해요. 로그 창에는 실제 출력이 그대로 흘러요.
+배포 작업을 실행하면 서버마다 에이전트에 작업을 보내고, 로그 창에 실제 출력이 그대로 흘러요. 에이전트가 연결돼 있지 않으면 20초(`WHARFLINE_AGENT_WAIT`) 기다린 뒤 그 서버는 연결 실패로 처리해요.
 
-- **플레이북 작업**: 레포를 임시 폴더로 `git clone --depth 1` 해요. SSH 주소는 연결한 SSH 키로, HTTPS 주소는 연결한 액세스 토큰(Basic 인증)으로 받아요. 그다음 임시 인벤토리, SSH 키, known_hosts, `-e @vars.json`을 만들어 `ansible-playbook <경로> --limit <서버들>`을 실행해요. 종료 코드가 0이 아니면 실패예요. 레포 목록의 커밋은 실제로 받은 HEAD로 바뀌어요.
-  - 넘기는 변수: `app_name`, 이미지가 있으면 `image`·`image_tag`·`image_ref`, 환경 변수가 있으면 `env_file`(서버 경로)·`env_src`(실행기에 쓴 임시 .env 파일, `copy`의 `src`로 써요), 비공개 레지스트리면 `registry_host`·`registry_user`·`registry_password`, 추가 이미지마다 `<var>_image`·`<var>_tag`·`<var>_image_ref`.
-  - 레포의 `ansible.cfg`는 그대로 읽혀요(작업 폴더가 레포 루트예요). 호스트 키 검사, 키 파일, 인벤토리는 Wharfline이 정한 값이 우선해요.
-  - 기본 플레이북 `container.yml`은 `backend/playbooks/builtin`에 있어요. .env를 올리고, 이미지를 받고, 컨테이너 하나를 다시 띄워요. 포트 같은 인자는 `docker_run_args`로 넘겨요.
-  - **Ansible 컬렉션**: 백엔드에는 `ansible-core`만 있어서 컬렉션은 이미지에 따로 넣어요. 지금은 `ansible.posix`(authorized_key 등), `community.general`, `community.docker`가 들어 있어요(`backend/ansible-collections.yml`, 버전 고정). 플레이북이 다른 컬렉션을 쓰면 `couldn't resolve module/action` 오류가 나니, 그 파일에 추가하고 백엔드 이미지를 다시 빌드하세요.
-- **SSH 스크립트 작업**: 서버마다 SSH로 접속해서 파일과 `.env`(0600)를 SFTP로 올리고, 레지스트리에 `docker login --password-stdin`을 한 뒤, 단계를 순서대로 `bash -s`(없으면 `sh`)로 실행해요. 각 단계는 `set -e`로 돌아서 명령 하나라도 실패하면 그 서버는 멈추고 나머지 단계는 건너뛰어요.
-- **호스트 키 고정**: 서버를 추가할 때 연결 확인에서 본 지문을 저장해요. 배포할 때마다 서버가 보낸 키와 비교하고, 다르면 그 서버를 `호스트 키 확인 필요`로 바꾸고 건너뛰어요. 인벤토리에서 새 키를 승인하면 다음 배포가 그때의 키를 다시 저장해요. 지문이 없는 예전 서버는 첫 배포에서 저장해요.
+- **스크립트·Compose 작업**: 작업 파일과 `.env`(0600)를 서비스 경로에 실행 계정으로 쓰고, 레지스트리에 `docker login --password-stdin`을 한 뒤, 단계를 순서대로 `bash -s`(없으면 `sh`)로 실행해요. 각 단계는 `set -e`로 돌아서 명령 하나라도 실패하면 그 서버는 멈추고 나머지 단계는 건너뛰어요.
+- **플레이북 작업**: 레포를 Wharfline에서 받아(`git clone --depth 1`) 변수와 함께 묶어 서버마다 보내요. 에이전트가 자기 서버에 `ansible-playbook`을 실행해요(서버 안에서만 쓰는 키로 `127.0.0.1`에 접속, 실행 계정으로). 그래서 플레이북은 고치지 않아도 그대로 돌아요.
+  - 넘기는 변수: `app_name`, 이미지가 있으면 `image`·`image_tag`·`image_ref`(다이제스트 고정)·`image_digest`, 환경 변수가 있으면 `env_file`(서버 경로)·`env_src`(에이전트 쪽 임시 .env, `copy`의 `src`로 써요), 비공개 레지스트리면 `registry_host`·`registry_user`·`registry_password`, 추가 이미지마다 `<var>_image`·`<var>_tag`·`<var>_image_ref`.
+  - **가져온 파일**: 플레이북이 `fetch` 등으로 컨트롤러에 가져온 파일은 Wharfline 키로 봉인해 돌려보내고, 실행 기록의 '가져온 파일'에서 받을 수 있어요(Owner/Admin, 비밀번호 재확인).
+  - **안 되는 것**: 에이전트는 자기 서버만 알아요. 다른 서버로 넘기는 작업(`delegate_to: 다른서버`), 다른 서버의 `hostvars`를 읽는 플레이북은 서버마다 따로 도는 형태로 바꿔야 해요. Docker를 처음 설치하는 플레이북은 에이전트 전에 한 번 직접 실행해요.
+  - 기본 플레이북 `container.yml`은 `backend/playbooks/builtin`에 있어요. Ansible 컬렉션(`ansible.posix`, `community.general`, `community.docker`)은 에이전트 이미지에 들어 있어요(`agent/ansible-collections.yml`).
+- **이미지는 다이제스트로 고정해요**: 실행을 시작할 때 레지스트리에 태그의 다이제스트를 직접 물어보고 `이미지:태그@sha256:…`로 배포해요(`IMAGE_REF`, `<VAR>_TAG` 등이 그 값이 돼요. 버전만 필요하면 `IMAGE_VERSION`, `<VAR>_VERSION`). 같은 태그가 다른 이미지로 다시 푸시되면 로그에 경고하고, 자동 배포는 멈춰요. 레지스트리에 물어볼 수 없으면 태그로 배포하고 경고해요.
 - **.env 형식**: 스크립트 작업과 직접 만든 플레이북의 .env는 docker compose 규칙으로 써요. 특수문자가 있는 값은 작은따옴표로 감싸서 `pa$word` 같은 값의 `$`가 변수로 풀리지 않아요. 기본 플레이북은 `docker run --env-file`이 읽어서 값을 그대로 쓰고, 줄바꿈이 있는 값은 실패로 알려요.
-- **비밀 값**: SSH 키, 토큰, .env 값은 실행을 시작할 때만 풀어요. 임시 폴더(0600 파일)에만 쓰고, 실행이 끝나면 폴더를 지워요. 로그에서는 값을 `••••••••`로 가려요. 자식 프로세스에는 `DATABASE_URL`이나 마스터 키 경로 같은 backend 환경 변수를 넘기지 않아요.
-- **동시 실행**: 같은 서버(IP:포트)에 배포 중인 실행이 있으면 그 서버는 실패로 처리해요. 실행을 취소하면 `ansible-playbook` 프로세스와 SSH 세션을 끊어요.
-- backend 이미지에 `ansible-core`, `git`, `openssh-client`가 들어 있어요. 대상 서버에는 Python 3(ansible용)과 docker가 있어야 하고, SSH 사용자는 sudo 없이 docker를 쓸 수 있어야 해요.
-- 앱은 서버의 `/srv/{project_name}`에 놓아요(스크립트 작업의 서비스 경로 기본값). 서버를 준비할 때 `sudo chown deploy:deploy /srv`로 `/srv`를 배포 사용자에게 넘겨 두면 첫 배포 때 앱 폴더가 저절로 만들어져요. root로 만든 앱 폴더가 남아 있으면 Permission denied로 실패하니 그 폴더도 `chown -R` 해 주세요.
-- 실제 서버 없이 데모로 돌리려면 backend에 `WHARFLINE_RUN_SIMULATE=1`을 주세요. 예전처럼 로그를 흉내 내요(테스트는 `WHARFLINE_SSH_SIMULATE=1`로 흉내 내요).
+- **비밀 값**: 토큰, .env 값, 비밀 변수는 실행을 시작할 때만 풀고, 그 서버의 에이전트 키로 봉인한 작업 안에서만 오가요(HTTPS가 아닌 사내망에서도 읽을 수 없어요). 로그에서는 `••••••••`로 가려요.
+- **동시 실행**: 같은 서버에 배포 중인 실행이 있으면 그 서버는 실패로 처리해요. 실행을 취소하면 에이전트가 하던 명령을 멈춰요.
+- 실제 서버 없이 데모로 돌리려면 backend에 `WHARFLINE_RUN_SIMULATE=1`을 주세요(테스트는 `WHARFLINE_SSH_SIMULATE=1`).
 
 ## 보안 운영
 
-Wharfline 계정이나 키가 털려도 서버로 피해가 번지지 않게 하는 운영 규칙이에요.
-
-- **접속 허용 주소**: **키 저장소 → 접속 허용 주소**에 Wharfline이 서버로 나가는 IP/CIDR을 넣어요(Owner/Admin). 그러면 공개 키 보기 창이 서버에 넣을 줄을 이렇게 만들어 줘요. 키가 새어도 이 주소 밖에서는 못 쓰고, 포워딩도 막혀요.
-  ```
-  from="203.0.113.10",no-agent-forwarding,no-port-forwarding,no-X11-forwarding ssh-ed25519 AAAA… prod-deploy@wharfline
-  ```
-  주소가 비어 있으면 창에 경고와 함께 일반 줄이 나와요. NAT나 프록시 뒤라면 서버가 보는 바깥 주소를 넣어요. API는 `GET/PUT /api/keys/access-from`.
-- **deploy 사용자**: root로는 접속하지 않아요(서버 추가에서 막혀요). 이 키만 쓰는 deploy 사용자를 만들고, sudo는 플레이북에 필요한 일만 하는 root 소유 스크립트 하나로 좁혀요.
-  ```
-  # visudo -f /etc/sudoers.d/deploy
-  deploy ALL=(root) NOPASSWD: /usr/local/sbin/wharfline-deploy
-  ```
-  **docker 그룹은 root와 같아요.** 컨테이너로 호스트의 `/`를 마운트할 수 있어서, deploy를 docker 그룹에 넣으면 sudo를 좁힌 의미가 없어요.
-- **환경별 키**: production과 staging이 같은 키를 쓰면 하나가 새도 둘 다 열려요. 환경마다 키를 따로 만들어요. 한 키를 인벤토리 2곳 이상이 쓰면 키 저장소와 인벤토리 화면에 경고가 떠요.
+- **에이전트와 Wharfline은 서로를 확인해요** (`backend/app/agentproto.py`): 에이전트의 모든 요청은 에이전트 키(Ed25519)로 서명하고, 시각(±2분)과 일회용 nonce로 재전송을 막아요. Wharfline은 공개 키만 저장해요. Wharfline이 보내는 작업은 에이전트 키(X25519)로 봉인하고 Wharfline 키로 서명해요. 에이전트는 등록할 때 받은 Wharfline 공개 키로 확인해요.
+- **서버 쪽 경계**: 에이전트는 허용 계정·허용 경로 밖의 작업을 거부해요. 다만 에이전트는 Docker 소켓을 쓰므로 그 서버에서 root와 같은 권한이에요. Wharfline 자체를 인터넷에 열지 말고 VPN 안에 두고, 모든 멤버에게 2단계 인증을 켜요.
+- **자동 배포는 레지스트리를 확인해요**: 웹훅은 "새 태그가 있을 수 있다"는 신호로만 써요. 자동 배포 전에 레지스트리에 그 태그가 정말 있는지 묻고, 없으면 배포하지 않아요. 그래도 production은 운영 보호(승인)를 켜 두고, `v`로 시작하는 태그를 누가 푸시할 수 있는지 레지스트리·Git 호스트 권한으로 좁혀요.
 - **마스터 키와 DB 백업은 따로**: DB 덤프와 마스터 키가 같이 새면 모든 비밀 값이 풀려요. `make key-backup`으로 만든 키 백업은 DB 백업과 다른 곳(비밀번호 관리자, 오프라인 저장소)에 둬요.
-- **자동 배포 주의점**: 웹훅 비밀값을 아는 사람은 새 태그로 배포를 일으킬 수 있어요. 자동 배포는 staging 같은 덜 중요한 작업에만 켜고, production은 운영 보호(승인)를 켜 둬요. 이미지는 CI가 만든 것만 쓰고, `v`로 시작하는 태그를 누가 푸시할 수 있는지 레지스트리·Git 호스트 권한으로 좁혀요.
 
 ### 털렸을 때 순서
 
-Wharfline 계정, DB, 서버 중 하나라도 의심되면 이 순서로 해요.
-
-1. **서버의 `~/.ssh/authorized_keys`에서 공개 키를 먼저 지워요.** 새 키보다 먼저예요. 이것만으로 새어 나간 비공개 키가 쓸모없어져요.
-2. **키 저장소에서 새 SSH 키**를 만들어 서버에 넣고(접속 허용 주소가 붙은 줄로), 인벤토리를 새 키로 바꾼 뒤 옛 키를 지워요.
-3. **`make key-rotate`**로 마스터 키를 바꿔요. 옛 키 줄은 `make key-status`로 확인한 뒤 지워요.
-4. **웹훅 비밀값과 토큰을 다시 발급**해요. Git 연동 비밀값, 레지스트리 토큰, Git 액세스 토큰은 발급한 곳에서 먼저 취소하고 새로 넣어요.
-5. **활동 기록을 확인**해요. 모르는 로그인, 키·인벤토리 변경, 승인 없는 배포가 있었는지 봐요.
+1. **의심되는 서버를 인벤토리에서 지우거나 설치 명령을 다시 받아 재등록**해요. 옛 에이전트 키는 그 순간 쓸모없어져요.
+2. **`make key-rotate`**로 마스터 키를 바꿔요. 옛 키 줄은 `make key-status`로 확인한 뒤 지워요.
+3. **웹훅 비밀값과 토큰을 다시 발급**해요. Git 연동 비밀값, 레지스트리 토큰, Git 액세스 토큰은 발급한 곳에서 먼저 취소하고 새로 넣어요.
+4. **활동 기록을 확인**해요. 모르는 로그인, 서버·에이전트 변경, sudo 부여, 승인 없는 배포가 있었는지 봐요.
 
 ## 운영 서버
 
 운영 서버에서는 `deploy/` 폴더의 구성으로 릴리스 이미지를 받아 실행해요. 샘플 데이터 없이 Owner 한 명만 만들어져요. 순서는 [deploy/README.md](deploy/README.md)에 있어요.
+
+- **Wharfline 자체는 `make upgrade`로 올려요.** docker rollout(무중단 배포)은 쓰지 마세요. 실행 상태와 에이전트 작업 큐가 backend 프로세스 메모리에 있어서 backend는 한 개만 떠야 해요. 재시작하는 몇 초 동안 에이전트는 끊겼다가 스스로 다시 붙어요.
+- frontend의 nginx는 backend 주소를 10초마다 다시 찾아서, backend 컨테이너가 바뀌어도 frontend를 재시작할 필요가 없어요.
 
 ## 릴리스 (GitHub Actions)
 
 `main`에 푸시하면 `.github/workflows/release.yml`이 돌아요.
 
 1. 오늘 날짜(한국 시간)와 그날의 빌드 번호로 태그를 정해요. 예: `v2026.11.08-1`, 같은 날 두 번째는 `v2026.11.08-2`. `v`로 시작해서 Wharfline의 기본 자동 배포 규칙에 맞아요.
-2. 백엔드와 프론트엔드 이미지를 amd64·arm64로 빌드해 GitHub Container Registry에 올려요.
+2. 백엔드·프론트엔드(amd64)와 에이전트(amd64·arm64) 이미지를 빌드해 GitHub Container Registry에 올려요.
    - `ghcr.io/moning02004/wharfline-backend:<태그>` (와 `latest`)
    - `ghcr.io/moning02004/wharfline-frontend:<태그>` (와 `latest`)
+   - `ghcr.io/moning02004/wharfline-agent:<태그>` (와 `latest`) · 서버가 로그인 없이 받도록 패키지를 공개로 두세요
 3. 이미지가 다 올라간 뒤 태그와 GitHub 릴리스를 만들어요. 릴리스 노트에는 이미지 주소와 바뀐 커밋 목록이 들어가요.
 
 동시에 두 번 푸시해도 한 번에 하나씩 돌아서 번호가 겹치지 않아요. Actions 화면의 "Run workflow"로 직접 돌릴 수도 있어요.
@@ -212,6 +219,8 @@ alembic revision --autogenerate -m "..."      # 로컬에서 바로 마이그레
 
 cd frontend && npm install && npm run dev     # http://localhost:5173 (/api는 :8000으로 프록시)
 ```
+
+에이전트까지 로컬에서 돌려 보려면 `make agent`로 `wharfline-agent:dev` 이미지를 만들고, 인벤토리의 '에이전트 설정'에서 서버(또는 테스트 컨테이너)가 닿는 주소(예: `http://host.docker.internal:8080`)를 넣은 뒤 '설치 명령으로 추가'를 써요.
 
 ## DB 구조
 

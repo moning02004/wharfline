@@ -5,7 +5,9 @@
 # Images go to GitHub Container Registry with that tag and `latest`:
 #   ghcr.io/<owner>/wharfline-backend
 #   ghcr.io/<owner>/wharfline-frontend
-# amd64 only: arm64 was built under emulation and took most of the release time.
+#   ghcr.io/<owner>/wharfline-agent      (runs on every server Wharfline deploys to)
+# Backend and frontend are amd64 only: arm64 was built under emulation and took most of the release time.
+# The agent is also built for arm64, because the servers it runs on can be ARM.
 name: release
 
 on:
@@ -47,7 +49,12 @@ jobs:
           echo "tag=${tag}" >> "$GITHUB_OUTPUT"
           echo "backend=ghcr.io/${owner}/wharfline-backend" >> "$GITHUB_OUTPUT"
           echo "frontend=ghcr.io/${owner}/wharfline-frontend" >> "$GITHUB_OUTPUT"
+          echo "agent=ghcr.io/${owner}/wharfline-agent" >> "$GITHUB_OUTPUT"
           echo "Release ${tag}"
+
+      - uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
 
       - uses: docker/setup-buildx-action@v3
 
@@ -89,6 +96,24 @@ jobs:
           cache-from: type=gha,scope=frontend
           cache-to: type=gha,mode=max,scope=frontend
 
+      - name: Build and push agent
+        uses: docker/build-push-action@v6
+        with:
+          context: ./agent
+          platforms: linux/amd64,linux/arm64
+          push: true
+          build-args: |
+            VERSION=${{ steps.tag.outputs.tag }}
+          tags: |
+            ${{ steps.tag.outputs.agent }}:${{ steps.tag.outputs.tag }}
+            ${{ steps.tag.outputs.agent }}:latest
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.tag.outputs.tag }}
+          cache-from: type=gha,scope=agent
+          cache-to: type=gha,mode=max,scope=agent
+
       # Last, so a release always means its images exist.
       - name: Create tag and release
         env:
@@ -96,6 +121,7 @@ jobs:
           TAG: ${{ steps.tag.outputs.tag }}
           BACKEND: ${{ steps.tag.outputs.backend }}
           FRONTEND: ${{ steps.tag.outputs.frontend }}
+          AGENT: ${{ steps.tag.outputs.agent }}
         run: |
-          notes=$(printf '## 이미지\n\n```\n%s:%s\n%s:%s\n```\n' "$BACKEND" "$TAG" "$FRONTEND" "$TAG")
+          notes=$(printf '## 이미지\n\n```\n%s:%s\n%s:%s\n%s:%s\n```\n' "$BACKEND" "$TAG" "$FRONTEND" "$TAG" "$AGENT" "$TAG")
           gh release create "$TAG" --target "$GITHUB_SHA" --title "$TAG" --notes "$notes" --generate-notes

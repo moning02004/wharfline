@@ -280,6 +280,7 @@ class JobIn(BaseModel):
     # brings new values for others. The form never has the saved values, so it can change one without the rest.
     keepSecretVars: list[str] = []
     compose: ComposeIn | None = None  # a Docker Compose app: Wharfline writes the script (playbook.source must be "script")
+    runUser: str = ""  # the server account the job runs as on each server; empty: the inventory's account
 
 
 class JobUpdate(JobIn):
@@ -287,12 +288,23 @@ class JobUpdate(JobIn):
 
 
 BAD_PATH = "플레이북 경로는 레포 안의 .yml 파일이에요. 예: deploy/app.yml"
+RUN_USER_RE = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
+
+
+def check_run_user(text: str) -> str | None:
+    """The job's server account, or None for the inventory's. root never: agents refuse it."""
+    user = (text or "").strip()
+    if not user:
+        return None
+    if user == "root" or not RUN_USER_RE.match(user):
+        raise HTTPException(400, "실행 계정은 deploy, ubuntu처럼 영문 소문자로 적어 주세요 (root는 안 돼요).")
+    return user
 NO_EDIT = "이 작업을 고칠 권한이 없어요."
 
 # Activity log labels for PUT, in form order.
 FIELD_LABELS = {
     "name": "이름", "playbook": "배포 방법", "files": "파일", "images": "추가 이미지", "vars": "플레이북 변수",
-    "target": "배포 대상", "image": "이미지", "env": "환경 변수",
+    "target": "배포 대상", "runUser": "실행 계정", "image": "이미지", "env": "환경 변수",
     "editors": "편집 권한", "hook": "자동 배포", "protected": "운영 보호", "lock": "동시 실행 잠금", "rollback": "실패 시 되돌리기",
 }
 
@@ -722,7 +734,7 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         extra_images=extras,
         inventory=body.inventory, targets=body.targets, env=env_name, hook=body.hook, hook_rule=check_hook_rule(body.hookRule), protected=body.protected,
         lock=body.lock, rollback=body.rollback, editors=editors, created_by=me.email if me else None,
-        play_vars=play_vars, compose=body.compose is not None,
+        play_vars=play_vars, compose=body.compose is not None, run_user=check_run_user(body.runUser),
     )
     db.add(job)
     db.flush()
@@ -789,6 +801,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
         "image": (ref, tag), "env": env_name, "editors": editors,
         "hook": (body.hook, check_hook_rule(body.hookRule)), "protected": body.protected, "lock": body.lock, "rollback": body.rollback,
         "vars": (play_vars or [], secret_vars),  # secret values are compared, never logged
+        "runUser": check_run_user(body.runUser),
     }
     old = {
         "name": job.name, "playbook": (job.repo, job.book, job.script, job.service_path, job.compose), "files": job.files,
@@ -796,6 +809,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
         "image": (job.image, job.default_tag), "env": job.env, "editors": job.to_dict()["editors"],
         "hook": (job.hook, job.hook_rule), "protected": job.protected, "lock": job.lock, "rollback": job.rollback,
         "vars": ([list(x) for x in job.play_vars or []], current_secret),
+        "runUser": job.run_user,
     }
     changed += [k for k in new if new[k] != old[k] and k not in changed]
 
@@ -811,6 +825,7 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     if secret_vars != current_secret:
         save_secret_vars(db, job.id, secret_vars)
     job.play_vars = play_vars
+    job.run_user = new["runUser"]
 
     if changed:
         labels = ", ".join(FIELD_LABELS[k] for k in FIELD_LABELS if k in changed)
@@ -1117,6 +1132,25 @@ def get_run(no: int, db: Session = Depends(get_db), scope: set[str] | None = Dep
         return {**base, "live": False, "steps": [], "events": []}
     steps, events = runner.replay_events(db, rec, job.to_dict())
     return {**base, "steps": steps, "live": False, "events": events}
+
+
+@router.get("/runs/{no}/artifacts")
+def run_artifacts(no: int, db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
+    """Files a playbook fetched to its controller during the run (names and sizes only)."""
+    seen_run(db, no, who)
+    return [a.to_dict() for a in db.scalars(select(m.RunArtifact).where(m.RunArtifact.run_no == no).order_by(m.RunArtifact.id))]
+
+
+@router.get("/runs/{no}/artifacts/{aid}", dependencies=[Depends(require("resources")), Depends(require_sudo)])
+def run_artifact(no: int, aid: int, db: Session = Depends(get_db), who: m.Member | None = Depends(viewer)):
+    """One fetched file's content (base64). It may hold secrets: Owner/Admin with a fresh password check only."""
+    seen_run(db, no, who)
+    a = db.get(m.RunArtifact, aid)
+    if not a or a.run_no != no:
+        raise HTTPException(404, "파일을 찾을 수 없어요.")
+    s.log_act(db, "실행 결과 파일 받기", f"#{no} · {a.host} · {a.path}", "warn")
+    db.commit()
+    return {**a.to_dict(), "data": a.get_secret()}
 
 
 @router.get("/runs/{no}/stream")

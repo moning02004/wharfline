@@ -123,12 +123,59 @@ class Host(Base):
     host_key: Mapped[str] = mapped_column(String(16), default="ok")  # ok | changed
     # Pinned SSH host key ("SHA256:…"): checked on every deploy. None until the connection check or the first run records it.
     host_fingerprint: Mapped[str | None] = mapped_column(String(128))
-    status: Mapped[str] = mapped_column(String(16), default="on")  # on | off
+    status: Mapped[str] = mapped_column(String(16), default="on")  # on | off | pending (agent not enrolled yet)
+    # The Wharfline agent on this server (agent.py, routers/agent.py). Deploys go through it; Wharfline keeps no SSH key.
+    #   agent_id: random id the agent signs requests with; agent_key: its Ed25519 public key (base64, raw 32 bytes).
+    #   agent_info: what it reports — hostname, ip, version, policy {users, paths}, sudo {user: bool}, containers [...].
+    agent_id: Mapped[str | None] = mapped_column(String(32), unique=True)
+    agent_key: Mapped[str | None] = mapped_column(String(64))
+    agent_box: Mapped[str | None] = mapped_column(String(64))  # its X25519 public key: tasks are sealed to it
+    agent_version: Mapped[str | None] = mapped_column(String(64))
+    agent_seen: Mapped[float | None] = mapped_column(Float)
+    agent_info: Mapped[dict] = mapped_column(JSONB, default=dict, server_default=text("'{}'::jsonb"))
     inventory: Mapped[Inventory] = relationship(back_populates="hosts")
 
+    @property
+    def is_agent(self) -> bool:
+        return bool(self.agent_id)
+
     def to_dict(self) -> dict[str, Any]:
+        info = self.agent_info or {}
         return {"name": self.name, "ip": self.ip, "port": self.port, "user": self.ssh_user, "group": self.grp,
-                "hostKey": self.host_key, "fingerprint": self.host_fingerprint, "status": self.status}
+                "hostKey": self.host_key, "fingerprint": self.host_fingerprint, "status": self.status,
+                "mode": "agent" if self.agent_id else ("pending" if self.status == "pending" else "ssh"),
+                "agent": {"version": self.agent_version, "seen": self.agent_seen, "hostname": info.get("hostname"),
+                          "policy": info.get("policy") or {}, "sudo": info.get("sudo") or {},
+                          "containers": info.get("containers") or []} if self.agent_id else None}
+
+
+class EnrollToken(Base):
+    """A one-time token an agent trades for its place on a server. Only the SHA-256 is kept; it expires in minutes."""
+
+    __tablename__ = "agent_enroll_tokens"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    host_id: Mapped[int] = mapped_column(ForeignKey("hosts.id", ondelete="CASCADE"), index=True)
+    expires_at: Mapped[float] = mapped_column(Float)
+    created_by: Mapped[str | None] = mapped_column(String(255))
+    used_at: Mapped[float | None] = mapped_column(Float)
+
+
+class RunArtifact(EncryptedSecret, Base):
+    """A file a playbook fetched to its controller (the agent) during a run, e.g. a generated key. Content is sealed."""
+
+    __tablename__ = "run_artifacts"
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    run_no: Mapped[int] = mapped_column(Integer, index=True)
+    host: Mapped[str] = mapped_column(String(128))
+    path: Mapped[str] = mapped_column(String(512))
+    size: Mapped[int] = mapped_column(Integer)
+    created_at: Mapped[float] = mapped_column(Float, default=time.time)
+
+    def crypto_context(self) -> str:
+        return f"run-artifact:{self.run_no}:{self.host}:{self.path}"
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"id": self.id, "host": self.host, "path": self.path, "size": self.size, "at": self.created_at}
 
 
 class Repo(Base):
@@ -289,6 +336,8 @@ class Job(Base):
     play_vars: Mapped[list[list[str]] | None] = mapped_column(JSONB)
     # A Docker Compose app: an SSH script job with fixed steps and one file. repo/book: where the file comes from (None when pasted).
     compose: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("false"))
+    # The server account the job's commands and files run as (scripts, compose, playbooks). None: the inventory's user.
+    run_user: Mapped[str | None] = mapped_column(String(32))
     playbook_repo: Mapped[Repo | None] = relationship(primaryjoin="foreign(Job.repo) == Repo.name", viewonly=True)
 
     def to_dict(self) -> dict[str, Any]:
@@ -310,6 +359,7 @@ class Job(Base):
                 "inventory": self.inventory, "targets": self.targets, "env": self.env,
                 "hook": self.hook, "protected": self.protected, "lock": self.lock, "rollback": self.rollback,
                 "last": {"status": self.last_status, "time": self.last_time, "duration": self.last_duration, "at": self.last_at},
+                "runUser": self.run_user,
                 "editors": {"groups": list((self.editors or {}).get("groups", [])),
                             "members": list((self.editors or {}).get("members", []))},
                 "createdBy": self.created_by}

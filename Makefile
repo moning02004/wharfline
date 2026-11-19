@@ -13,7 +13,7 @@ KEYS    := secrets/master_keys
 .DEFAULT_GOAL := help
 .PHONY: help up down build logs ps restart db-up db-shell db-reset \
         migrate downgrade revision history current check sql seed \
-        keygen key-status key-verify key-rotate key-backup key-restore test
+        keygen key-status key-verify key-rotate key-backup key-restore test agent
 
 help: ## Show this help
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -116,5 +116,8 @@ key-restore: ## Restore master keys from a backup: make key-restore f=backups/ma
 
 # ---------- tests ----------
 
-test: ## Run backend tests
-	$(RUN) sh -c "pip install -q --user --disable-pip-version-check -r requirements-dev.txt && python -m pytest -q"
+test: ## Run backend tests (and the agent's own rules)
+	$(COMPOSE) run --rm -v $(CURDIR)/backend:/app -v $(CURDIR)/agent:/agent migrate sh -c "pip install -q --user --disable-pip-version-check -r requirements-dev.txt && python -m pytest -q"
+
+agent: ## Build the agent image servers run in development (wharfline-agent:dev)
+	docker build -t wharfline-agent:dev --build-arg VERSION=dev agent

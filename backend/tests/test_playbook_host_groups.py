@@ -78,11 +78,11 @@ def test_vaulted_vars_files_are_left_out(tmp_path):
     assert executor.skip_vaulted_vars(tmp_path, "site.yml") == []
 
 
-def test_missing_sudo_password_says_what_to_run():
+def test_missing_sudo_password_says_where_to_turn_it_on():
     ops = executor.Target(id=1, name="ops", ip="10.0.0.5", port=22, user="deploy", group="ops", fingerprint=None)
     web = executor.Target(id=2, name="web", ip="10.0.0.6", port=22, user="ubuntu", group="ops", fingerprint=None)
     said = ["TASK [Gathering Facts] ***", "fatal: [ops]: FAILED! => ", "    msg: Missing sudo password"]
     hint = executor.sudo_hint(said, [ops, web])
-    assert any("deploy ALL=(ALL) NOPASSWD:ALL" in h and "/etc/sudoers.d/wharfline-deploy" in h for h in hint)
+    assert any("비밀번호 없는 sudo" in h and "ops" in h and "deploy" in h for h in hint)
     assert not any("ubuntu" in h for h in hint)  # only the server that asked
     assert executor.sudo_hint(["ok: [ops]"], [ops]) == []

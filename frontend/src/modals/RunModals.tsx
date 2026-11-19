@@ -667,10 +667,64 @@ const LINE_COLORS: Record<string, string> = {
   m: "text-[#c4b5fd]",
 };
 
+type Artifact = { id: number; host: string; path: string; size: number; at: number };
+
+/** Files a playbook fetched to its controller (the server's agent) during the run, e.g. a generated key. */
+function ArtifactsModal({ no, items, onClose }: { no: number; items: Artifact[]; onClose: () => void }) {
+  const { withSudo, toast, can } = useApp();
+  const get = (a: Artifact) =>
+    withSudo("실행 결과 파일 받기", async () => {
+      try {
+        const r = await api.get<Artifact & { data: string }>(`/runs/${no}/artifacts/${a.id}`);
+        const bytes = Uint8Array.from(atob(r.data), (ch) => ch.charCodeAt(0));
+        const url = URL.createObjectURL(new Blob([bytes]));
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = a.path.split("/").pop() || "file";
+        link.click();
+        setTimeout(() => URL.revokeObjectURL(url), 1000);
+      } catch (err) {
+        if ((err as { sudoRequired?: boolean }).sudoRequired) throw err;
+        toast(errMsg(err), "error");
+      }
+    });
+  return (
+    <>
+      <ModalHead title="가져온 파일" sub={`실행 #${no}`} onClose={onClose} />
+      <ModalBody>
+        <p className="m-0 text-[13px] text-muted">플레이북이 실행 중에 컨트롤러로 가져온 파일이에요(fetch). 비밀 값일 수 있어서 암호화해 저장하고, 받을 때 비밀번호를 다시 확인해요.</p>
+        <ul className="m-0 p-0 list-none flex flex-col divide-y divide-line rounded-lg border border-line">
+          {items.map((a) => (
+            <li key={a.id} className="flex items-center gap-3 px-3.5 py-2 text-[13px]">
+              <span className="min-w-0 flex-1">
+                <span className="block font-mono truncate">{a.path}</span>
+                <span className="text-muted text-[12px]">
+                  {a.host} · {a.size.toLocaleString()}바이트
+                </span>
+              </span>
+              {can("resources") && (
+                <Button size="sm" icon="arrow" onClick={() => get(a)}>
+                  받기
+                </Button>
+              )}
+            </li>
+          ))}
+        </ul>
+      </ModalBody>
+      <ModalFoot>
+        <Button variant="primary" onClick={onClose}>
+          닫기
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
 function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
   const { toast, refresh, can, openModal } = useApp();
   const { runById } = useRun();
   const [run, setRun] = useState<RunDetail | null>(null);
+  const [artifacts, setArtifacts] = useState<Artifact[]>([]);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [elapsed, setElapsed] = useState(0);
   const logRef = useRef<HTMLDivElement>(null);
@@ -738,6 +792,11 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
   };
 
   const status: Status = done?.status ?? (run?.live ? "run" : run?.status ?? "run");
+  const finished = !!done || (run && !run.live);
+  useEffect(() => {
+    if (!finished) return;
+    api.get<Artifact[]>(`/runs/${no}/artifacts`).then(setArtifacts, () => setArtifacts([]));
+  }, [finished, no]);
   const waiting = run?.status === "approval";
   const short = run?.image?.split("/").pop();
 
@@ -854,6 +913,11 @@ function RunLog({ no, onClose }: { no: number; onClose: () => void }) {
           {waiting ? "승인되기 전에는 서버에 접속하지 않아요." : "로그는 실행 기록에 저장돼요. 창을 닫아도 실행은 계속돼요."}
         </span>
         <span className="flex gap-2">
+          {artifacts.length > 0 && (
+            <Button icon="file" onClick={() => openModal((c) => <ArtifactsModal no={no} items={artifacts} onClose={c} />)}>
+              가져온 파일 {artifacts.length}개
+            </Button>
+          )}
           {run?.live && !done && can("run") && (
             <Button variant="danger" onClick={cancel}>
               실행 취소
