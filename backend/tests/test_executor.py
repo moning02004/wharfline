@@ -346,3 +346,16 @@ def test_git_host(url, expected):
 ])
 def test_git_clone_hint_names_the_cause(line, says):
     assert says in executor.git_clone_hint([line], "https://git.ermore.ai/ermore/infra", "main", "토큰 · ops-read")
+
+
+@pytest.mark.skipif(os.name != "posix", reason="the fake agent runs sh")
+def test_a_script_gets_the_services_docker_rollout_can_replace(tmp_path):
+    ran: list[str] = []
+    plan = _plan(str(tmp_path / "svc"), [{"name": "교체", "run": 'for s in $ROLLOUT_SERVICES; do echo "rollout $s"; done'}])
+    plan.files = [{"path": "compose.yml", "content": "services:\n  app: {image: a}\n  worker: {image: b}\n  db: {image: 'postgres:16'}\n"}]
+    ok, events = _run(plan, ran)
+    texts = [e.get("text", "") for e in events]
+    assert ok, texts
+    assert "export ROLLOUT_SERVICES='app worker'" in ran[0]
+    assert any("[web-1] rollout app" in t for t in texts) and any("[web-1] rollout worker" in t for t in texts)
+    assert not any("rollout db" in t for t in texts)

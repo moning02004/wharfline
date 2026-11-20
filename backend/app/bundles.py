@@ -37,6 +37,67 @@ def project_name(text: str) -> str:
     return name.lstrip("_-") or "app"
 
 
+# Services that keep data: replacing them with a second copy side by side is not what docker rollout is for.
+DATA_SERVICES = {"db", "database", "postgres", "postgresql", "mysql", "mariadb", "mongo", "mongodb", "redis", "valkey",
+                 "rabbitmq", "kafka", "zookeeper", "elasticsearch", "opensearch", "minio", "etcd", "memcached"}
+ROLLOUT_LABEL = "wharfline.rollout"
+
+
+def _labels(svc: dict) -> dict[str, str]:
+    raw = svc.get("labels") or {}
+    if isinstance(raw, list):
+        return dict(str(x).split("=", 1) if "=" in str(x) else (str(x), "") for x in raw)
+    return {str(k): str(v) for k, v in raw.items()} if isinstance(raw, dict) else {}
+
+
+def _fixed_host_port(p) -> bool:
+    """A port mapping that pins a host port: "8080:80", "127.0.0.1:8080:80", {published: 8080}. "80" alone does not."""
+    if isinstance(p, dict):
+        return bool(p.get("published"))
+    text = str(p).split("/", 1)[0]
+    return ":" in text
+
+
+def rollout_choice(name: str, svc: dict) -> tuple[bool, str | None]:
+    """(replace with docker rollout, why not). The label wharfline.rollout: "true"/"false" decides when present."""
+    label = _labels(svc).get(ROLLOUT_LABEL, "").strip().lower()
+    if label in ("true", "1", "yes"):
+        return True, None
+    if label in ("false", "0", "no"):
+        return False, f"라벨 {ROLLOUT_LABEL}: false"
+    if svc.get("profiles"):
+        return False, "프로필이 붙은 서비스"
+    if svc.get("container_name"):
+        return False, "container_name이 있어요"
+    if any(_fixed_host_port(p) for p in svc.get("ports") or []):
+        return False, "호스트 포트를 고정했어요"
+    if not svc.get("image") and not svc.get("build"):
+        return False, "image도 build도 없어요"
+    image = str(svc.get("image") or "").rsplit("/", 1)[-1].split(":", 1)[0].split("@", 1)[0].lower()
+    if name.lower() in DATA_SERVICES or image in DATA_SERVICES:
+        return False, "데이터를 가진 서비스로 보여요"
+    return True, None
+
+
+def rollout_services(files: list[dict]) -> list[str]:
+    """$ROLLOUT_SERVICES: the services of the top-level compose file docker rollout can replace, in file order."""
+    import yaml
+
+    for name in COMPOSE_NAMES:  # docker compose's own order of preference
+        f = next((x for x in files if x.get("path", "").lower() == name), None)
+        if not f:
+            continue
+        try:
+            doc = yaml.safe_load(f.get("content") or "") or {}
+        except yaml.YAMLError:
+            return []
+        services = doc.get("services") if isinstance(doc, dict) else None
+        if not isinstance(services, dict):
+            return []
+        return [str(n) for n, svc in services.items() if rollout_choice(str(n), svc if isinstance(svc, dict) else {})[0]]
+    return []
+
+
 def compose_preview(content: str, default_project: str) -> dict:
     """What `docker compose up` would start: each service with its image, container names, replicas, ports.
 
@@ -74,6 +135,7 @@ def compose_preview(content: str, default_project: str) -> dict:
                 ports.append(str(p))
         deps = svc.get("depends_on") or []
         build = svc.get("build")
+        rollout, why = rollout_choice(str(name), svc)
         services.append({
             "name": str(name),
             "image": str(svc.get("image") or ""),
@@ -83,10 +145,13 @@ def compose_preview(content: str, default_project: str) -> dict:
             "ports": ports,
             "dependsOn": list(deps.keys()) if isinstance(deps, dict) else [str(d) for d in deps],
             "profiles": [str(p) for p in svc.get("profiles") or []],
+            "rollout": rollout,
+            "rolloutWhy": why,
             "warning": "container_name이 있어서 1개만 띄울 수 있어요" if fixed and replicas > 1 else
                        ("image도 build도 없어요" if not svc.get("image") and not build else None),
         })
-    return {"ok": True, "error": None, "project": project, "services": services}
+    return {"ok": True, "error": None, "project": project, "services": services,
+            "rollout": [x["name"] for x in services if x["rollout"]]}
 
 
 # Settings that hand a container (or pod) control of the server. Shown as warnings: they can be on purpose.

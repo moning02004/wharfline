@@ -18,6 +18,8 @@ interface Service {
   ports: string[];
   dependsOn: string[];
   profiles: string[];
+  rollout: boolean;
+  rolloutWhy: string | null;
   warning: string | null;
 }
 
@@ -99,13 +101,14 @@ function ComposeContainersModal({ preview, onClose }: { preview: Preview; onClos
 function ContainersTable({ preview }: { preview: Preview }) {
   return (
       <div className="overflow-x-auto rounded-lg border border-line">
-        <table className="w-full text-[12.5px] min-w-[520px]">
+        <table className="w-full text-[12.5px] min-w-[600px]">
           <thead>
             <tr className="text-left text-muted bg-surface-2">
               <th className="font-medium px-3 py-1.5">서비스</th>
               <th className="font-medium px-3 py-1.5">이미지</th>
               <th className="font-medium px-3 py-1.5">컨테이너</th>
               <th className="font-medium px-3 py-1.5">포트</th>
+              <th className="font-medium px-3 py-1.5">교체</th>
             </tr>
           </thead>
           <tbody className="divide-y divide-line">
@@ -132,6 +135,16 @@ function ContainersTable({ preview }: { preview: Preview }) {
                   </div>
                 </td>
                 <td className={cx("px-3 py-2 font-mono", !s.ports.length && "text-faint")}>{s.ports.join(", ") || "-"}</td>
+                <td className="px-3 py-2 whitespace-nowrap">
+                  {s.rollout ? (
+                    <Chip tone="ok">무중단</Chip>
+                  ) : (
+                    <span className="flex flex-col gap-0.5">
+                      <Chip>일반</Chip>
+                      {s.rolloutWhy && <span className="text-[11.5px] text-muted whitespace-normal">{s.rolloutWhy}</span>}
+                    </span>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

@@ -380,7 +380,7 @@ def check_script(steps: list[ScriptStep]) -> list[dict[str, str]]:
 
 
 VAR_RE = re.compile(r"^[A-Z][A-Z0-9_]{0,23}$")
-RESERVED_VARS = {"SERVICE_PATH", "ENV_FILE", "IMAGE", "IMAGE_TAG", "IMAGE_REF"}
+RESERVED_VARS = {"SERVICE_PATH", "ENV_FILE", "IMAGE", "IMAGE_TAG", "IMAGE_REF", "ROLLOUT_SERVICES"}
 MAX_EXTRA_IMAGES = 10
 
 

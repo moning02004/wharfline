@@ -1211,6 +1211,8 @@ async def _run_script(plan: Plan, out: Out) -> bool:
             conns[t.name] = AgentConn(t)
             alive.append(t)
             bump(t, "ok")
+        # Services docker rollout can replace, from the compose file this run uploads (`for s in $ROLLOUT_SERVICES`).
+        plan.variables["ROLLOUT_SERVICES"] = " ".join(bundles.rollout_services(plan.files))
         out.line("", "환경 변수: " + " ".join(f"{k}={v}" for k, v in plan.variables.items()))
         out.end("서버 연결", bool(alive))
         if not alive:
