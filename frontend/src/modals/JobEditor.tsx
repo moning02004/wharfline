@@ -1183,11 +1183,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
             onEnv={mergeEnv}
             onDirty={setFilesDirty}
           />
-          {scriptCompose?.content && (
-            <Field label={`${scriptCompose.path}로 뜨는 컨테이너`}>
-              <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} />
-            </Field>
-          )}
+          {scriptCompose?.content && <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} fileName={scriptCompose.path} />}
         </>
       )}
     </>
@@ -1384,11 +1380,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                   onEnv={mergeEnv}
                   onDirty={setFilesDirty}
                 />
-                {scriptCompose?.content && (
-                  <Field label={`${scriptCompose.path}로 뜨는 컨테이너`}>
-                    <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} />
-                  </Field>
-                )}
+                {scriptCompose?.content && <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} fileName={scriptCompose.path} />}
                 {fileImages.length > 0 && (
                   <Field label="추적하는 이미지">
                     <div className="flex flex-col rounded-lg border border-line divide-y divide-line">

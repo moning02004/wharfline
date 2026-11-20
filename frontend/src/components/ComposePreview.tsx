@@ -1,7 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { Chip, cx } from "./ui";
+import { useApp } from "../lib/app";
+import { Button, Chip, cx } from "./ui";
 import { Icon } from "./Icon";
+import { ModalBody, ModalFoot, ModalHead } from "./Modal";
 
 /** The file names docker compose finds on its own (the server checks the same list). */
 export const COMPOSE_NAMES = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
@@ -27,11 +29,12 @@ interface Preview {
 }
 
 /**
- * What `docker compose up` would start from this file, before anything runs: each service with its image and the
- * containers it makes (<project>-<service>-<n>, or container_name). The project is the deploy folder's name unless
- * the file sets `name:`.
+ * What `docker compose up` would start from this file, before anything runs: a one-line summary in the form, the
+ * table (each service, its image and the containers it makes) in a modal. Container names are <project>-<service>-<n>,
+ * or container_name; the project is the deploy folder's name unless the file sets `name:`.
  */
-export function ComposePreview({ content, servicePath, jobName }: { content: string; servicePath: string; jobName: string }) {
+export function ComposePreview({ content, servicePath, jobName, fileName }: { content: string; servicePath: string; jobName: string; fileName?: string }) {
+  const { openModal } = useApp();
   const [preview, setPreview] = useState<Preview | null>(null);
   useEffect(() => {
     if (!content.trim()) {
@@ -59,17 +62,47 @@ export function ComposePreview({ content, servicePath, jobName }: { content: str
         <span>{preview.error}</span>
       </div>
     );
-  const total = preview.services.reduce((n, s) => n + s.containers.length, 0);
+  const total = preview.services.reduce((n, sv) => n + sv.containers.length, 0);
+  const warned = preview.services.some((sv) => sv.warning);
   return (
-    <div className="flex flex-col gap-1.5">
-      <div className="flex items-center justify-between gap-2 flex-wrap text-[12.5px]">
-        <span className="font-medium">
-          서비스 {preview.services.length}개 · 컨테이너 {total}개
+    <div className="flex items-center gap-2 flex-wrap text-[12.5px]">
+      <Icon name="box" className="size-3.5 text-faint flex-none" />
+      <span>
+        {fileName && <span className="font-mono">{fileName} · </span>}
+        서비스 {preview.services.length}개 · 컨테이너 {total}개
+        <span className="text-muted"> · 프로젝트 <span className="font-mono">{preview.project}</span></span>
+      </span>
+      {warned && <Chip tone="warn">확인 필요</Chip>}
+      <Button size="sm" variant="ghost" onClick={() => openModal((c) => <ComposeContainersModal preview={preview} fileName={fileName} onClose={c} />, "md")}>
+        컨테이너 보기
+      </Button>
+    </div>
+  );
+}
+
+function ComposeContainersModal({ preview, fileName, onClose }: { preview: Preview; fileName?: string; onClose: () => void }) {
+  const total = preview.services.reduce((n, sv) => n + sv.containers.length, 0);
+  return (
+    <>
+      <ModalHead title="뜨는 컨테이너" sub={`${fileName ? fileName + " · " : ""}서비스 ${preview.services.length}개 · 컨테이너 ${total}개 · 프로젝트 ${preview.project}`} onClose={onClose} />
+      <ModalBody>
+        <ContainersTable preview={preview} />
+        <span className="text-[12px] text-muted">
+          컨테이너 이름은 &lt;프로젝트&gt;-&lt;서비스&gt;-&lt;번호&gt;예요 (container_name이 있으면 그 이름). 프로젝트는 배포 폴더 이름이고, 파일에 name:이 있으면 그 이름이에요.
+          {" ${…}"} 값은 배포할 때 채워져요. 프로필이 붙은 서비스는 그 프로필을 켜야 떠요.
         </span>
-        <span className="text-muted">
-          프로젝트 <span className="font-mono">{preview.project}</span>
-        </span>
-      </div>
+      </ModalBody>
+      <ModalFoot>
+        <Button variant="primary" onClick={onClose}>
+          닫기
+        </Button>
+      </ModalFoot>
+    </>
+  );
+}
+
+function ContainersTable({ preview }: { preview: Preview }) {
+  return (
       <div className="overflow-x-auto rounded-lg border border-line">
         <table className="w-full text-[12.5px] min-w-[520px]">
           <thead>
@@ -109,9 +142,5 @@ export function ComposePreview({ content, servicePath, jobName }: { content: str
           </tbody>
         </table>
       </div>
-      <span className="text-[11.5px] text-muted">
-        {"${…}"} 값은 배포할 때 채워져요. 프로필이 붙은 서비스는 그 프로필을 켜야 떠요.
-      </span>
-    </div>
   );
 }
