@@ -698,19 +698,44 @@ def _save_digest(ref: str, tag: str, digest: str) -> None:
             db.commit()
 
 
-def apply_pin(plan: Plan, pin: dict[str, Any], digest: str) -> None:
-    """Point the run's image variables at tag@digest: compose and docker then pull exactly that image."""
+def pin_tag_vars(pin: dict[str, Any]) -> list[str]:
+    """The tag variables apply_pin points at the digest for this image."""
+    if pin["role"] == "main":
+        return ["IMAGE_TAG"]
+    return [f"{pin['var']}_TAG"] + ([pin["tagVar"]] if pin.get("tagVar") else [])
+
+
+def tag_readers(files: list[dict]) -> dict[str, set[str]]:
+    """{tag variable: images whose `image:` line reads it}: `api:${IMAGE_TAG}` and `worker:${IMAGE_TAG}` share IMAGE_TAG."""
+    out: dict[str, set[str]] = {}
+    for x in bundles.file_images(files):
+        if x.get("tagVar"):
+            out.setdefault(x["tagVar"], set()).add(x["ref"])
+    return out
+
+
+def apply_pin(plan: Plan, pin: dict[str, Any], digest: str, shared: frozenset[str] = frozenset()) -> None:
+    """Point the run's image variables at tag@digest: compose and docker then pull exactly that image.
+
+    A tag variable in `shared` is read by other images too (`worker:${IMAGE_TAG}`): it keeps the plain tag, since
+    this image's digest is not in their repositories. *_IMAGE_REF and *_DIGEST still carry the digest.
+    """
     ref, tag = pin["ref"], pin["tag"]
     pinned = f"{tag}@{digest}"
+
+    def tag_for(name: str) -> str:
+        return tag if name in shared else pinned
+
     if plan.kind == "script":
         v = plan.variables
         if pin["role"] == "main":
-            v.update(IMAGE_TAG=pinned, IMAGE_REF=f"{ref}:{pinned}", IMAGE_VERSION=tag, IMAGE_DIGEST=digest)
+            v.update(IMAGE_TAG=tag_for("IMAGE_TAG"), IMAGE_REF=f"{ref}:{pinned}", IMAGE_VERSION=tag, IMAGE_DIGEST=digest)
         else:
             var = pin["var"]
-            v.update({f"{var}_TAG": pinned, f"{var}_IMAGE_REF": f"{ref}:{pinned}", f"{var}_VERSION": tag, f"{var}_DIGEST": digest})
+            v.update({f"{var}_TAG": tag_for(f"{var}_TAG"), f"{var}_IMAGE_REF": f"{ref}:{pinned}", f"{var}_VERSION": tag,
+                      f"{var}_DIGEST": digest})
             if pin.get("tagVar"):
-                v[pin["tagVar"]] = pinned
+                v[pin["tagVar"]] = tag_for(pin["tagVar"])
     else:
         xv = plan.extra_vars
         if pin["role"] == "main":
@@ -723,6 +748,7 @@ def apply_pin(plan: Plan, pin: dict[str, Any], digest: str) -> None:
 async def pin_images(plan: Plan, out: Out) -> bool:
     """Ask each image's registry for the tag's digest and deploy that. False: stop the run (a re-pushed tag on
     an auto-deploy). A registry that can't be asked leaves the tag as it is, with a warning."""
+    readers = tag_readers(plan.files) if plan.kind == "script" else {}
     for pin in plan.pins:
         ref, tag = pin["ref"], pin["tag"]
         reg = next((r for r in plan.registries if ref.split("/")[0] == r.host), None)
@@ -738,8 +764,13 @@ async def pin_images(plan: Plan, out: Out) -> bool:
                 return False
         elif not stored:
             await asyncio.to_thread(_save_digest, ref, tag, digest)
-        apply_pin(plan, pin, digest)
+        shared = frozenset(n for n in pin_tag_vars(pin) if readers.get(n, set()) - {ref})
+        apply_pin(plan, pin, digest, shared)
         out.line("", f"이미지 고정: {ref}:{tag} → {digest[:19]}…")
+        for n in sorted(shared):
+            others = ", ".join(r.split("/")[-1] for r in sorted(readers[n] - {ref}))
+            out.line("y", f"  {n}은(는) {others}도 같이 써서 태그({tag})만 넣어요. 이 이미지만 고정하려면 파일에서 "
+                          f"{'${IMAGE_REF}' if pin['role'] == 'main' else '${' + pin['var'] + '_IMAGE_REF}'}를 쓰세요.")
     return True
 
 

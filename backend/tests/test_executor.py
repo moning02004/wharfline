@@ -302,6 +302,28 @@ def test_apply_pin_points_tags_at_the_digest():
     assert pb.extra_vars["image_ref"] == f"ghcr.io/a/api:v1@{d}" and pb.extra_vars["image_digest"] == d
 
 
+def test_a_tag_variable_shared_by_images_keeps_the_plain_tag(monkeypatch):
+    """`app:${IMAGE_TAG}` and `worker:${IMAGE_TAG}`: the app's digest must not reach the worker's pull."""
+    app, worker, other = "git.example.com/o/app", "git.example.com/o/worker", "git.example.com/o/web"
+    d = "sha256:" + "b" * 64
+    plan = _plan("/srv/x", [])
+    plan.files = [{"path": "docker-compose.yml", "content":
+                   f"services:\n  app:\n    image: {app}:${{IMAGE_TAG}}\n  worker:\n    image: {worker}:${{IMAGE_TAG}}\n"
+                   f"  web:\n    image: \"{other}:${{WEB_TAG:-latest}}\"\n"}]
+    plan.pins = [{"ref": app, "tag": "v3", "role": "main"},
+                 {"ref": other, "tag": "v9", "role": "extra", "var": "WEB", "tagVar": "WEB_TAG"}]
+    monkeypatch.setattr(executor.registryclient, "resolve", lambda *a: d)
+    monkeypatch.setattr(executor, "_stored_digest", lambda *a: "")
+    monkeypatch.setattr(executor, "_save_digest", lambda *a: None)
+    runner.live[plan.no] = {"events": [], "done": False, "cancelled": False}
+    assert asyncio.run(executor.pin_images(plan, executor.Out(plan)))
+    v = plan.variables
+    assert v["IMAGE_TAG"] == "v3" and v["IMAGE_REF"] == f"{app}:v3@{d}" and v["IMAGE_DIGEST"] == d
+    assert v["WEB_TAG"] == f"v9@{d}"  # read by one image only: pinned
+    texts = [e.get("text", "") for e in runner.live[plan.no]["events"]]
+    assert any("IMAGE_TAG" in t and "worker" in t for t in texts)
+
+
 @pytest.mark.parametrize("url,expected", [
     ("https://git.ermore.ai/ermore/infra", ("git.ermore.ai", 443)),
     ("https://git.example.com:8443/o/r.git", ("git.example.com", 8443)),
