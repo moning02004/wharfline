@@ -1168,19 +1168,27 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
             <span className="font-mono">{composeFrom === "git" ? composePath.split("/").pop() || COMPOSE_FILE : files[0]?.path ?? COMPOSE_FILE}</span>
             <span className="text-muted">{composeFrom === "git" ? `저장소의 ${composePath} · 배포할 때 받아요` : "Compose 파일 단계에서 넣은 내용"}</span>
           </div>
+          <ComposePreview content={composeText} servicePath={servicePath} jobName={name} />
         </Field>
       ) : (
-        <FileBundleField
-          jobId={editing ? job.id : null}
-          filesVer={job?.filesVer ?? null}
-          files={files}
-          update={(fn) => {
-            setFiles(fn);
-            setFilesTouched(true);
-          }}
-          onEnv={mergeEnv}
-          onDirty={setFilesDirty}
-        />
+        <>
+          <FileBundleField
+            jobId={editing ? job.id : null}
+            filesVer={job?.filesVer ?? null}
+            files={files}
+            update={(fn) => {
+              setFiles(fn);
+              setFilesTouched(true);
+            }}
+            onEnv={mergeEnv}
+            onDirty={setFilesDirty}
+          />
+          {scriptCompose?.content && (
+            <Field label={`${scriptCompose.path}로 뜨는 컨테이너`}>
+              <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} />
+            </Field>
+          )}
+        </>
       )}
     </>
   );
