@@ -493,7 +493,8 @@ def save_file_version(db: Session, job: m.Job, old: list[dict] | None, new: list
     return True
 
 
-BAD_COMPOSE_PATH = "compose 파일 경로는 레포 안의 .yml 파일이에요. 예: docker-compose.yml"
+BAD_COMPOSE_PATH = ("compose 파일은 docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml 중 하나예요. "
+                    "예: docker-compose.yml, deploy/compose.yaml")
 COMPOSE_STEPS = [
     {"name": "이미지 받기", "run": 'cd "$SERVICE_PATH"\ndocker compose pull'},
     {"name": "컨테이너 교체", "run": 'cd "$SERVICE_PATH"\ndocker compose up -d --remove-orphans'},
@@ -502,10 +503,16 @@ COMPOSE_STEPS = [
 
 
 def compose_files(files: list[dict] | None) -> list[dict]:
-    """A Compose job has exactly one file, always saved under the name docker compose looks for."""
+    """A Compose job has exactly one file, saved under one of the names docker compose finds on its own
+    (the uploaded file's name when it is one of them, else docker-compose.yml)."""
     if not files or len(files) != 1 or not files[0]["content"].strip():
         raise HTTPException(400, "compose 파일을 넣어 주세요.")
-    return [{"path": executor.COMPOSE_FILE, "content": files[0]["content"]}]
+    base = files[0]["path"].replace("\\", "/").rsplit("/", 1)[-1]
+    return [{"path": base if bundles.is_compose_name(base) else bundles.DEFAULT_COMPOSE, "content": files[0]["content"]}]
+
+
+def compose_path_ok(path: str) -> bool:
+    return bool(s.PLAYBOOK_PATH_RE.match(path)) and bundles.is_compose_name(path)
 
 
 def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | None, str | None, str, list[dict[str, str]] | None, str | None]:
@@ -527,7 +534,7 @@ def resolve_playbook(db: Session, body: JobIn) -> tuple[m.Repo | None, str | Non
         repo, path = None, None
         if body.compose is not None and body.compose.url.strip():
             path = body.compose.path.strip()
-            if not s.PLAYBOOK_PATH_RE.match(path):
+            if not compose_path_ok(path):
                 raise HTTPException(400, BAD_COMPOSE_PATH)
             repo = s.ensure_git_repo(db, body.compose.url, body.compose.branch, body.compose.key.strip())
     elif pb.source == "builtin":
@@ -861,6 +868,21 @@ class ComposeFetchIn(BaseModel):
     key: str = ""
 
 
+class ComposePreviewIn(BaseModel):
+    content: str
+    servicePath: str = ""  # the folder it runs in: the project name when the file has no `name:`
+    name: str = ""  # the job name: the folder is /srv/<slug> when no service path is given
+
+
+@router.post("/compose/preview")
+def preview_compose(body: ComposePreviewIn):
+    """The services and containers a compose file would start, for the job form (nothing runs)."""
+    if len(body.content) > bundles.MAX_FILE_BYTES:
+        raise HTTPException(400, "compose 파일이 너무 커요.")
+    folder = body.servicePath.strip().rstrip("/") or f"/srv/{s.app_slug(body.name or 'app')}"
+    return bundles.compose_preview(body.content, folder.rsplit("/", 1)[-1])
+
+
 @router.post("/compose/fetch")
 async def fetch_compose(body: ComposeFetchIn, db: Session = Depends(get_db)):
     """Read a compose file from a repo for the job form: the same access the job will use when it runs."""
@@ -872,7 +894,7 @@ async def fetch_compose(body: ComposeFetchIn, db: Session = Depends(get_db)):
         raise HTTPException(400, "저장소 주소를 확인해 주세요. 예: https://github.com/org/app.git")
     if not s.BRANCH_RE.match(branch):
         raise HTTPException(400, "브랜치 이름을 확인해 주세요. 예: main")
-    if not s.PLAYBOOK_PATH_RE.match(path):
+    if not compose_path_ok(path):
         raise HTTPException(400, BAD_COMPOSE_PATH)
     existing = db.scalar(select(m.Repo).where(m.Repo.url == url, m.Repo.branch == branch))
     key, auth = (s.repo_key(db, existing), existing.auth) if existing else s.repo_key_for(db, url, body.key.strip())

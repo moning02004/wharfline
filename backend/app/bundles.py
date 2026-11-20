@@ -22,6 +22,73 @@ SKIP_PARTS = {"__MACOSX", ".git"}
 SKIP_NAMES = {".DS_Store", "Thumbs.db"}
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
+# The file names docker compose finds on its own, in its order of preference.
+COMPOSE_NAMES = ("compose.yaml", "compose.yml", "docker-compose.yaml", "docker-compose.yml")
+DEFAULT_COMPOSE = "docker-compose.yml"
+
+
+def is_compose_name(path: str) -> bool:
+    return path.replace("\\", "/").rsplit("/", 1)[-1].lower() in COMPOSE_NAMES
+
+
+def project_name(text: str) -> str:
+    """How docker compose turns a name into a project name: lowercase, only a-z 0-9 _ -, starting with a letter or digit."""
+    name = re.sub(r"[^a-z0-9_-]", "", text.lower())
+    return name.lstrip("_-") or "app"
+
+
+def compose_preview(content: str, default_project: str) -> dict:
+    """What `docker compose up` would start: each service with its image, container names, replicas, ports.
+
+    Container names follow compose: container_name if set, else <project>-<service>-<n>. The project is the file's
+    top-level `name:`, else the folder it runs in. Values with ${VARS} are shown as written (filled at deploy time).
+    """
+    import yaml
+
+    try:
+        doc = yaml.safe_load(content) or {}
+    except yaml.YAMLError as e:
+        mark = getattr(e, "problem_mark", None)
+        where = f" ({mark.line + 1}번째 줄)" if mark else ""
+        return {"ok": False, "error": f"YAML을 읽지 못했어요{where}: {getattr(e, 'problem', None) or e}", "project": "", "services": []}
+    if not isinstance(doc, dict) or not isinstance(doc.get("services"), dict) or not doc["services"]:
+        return {"ok": False, "error": "services: 아래에 서비스가 없어요.", "project": "", "services": []}
+    named = doc.get("name")
+    project = project_name(str(named)) if isinstance(named, str) and "${" not in named else project_name(default_project)
+    services = []
+    for name, svc in doc["services"].items():
+        svc = svc if isinstance(svc, dict) else {}
+        deploy = svc.get("deploy") if isinstance(svc.get("deploy"), dict) else {}
+        replicas = deploy.get("replicas", svc.get("scale", 1))
+        replicas = replicas if isinstance(replicas, int) and 0 <= replicas <= 50 else 1
+        fixed = svc.get("container_name")
+        if fixed:
+            containers = [str(fixed)]
+        else:
+            containers = [f"{project}-{name}-{i}" for i in range(1, replicas + 1)]
+        ports = []
+        for p in svc.get("ports") or []:
+            if isinstance(p, dict):
+                ports.append(f"{p.get('published', '')}:{p.get('target', '')}".strip(":"))
+            else:
+                ports.append(str(p))
+        deps = svc.get("depends_on") or []
+        build = svc.get("build")
+        services.append({
+            "name": str(name),
+            "image": str(svc.get("image") or ""),
+            "build": bool(build),
+            "containers": containers,
+            "replicas": 1 if fixed else replicas,
+            "ports": ports,
+            "dependsOn": list(deps.keys()) if isinstance(deps, dict) else [str(d) for d in deps],
+            "profiles": [str(p) for p in svc.get("profiles") or []],
+            "warning": "container_name이 있어서 1개만 띄울 수 있어요" if fixed and replicas > 1 else
+                       ("image도 build도 없어요" if not svc.get("image") and not build else None),
+        })
+    return {"ok": True, "error": None, "project": project, "services": services}
+
+
 # Settings that hand a container (or pod) control of the server. Shown as warnings: they can be on purpose.
 RISKY: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"privileged:\s*true"), "privileged: true (컨테이너가 서버 전체 권한을 가져요)"),

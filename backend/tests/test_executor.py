@@ -148,7 +148,7 @@ def test_refresh_compose_uses_the_tag(monkeypatch):
     plan, out = _compose_plan(), _Lines()
     assert asyncio.run(executor.refresh_compose(plan, out)) is True
     assert asked == [("v2", "deploy/compose.yml")]
-    assert plan.files == [{"path": "docker-compose.yml", "content": "services: {}\n"}]
+    assert plan.files == [{"path": "compose.yml", "content": "services: {}\n"}]  # the repo file keeps its compose name
 
 
 def test_refresh_compose_falls_back_to_the_branch_when_the_tag_is_missing(monkeypatch):

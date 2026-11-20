@@ -11,6 +11,7 @@ import { ModalBody, ModalFoot, ModalHead, YesNoModal } from "../components/Modal
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { RunUserField } from "./AgentModals";
+import { COMPOSE_NAMES, ComposePreview, isComposeName } from "../components/ComposePreview";
 import { GroupModal } from "./AccessModals";
 import { FileWorkspaceModal, NEW_FILE, riskyIn, useBundleUpload, type FileUpdate } from "./FileWorkspace";
 import { PlaybookEditor } from "../pages/PlaybookEditor";
@@ -140,7 +141,6 @@ const SCRIPT_EXAMPLE: Omit<StepDraft, "id">[] = [
 ];
 
 /* 스크립트 가이드: "예시 보기" opens one, to copy from or to fill the script with. */
-const COMPOSE_NAMES = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
 /** Whether an uploaded file is what an applied example needs: the same path, or for compose any compose file name at any
  * depth, for Kubernetes any YAML manifest. The banner only says the deploy cannot run yet, so near matches count. */
 function fileServes(path: string, need: { path: string; guide: GuideId }) {
@@ -558,16 +558,21 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
 
   const composeText = files[0]?.content ?? "";
   const composePath = path.trim() || COMPOSE_FILE;
-  const setComposeText = (t: string) => {
-    setFiles(t ? [{ path: COMPOSE_FILE, size: t.length, content: t }] : []);
+  /** The compose file keeps its own name when it is one docker compose finds (compose.yaml, docker-compose.yml, …). */
+  const setComposeText = (t: string, fileName?: string) => {
+    const name = fileName && isComposeName(fileName) ? fileName.split("/").pop()! : files[0]?.path && isComposeName(files[0].path) ? files[0].path : COMPOSE_FILE;
+    setFiles(t ? [{ path: name, size: t.length, content: t }] : []);
     setFilesTouched(true);
   };
+  // Script jobs: the compose file at the top of the uploaded files, the one `docker compose` reads in $SERVICE_PATH.
+  const scriptCompose = files.find((f) => !f.path.includes("/") && isComposeName(f.path));
   const registries = useApi<{ registries: { host: string }[] }>(canResources ? "/registries" : null).data?.registries;
   // Hosts of the file's images with no registry saved: a private image there would fail to pull.
   const noRegistry = !canResources || !registries ? [] : [...new Set(fileImages.map((fi) => fi.ref.split("/")[0]))].filter((h) => h.includes(".") && h !== "docker.io" && !registries.some((r) => r.host === h));
   const repoError = (): string => {
     if (!reused && !/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim())) return "저장소 주소를 확인해 주세요. 예: https://github.com/org/app.git";
-    if (!PATH_RE.test(composePath)) return "compose 파일 경로는 레포 안의 .yml 파일이에요. 예: docker-compose.yml";
+    if (!PATH_RE.test(composePath) || !isComposeName(composePath))
+      return "compose 파일은 docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml 중 하나예요. 예: deploy/compose.yaml";
     if (ssh && !reused && !key) return "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요.";
     return "";
   };
@@ -577,7 +582,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     setComposeBusy(true);
     try {
       const r = await api.post<{ content: string; commit: string }>("/compose/fetch", { url: url.trim(), branch: branch.trim() || "main", path: composePath, key: reused ? NO_KEY : key });
-      setComposeText(r.content);
+      setComposeText(r.content, composePath);
       toast(`${composePath}을(를) 불러왔어요`);
     } catch (e) {
       fail(errMsg(e));
@@ -1160,7 +1165,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
         <Field label="올릴 파일">
           <div className="flex items-center gap-2 flex-wrap rounded-lg border border-line px-3 py-2 text-[12.5px]">
             <Icon name="file" className="size-3.5 text-faint flex-none" />
-            <span className="font-mono">{COMPOSE_FILE}</span>
+            <span className="font-mono">{composeFrom === "git" ? composePath.split("/").pop() || COMPOSE_FILE : files[0]?.path ?? COMPOSE_FILE}</span>
             <span className="text-muted">{composeFrom === "git" ? `저장소의 ${composePath} · 배포할 때 받아요` : "Compose 파일 단계에서 넣은 내용"}</span>
           </div>
         </Field>
@@ -1273,6 +1278,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                     <Hint>배포할 때마다 그 버전 태그의 파일을 저장소에서 받아요. 태그가 없으면 이 브랜치의 파일을 써요.</Hint>
                   </div>
                   {composeText && <pre className="m-0 max-h-[180px] overflow-auto scroll-soft rounded-lg bg-surface-2 border border-line p-3 font-mono text-[12px]">{composeText}</pre>}
+                  <ComposePreview content={composeText} servicePath={servicePath} jobName={name} />
                 </>
               ) : (
                 <>
@@ -1285,6 +1291,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                     value={composeText}
                     onChange={(e) => setComposeText(e.target.value)}
                   />
+                  <ComposePreview content={composeText} servicePath={servicePath} jobName={name} />
                   <label className="text-[12.5px] text-muted">
                     또는 파일 열기{" "}
                     <input
@@ -1292,7 +1299,9 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                       accept=".yml,.yaml"
                       onChange={async (e) => {
                         const f = e.target.files?.[0];
-                        if (f) setComposeText(await f.text());
+                        if (!f) return;
+                        if (!isComposeName(f.name)) toast(`${f.name}: compose 파일 이름은 ${COMPOSE_NAMES.join(", ")} 중 하나여야 해서 ${COMPOSE_FILE}로 저장해요`);
+                        setComposeText(await f.text(), f.name);
                       }}
                     />
                   </label>
@@ -1367,6 +1376,11 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                   onEnv={mergeEnv}
                   onDirty={setFilesDirty}
                 />
+                {scriptCompose?.content && (
+                  <Field label={`${scriptCompose.path}로 뜨는 컨테이너`}>
+                    <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} />
+                  </Field>
+                )}
                 {fileImages.length > 0 && (
                   <Field label="추적하는 이미지">
                     <div className="flex flex-col rounded-lg border border-line divide-y divide-line">
