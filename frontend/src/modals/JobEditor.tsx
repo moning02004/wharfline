@@ -11,6 +11,7 @@ import { ModalBody, ModalFoot, ModalHead, YesNoModal } from "../components/Modal
 import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./JobGuide";
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { RunUserField } from "./AgentModals";
+import { COMPOSE_NAMES, ComposePreview, isComposeName } from "../components/ComposePreview";
 import { GroupModal } from "./AccessModals";
 import { FileWorkspaceModal, NEW_FILE, riskyIn, useBundleUpload, type FileUpdate } from "./FileWorkspace";
 import { PlaybookEditor } from "../pages/PlaybookEditor";
@@ -67,7 +68,7 @@ interface ExtraDraft {
 }
 const VAR_RE = /^[A-Z][A-Z0-9_]{0,23}$/;
 /** Variables Wharfline sets itself, and common shell variables, never asked for in the env step. */
-const BUILTIN_VARS = ["SERVICE_PATH", "ENV_FILE", "IMAGE", "IMAGE_TAG", "IMAGE_REF"];
+const BUILTIN_VARS = ["SERVICE_PATH", "ENV_FILE", "IMAGE", "IMAGE_TAG", "IMAGE_REF", "ROLLOUT_SERVICES"];
 const SHELL_VARS = new Set(["HOME", "PATH", "USER", "PWD", "OLDPWD", "SHELL", "HOSTNAME", "LANG", "TERM", "UID", "PPID", "RANDOM", "IFS"]);
 
 /** "ghcr.io/acme/api-server:v1" -> "API_SERVER": a starting variable name for an extra image. */
@@ -140,7 +141,6 @@ const SCRIPT_EXAMPLE: Omit<StepDraft, "id">[] = [
 ];
 
 /* 스크립트 가이드: "예시 보기" opens one, to copy from or to fill the script with. */
-const COMPOSE_NAMES = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
 /** Whether an uploaded file is what an applied example needs: the same path, or for compose any compose file name at any
  * depth, for Kubernetes any YAML manifest. The banner only says the deploy cannot run yet, so near matches count. */
 function fileServes(path: string, need: { path: string; guide: GuideId }) {
@@ -234,19 +234,21 @@ const SCRIPT_GUIDES: Record<GuideId, ScriptGuide> = {
   rollout: {
     title: "docker rollout으로 무중단 교체",
     summary: "새 컨테이너가 준비된 뒤 옛 컨테이너를 내려서 접속이 끊기지 않아요.",
-    intro: "docker rollout은 서버 초기화 때 함께 설치돼요. 서비스를 잠깐 2개로 늘려 새 컨테이너가 healthy가 되면 옛 컨테이너를 내려요.",
+    intro: "docker rollout은 서버 초기화 때 함께 설치돼요. 서비스를 잠깐 2개로 늘려 새 컨테이너가 healthy가 되면 옛 컨테이너를 내려요. 어떤 서비스를 rollout할지는 Wharfline이 compose 파일을 보고 $ROLLOUT_SERVICES에 넣어 줘요.",
     notes: [
-      "rollout할 서비스에는 container_name과 ports(호스트 포트)를 쓰지 마세요. 컨테이너 2개가 잠깐 같이 떠야 해요.",
+      "$ROLLOUT_SERVICES에는 container_name, 고정 호스트 포트(\"8080:80\"), 프로필이 없는 서비스만 들어가요. DB처럼 데이터를 가진 서비스(db, postgres, redis …)도 빠져요. 나머지는 마지막 단계에서 평소처럼 교체돼요.",
+      "판단을 바꾸려면 서비스에 labels: { wharfline.rollout: \"true\" } 또는 \"false\"를 붙여요. 어떤 서비스가 무중단으로 바뀌는지는 파일 아래 '컨테이너 보기'에서 볼 수 있어요.",
       "healthcheck를 넣어 두세요. 그래야 새 컨테이너가 준비됐는지 보고 옛 것을 내려요.",
       "앞단 프록시(nginx 등)가 같은 네트워크에서 서비스 이름으로 찾아가게 해 주세요.",
-      "처음 배포할 때는 '처음이면 띄우기'가 서비스를 띄우고, 그다음부터는 rollout이 바꿔요. 다른 서비스의 새 이미지는 docker compose up -d db 처럼 이름을 적어 따로 띄워요.",
+      "처음 배포할 때는 '처음이면 띄우기'가 서비스를 띄우고, 그다음부터는 rollout이 바꿔요.",
       "서버에 docker rollout이 없으면 새 서버 초기화를 다시 하거나 github.com/wowu/docker-rollout 의 설치 방법을 따르세요.",
     ],
     file: { path: "docker-compose.yml", content: ROLLOUT_SAMPLE },
     steps: [
       { name: "이미지 받기", run: 'mkdir -p "$SERVICE_PATH"\ncd "$SERVICE_PATH"\ndocker compose pull' },
       { name: "처음이면 띄우기", run: 'cd "$SERVICE_PATH"\ndocker compose up -d --no-recreate --remove-orphans' },
-      { name: "무중단 교체", run: 'cd "$SERVICE_PATH"\ndocker rollout app' },
+      { name: "무중단 교체", run: 'cd "$SERVICE_PATH"\nfor s in $ROLLOUT_SERVICES; do docker rollout "$s"; done' },
+      { name: "나머지 교체", run: 'cd "$SERVICE_PATH"\ndocker compose up -d --remove-orphans' },
       { name: "정리", run: "docker image prune -f" },
     ],
   },
@@ -558,16 +560,21 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
 
   const composeText = files[0]?.content ?? "";
   const composePath = path.trim() || COMPOSE_FILE;
-  const setComposeText = (t: string) => {
-    setFiles(t ? [{ path: COMPOSE_FILE, size: t.length, content: t }] : []);
+  /** The compose file keeps its own name when it is one docker compose finds (compose.yaml, docker-compose.yml, …). */
+  const setComposeText = (t: string, fileName?: string) => {
+    const name = fileName && isComposeName(fileName) ? fileName.split("/").pop()! : files[0]?.path && isComposeName(files[0].path) ? files[0].path : COMPOSE_FILE;
+    setFiles(t ? [{ path: name, size: t.length, content: t }] : []);
     setFilesTouched(true);
   };
+  // Script jobs: the compose file at the top of the uploaded files, the one `docker compose` reads in $SERVICE_PATH.
+  const scriptCompose = files.find((f) => !f.path.includes("/") && isComposeName(f.path));
   const registries = useApi<{ registries: { host: string }[] }>(canResources ? "/registries" : null).data?.registries;
   // Hosts of the file's images with no registry saved: a private image there would fail to pull.
   const noRegistry = !canResources || !registries ? [] : [...new Set(fileImages.map((fi) => fi.ref.split("/")[0]))].filter((h) => h.includes(".") && h !== "docker.io" && !registries.some((r) => r.host === h));
   const repoError = (): string => {
     if (!reused && !/^(git@|ssh:\/\/|https:\/\/)/.test(url.trim())) return "저장소 주소를 확인해 주세요. 예: https://github.com/org/app.git";
-    if (!PATH_RE.test(composePath)) return "compose 파일 경로는 레포 안의 .yml 파일이에요. 예: docker-compose.yml";
+    if (!PATH_RE.test(composePath) || !isComposeName(composePath))
+      return "compose 파일은 docker-compose.yml, docker-compose.yaml, compose.yml, compose.yaml 중 하나예요. 예: deploy/compose.yaml";
     if (ssh && !reused && !key) return "SSH 주소는 SSH 키가 있어야 해요. 키를 추가하거나 HTTPS 주소를 넣어 주세요.";
     return "";
   };
@@ -577,7 +584,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     setComposeBusy(true);
     try {
       const r = await api.post<{ content: string; commit: string }>("/compose/fetch", { url: url.trim(), branch: branch.trim() || "main", path: composePath, key: reused ? NO_KEY : key });
-      setComposeText(r.content);
+      setComposeText(r.content, composePath);
       toast(`${composePath}을(를) 불러왔어요`);
     } catch (e) {
       fail(errMsg(e));
@@ -1160,22 +1167,26 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
         <Field label="올릴 파일">
           <div className="flex items-center gap-2 flex-wrap rounded-lg border border-line px-3 py-2 text-[12.5px]">
             <Icon name="file" className="size-3.5 text-faint flex-none" />
-            <span className="font-mono">{COMPOSE_FILE}</span>
+            <span className="font-mono">{composeFrom === "git" ? composePath.split("/").pop() || COMPOSE_FILE : files[0]?.path ?? COMPOSE_FILE}</span>
             <span className="text-muted">{composeFrom === "git" ? `저장소의 ${composePath} · 배포할 때 받아요` : "Compose 파일 단계에서 넣은 내용"}</span>
           </div>
+          <ComposePreview content={composeText} servicePath={servicePath} jobName={name} />
         </Field>
       ) : (
-        <FileBundleField
-          jobId={editing ? job.id : null}
-          filesVer={job?.filesVer ?? null}
-          files={files}
-          update={(fn) => {
-            setFiles(fn);
-            setFilesTouched(true);
-          }}
-          onEnv={mergeEnv}
-          onDirty={setFilesDirty}
-        />
+        <>
+          <FileBundleField
+            jobId={editing ? job.id : null}
+            filesVer={job?.filesVer ?? null}
+            files={files}
+            update={(fn) => {
+              setFiles(fn);
+              setFilesTouched(true);
+            }}
+            onEnv={mergeEnv}
+            onDirty={setFilesDirty}
+          />
+          {scriptCompose?.content && <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} fileName={scriptCompose.path} />}
+        </>
       )}
     </>
   );
@@ -1273,6 +1284,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                     <Hint>배포할 때마다 그 버전 태그의 파일을 저장소에서 받아요. 태그가 없으면 이 브랜치의 파일을 써요.</Hint>
                   </div>
                   {composeText && <pre className="m-0 max-h-[180px] overflow-auto scroll-soft rounded-lg bg-surface-2 border border-line p-3 font-mono text-[12px]">{composeText}</pre>}
+                  <ComposePreview content={composeText} servicePath={servicePath} jobName={name} />
                 </>
               ) : (
                 <>
@@ -1285,6 +1297,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                     value={composeText}
                     onChange={(e) => setComposeText(e.target.value)}
                   />
+                  <ComposePreview content={composeText} servicePath={servicePath} jobName={name} />
                   <label className="text-[12.5px] text-muted">
                     또는 파일 열기{" "}
                     <input
@@ -1292,7 +1305,9 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                       accept=".yml,.yaml"
                       onChange={async (e) => {
                         const f = e.target.files?.[0];
-                        if (f) setComposeText(await f.text());
+                        if (!f) return;
+                        if (!isComposeName(f.name)) toast(`${f.name}: compose 파일 이름은 ${COMPOSE_NAMES.join(", ")} 중 하나여야 해서 ${COMPOSE_FILE}로 저장해요`);
+                        setComposeText(await f.text(), f.name);
                       }}
                     />
                   </label>
@@ -1367,6 +1382,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                   onEnv={mergeEnv}
                   onDirty={setFilesDirty}
                 />
+                {scriptCompose?.content && <ComposePreview content={scriptCompose.content} servicePath={servicePath} jobName={name} fileName={scriptCompose.path} />}
                 {fileImages.length > 0 && (
                   <Field label="추적하는 이미지">
                     <div className="flex flex-col rounded-lg border border-line divide-y divide-line">

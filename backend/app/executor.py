@@ -1142,7 +1142,8 @@ async def refresh_compose(plan: Plan, out: Out) -> bool:
         except RepoFileError as e:
             out.line("r", f"✘ {repo['url']}의 {path}를 받지 못했어요. {e}")
             return False
-        plan.files = [{"path": COMPOSE_FILE, "content": content}]
+        base = path.rsplit("/", 1)[-1]
+        plan.files = [{"path": base if bundles.is_compose_name(base) else COMPOSE_FILE, "content": content}]
         bad = bundles.image_line_problem(plan.files)
         if bad:
             out.line("r", f"✘ {bad}")
@@ -1210,6 +1211,8 @@ async def _run_script(plan: Plan, out: Out) -> bool:
             conns[t.name] = AgentConn(t)
             alive.append(t)
             bump(t, "ok")
+        # Services docker rollout can replace, from the compose file this run uploads (`for s in $ROLLOUT_SERVICES`).
+        plan.variables["ROLLOUT_SERVICES"] = " ".join(bundles.rollout_services(plan.files))
         out.line("", "환경 변수: " + " ".join(f"{k}={v}" for k, v in plan.variables.items()))
         out.end("서버 연결", bool(alive))
         if not alive:
