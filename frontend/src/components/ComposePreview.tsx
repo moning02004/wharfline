@@ -73,24 +73,19 @@ export function ComposePreview({ content, servicePath, jobName, fileName }: { co
         <span className="text-muted"> · 프로젝트 <span className="font-mono">{preview.project}</span></span>
       </span>
       {warned && <Chip tone="warn">확인 필요</Chip>}
-      <Button size="sm" variant="ghost" onClick={() => openModal((c) => <ComposeContainersModal preview={preview} fileName={fileName} onClose={c} />, "md")}>
+      <Button size="sm" variant="ghost" onClick={() => openModal((c) => <ComposeContainersModal preview={preview} onClose={c} />, "md")}>
         컨테이너 보기
       </Button>
     </div>
   );
 }
 
-function ComposeContainersModal({ preview, fileName, onClose }: { preview: Preview; fileName?: string; onClose: () => void }) {
-  const total = preview.services.reduce((n, sv) => n + sv.containers.length, 0);
+function ComposeContainersModal({ preview, onClose }: { preview: Preview; onClose: () => void }) {
   return (
     <>
-      <ModalHead title="뜨는 컨테이너" sub={`${fileName ? fileName + " · " : ""}서비스 ${preview.services.length}개 · 컨테이너 ${total}개 · 프로젝트 ${preview.project}`} onClose={onClose} />
+      <ModalHead title="컨테이너 목록" onClose={onClose} />
       <ModalBody>
         <ContainersTable preview={preview} />
-        <span className="text-[12px] text-muted">
-          컨테이너 이름은 &lt;프로젝트&gt;-&lt;서비스&gt;-&lt;번호&gt;예요 (container_name이 있으면 그 이름). 프로젝트는 배포 폴더 이름이고, 파일에 name:이 있으면 그 이름이에요.
-          {" ${…}"} 값은 배포할 때 채워져요. 프로필이 붙은 서비스는 그 프로필을 켜야 떠요.
-        </span>
       </ModalBody>
       <ModalFoot>
         <Button variant="primary" onClick={onClose}>
