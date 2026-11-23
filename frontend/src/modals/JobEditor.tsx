@@ -12,6 +12,7 @@ import { GuideContext, JOB_STEPS, TipSpot, type JobStepId, type TipId } from "./
 import { copyText, NewHostModal, NewInventoryModal, NewKeyModal, NewRegistryModal } from "./ResourceModals";
 import { RunUserField } from "./AgentModals";
 import { COMPOSE_NAMES, ComposePreview, isComposeName } from "../components/ComposePreview";
+import { RepoAutofill, type RepoDraft } from "../components/RepoAutofill";
 import { GroupModal } from "./AccessModals";
 import { FileWorkspaceModal, NEW_FILE, riskyIn, useBundleUpload, type FileUpdate } from "./FileWorkspace";
 import { PlaybookEditor } from "../pages/PlaybookEditor";
@@ -1033,6 +1034,25 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     setEnvText((t) => ((envOn && envMode === "paste" && t.trim() ? `${t.replace(/\s+$/, "")}\n` : "") + add.map(([k, v]) => `${k}=${v}`).join("\n")));
     toast(add.length ? `.env의 변수 ${add.length}개를 환경 변수에 더했어요` : ".env의 변수는 이미 다 들어 있어요");
   };
+  /** 저장소에서 자동으로 채우기: the draft's files, script and .env names replace what the form has. */
+  const applyDraft = (d: RepoDraft) => {
+    let next: BundleFile[] = d.files.map((x) => ({ ...x }));
+    // Images the repo builds itself follow a version: their written tag becomes ${NAME_TAG}, as 변수로 바꾸기 does.
+    for (const fi of findFileImages(next).filter((x) => x.fixed && x.var && d.own.includes(x.ref)))
+      next = next.map((x) =>
+        x.path !== fi.path || x.content === undefined
+          ? x
+          : { ...x, content: x.content.replace(new RegExp(`(image:\\s*["']?)${escapeRe(fi.value)}`, "g"), `$1${fi.ref}:\${${fi.var}_TAG}`) },
+      );
+    setFiles(next);
+    setFilesTouched(true);
+    const st = d.steps ?? (d.guide ? SCRIPT_GUIDES[d.guide].steps : []);
+    setSteps(st.map((x) => ({ ...x, id: ++stepSeq })));
+    setNeededFile(null);
+    if (!name.trim()) setName(d.name);
+    if (d.env.length) mergeEnv(d.env);
+    toast(`${d.composePath ?? "저장소"}에서 파일 ${next.length}개, 스크립트 ${st.length}단계를 채웠어요`);
+  };
   const guideState = {
     on: guide,
     tip,
@@ -1528,6 +1548,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
         );
         return scriptLike ? (
           <>
+            {source === "script" && !editing && <RepoAutofill onApply={applyDraft} />}
             {source === "script" && (
               <Field label="이름" htmlFor="jName">
                 <TipSpot id="name">

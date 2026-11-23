@@ -80,21 +80,33 @@ def rollout_choice(name: str, svc: dict) -> tuple[bool, str | None]:
 
 
 def rollout_services(files: list[dict]) -> list[str]:
-    """$ROLLOUT_SERVICES: the services of the top-level compose file docker rollout can replace, in file order."""
+    """$ROLLOUT_SERVICES: the services of the top-level compose file docker rollout can replace, in file order.
+    Its override file (compose.override.yaml next to compose.yaml …), which docker compose reads with it, counts too."""
     import yaml
 
-    for name in COMPOSE_NAMES:  # docker compose's own order of preference
-        f = next((x for x in files if x.get("path", "").lower() == name), None)
+    def load(path: str) -> dict | None:
+        f = next((x for x in files if x.get("path", "").lower() == path), None)
         if not f:
-            continue
+            return None
         try:
             doc = yaml.safe_load(f.get("content") or "") or {}
         except yaml.YAMLError:
-            return []
-        services = doc.get("services") if isinstance(doc, dict) else None
+            return {}
+        return doc if isinstance(doc, dict) else {}
+
+    for name in COMPOSE_NAMES:  # docker compose's own order of preference
+        doc = load(name)
+        if doc is None:
+            continue
+        services = doc.get("services")
         if not isinstance(services, dict):
             return []
-        return [str(n) for n, svc in services.items() if rollout_choice(str(n), svc if isinstance(svc, dict) else {})[0]]
+        stem, ext = name.rsplit(".", 1)
+        override = next((d for d in (load(f"{stem}.override.yaml"), load(f"{stem}.override.yml")) if d), {}) if ext else {}
+        extra = override.get("services") if isinstance(override.get("services"), dict) else {}
+        merged = {n: {**(svc if isinstance(svc, dict) else {}), **(extra.get(n) if isinstance(extra.get(n), dict) else {})}
+                  for n, svc in services.items()}
+        return [str(n) for n, svc in merged.items() if rollout_choice(str(n), svc)[0]]
     return []
 
 

@@ -18,6 +18,7 @@ from .. import executor
 from .. import githooks
 from .. import models as m
 from .. import playinspect
+from .. import repodetect
 from .. import runner
 from .. import store as s
 from ..db import get_db
@@ -1064,6 +1065,34 @@ async def git_playbooks(body: PlaybookGitIn, db: Session = Depends(get_db)):
         raise HTTPException(400, str(e)) from None
     books = playinspect.playbooks(files)[:30]
     return {"commit": commit, "playbooks": books, "inspect": {b: _inspected(files, b) for b in books}}
+
+
+class RepoDetectIn(BaseModel):
+    url: str
+    branch: str = "main"
+    key: str = ""
+    compose: str = ""  # one of composeFiles from an earlier answer; empty: the likeliest one
+
+
+@router.post("/repos/detect")
+async def detect_repo(body: RepoDetectIn, db: Session = Depends(get_db)):
+    """A draft of a file + script job from what a Git repo holds (compose file, Kubernetes yaml…). Rules only;
+    read with the access the job form gives, nothing is kept or saved."""
+    me = s.current_member(db)
+    if not s.can(me, "job_create"):
+        raise HTTPException(403, s.NO_PERM)
+    url, branch = body.url.strip(), body.branch.strip() or "main"
+    if not s.GIT_URL_RE.match(url):
+        raise HTTPException(400, "저장소 주소를 확인해 주세요. 예: https://github.com/org/app.git")
+    if not s.BRANCH_RE.match(branch):
+        raise HTTPException(400, "브랜치 이름을 확인해 주세요. 예: main")
+    existing = db.scalar(select(m.Repo).where(m.Repo.url == url, m.Repo.branch == branch))
+    key, auth = (s.repo_key(db, existing), existing.auth) if existing else s.repo_key_for(db, url, body.key.strip())
+    try:
+        files, commit = await executor.read_repo_files(executor.git_access("", url, branch, auth, key), branch)
+    except executor.RepoFileError as e:
+        raise HTTPException(400, str(e)) from None
+    return {"commit": commit, **repodetect.detect(files, url, body.compose.strip() or None)}
 
 
 @router.get("/jobs/{job_id}/files")
