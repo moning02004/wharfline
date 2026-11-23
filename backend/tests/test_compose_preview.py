@@ -109,3 +109,10 @@ def test_rollout_services_reads_the_top_level_compose_file():
     assert bundles.rollout_services(files) == ["app", "api", "forced"]
     assert bundles.rollout_services([{"path": "compose.yaml", "content": "services: ["}]) == []
     assert bundles.rollout_services([{"path": "Makefile", "content": "x"}]) == []
+
+
+def test_rollout_services_read_the_override_file_too():
+    from app import bundles
+    files = [{"path": "compose.yaml", "content": "services:\n  web:\n    image: x\n  api:\n    image: y\n"},
+             {"path": "compose.override.yaml", "content": "services:\n  web:\n    ports: ['80:80']\n"}]
+    assert bundles.rollout_services(files) == ["api"]
