@@ -478,7 +478,7 @@ async def init_host(inv_id: str, body: InitHostIn, db: Session = Depends(get_db)
     db.commit()
     host_id = h.id
     r = await serverinit.init_server(h.ip, h.port, h.host_fingerprint, account, body.password, token, users, paths, body.fullSudo,
-                                     url, agentinstall.agent_image(), enrolled_check(host_id, None))
+                                     url, agentinstall.agent_image(), enrolled_check(host_id, None), agent_hosts_of(db))
     db.expire_all()
     h = db.get(m.Host, host_id)
     if r["ok"] and serverinit.sshcheck.simulated() and h and not h.agent_id:
@@ -499,8 +499,11 @@ class PendingHostIn(BaseModel):
 
 
 def install_command(db: Session, token: str, users: str, paths: str) -> str:
+    """The line to run on the server. With an internal address for Wharfline's name, curl goes straight to it
+    (--resolve keeps the name, so HTTPS still checks the certificate) and the server needs no /etc/hosts edit first."""
     url = agent_url_of(db)
-    return f"curl -fsSL {url}/api/agent/install.sh | sudo sh -s -- {token} {users} {paths}"
+    resolve = agentinstall.curl_resolve(url, agent_hosts_of(db))
+    return f"curl -fsSL {resolve}{url}/api/agent/install.sh | sudo sh -s -- {token} {users} {paths}"
 
 
 @router.post("/inventory/{inv_id}/hosts/pending", dependencies=[Depends(require("resources")), Depends(require_sudo)])
@@ -563,7 +566,8 @@ async def convert_host(inv_id: str, ix: int, body: ConvertIn, db: Session = Depe
     db.commit()
     host_id = h.id
     r = await serverinit.convert_server(h.ip, h.port, h.host_fingerprint, h.ssh_user, key.get_secret() or "", token, users, paths,
-                                        agent_url_of(db), agentinstall.agent_image(), enrolled_check(host_id, None))
+                                        agent_url_of(db), agentinstall.agent_image(), enrolled_check(host_id, None),
+                                        agent_hosts_of(db))
     db.expire_all()
     h = db.get(m.Host, host_id)
     if r["ok"] and serverinit.sshcheck.simulated() and h and not h.agent_id:
@@ -627,13 +631,24 @@ def agent_url_of(db: Session) -> str:
     return agent_url(db)
 
 
+def agent_hosts_of(db: Session) -> list[list[str]]:
+    from .agent import agent_hosts
+    return agent_hosts(db)
+
+
 class AgentSettingsIn(BaseModel):
     url: str
+    hosts: str | None = None  # /etc/hosts-style lines; None keeps the saved ones
+
+
+def agent_settings(db: Session, saved_url: str) -> dict:
+    return {"url": agent_url_of(db), "saved": saved_url, "image": agentinstall.agent_image(),
+            "hosts": agentinstall.hosts_text(agent_hosts_of(db))}
 
 
 @router.get("/agent-settings")
 def get_agent_settings(db: Session = Depends(get_db)):
-    return {"url": agent_url_of(db), "saved": s.get_setting(db, "agent").get("url") or "", "image": agentinstall.agent_image()}
+    return agent_settings(db, s.get_setting(db, "agent").get("url") or "")
 
 
 @router.put("/agent-settings", dependencies=[Depends(require("resources")), Depends(require_sudo)])
@@ -641,10 +656,20 @@ def put_agent_settings(body: AgentSettingsIn, db: Session = Depends(get_db)):
     url = body.url.strip().rstrip("/")
     if url and not re.match(r"^https?://[A-Za-z0-9.\-\[\]:]+(/[A-Za-z0-9._~/-]*)?$", url):
         raise HTTPException(400, "주소는 https://deploy.example.com 처럼 적어 주세요.")
-    s.set_setting(db, "agent", url=url)
-    s.log_act(db, "에이전트 접속 주소 변경", url or "기본값")
+    changes: dict = {"url": url}
+    if body.hosts is not None:
+        try:
+            changes["hosts"] = agentinstall.parse_hosts(body.hosts)
+        except ValueError as e:
+            raise HTTPException(400, str(e)) from e
+    before = s.get_setting(db, "agent")
+    s.set_setting(db, "agent", **changes)
+    if url != (before.get("url") or ""):
+        s.log_act(db, "에이전트 접속 주소 변경", url or "기본값")
+    if "hosts" in changes and changes["hosts"] != (before.get("hosts") or []):
+        s.log_act(db, "내부 주소 변경", ", ".join(f"{n} → {ip}" for ip, n in changes["hosts"]) or "모두 지움")
     db.commit()
-    return {"url": agent_url_of(db), "saved": url, "image": agentinstall.agent_image()}
+    return agent_settings(db, url)
 
 
 @router.post("/inventory/{inv_id}/ping", dependencies=[Depends(require("resources"))])

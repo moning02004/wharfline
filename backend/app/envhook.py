@@ -66,8 +66,9 @@ def check_push(base: str, auth: str, repo: str) -> str:
     return str(user["login"])
 
 
-def parse(payload: Any) -> tuple[str, list[list[str]]]:
-    """(owner/name, [[KEY, value], ...]) from {"repo": ..., "env": "<.env text>"}. A key given twice keeps the last value."""
+def parse(payload: Any) -> tuple[str, list[list[str]], str]:
+    """(owner/name, [[KEY, value], ...], the text) from {"repo": ..., "env": "<.env text>"}. A key given twice keeps the
+    last value. The text is kept with the set, so its comments and blank lines go into the deployed .env too."""
     if not isinstance(payload, dict):
         raise Rejected(400, '{"repo": "owner/name", "env": ".env 내용"} 형식으로 보내 주세요.')
     repo = str(payload.get("repo") or "").strip().removesuffix(".git")
@@ -81,36 +82,38 @@ def parse(payload: Any) -> tuple[str, list[list[str]]]:
         values[k] = v
     if not values:
         raise Rejected(400, ".env 에 KEY=VALUE 줄이 없어요.")
-    return repo, [[k, v] for k, v in values.items()]
+    return repo, [[k, v] for k, v in values.items()], text
 
 
 def env_name(repo: str) -> str:
     return f"{repo.split('/', 1)[1].lower()}-env"
 
 
-def save(db: Session, name: str, vars_: list[list[str]], login: str) -> dict[str, Any]:
+def save(db: Session, name: str, vars_: list[list[str]], login: str, text: str | None = None) -> dict[str, Any]:
     """Create the set, or store the upload as its next version. Only variable names are logged or returned."""
-    from .routers.envs import replace_vars
+    from .routers.envs import plain_text, replace_vars
 
     who = f"{login} (Gitea)"
     e = db.scalar(select(m.EnvSet).where(m.EnvSet.name == name))
     if not e:
         e = m.EnvSet(id=s.new_id("e"), name=name, ver=1, updated=f"방금 · {who}")
-        e.set_vars(vars_)
+        e.set_vars(vars_, text)
         db.add(e)
         d = {"add": [k for k, _ in vars_], "chg": [], "del": []}
         status = "created"
     else:
-        d = s.diff_vars(e.get_vars(), vars_)
-        if not any(d.values()):
+        cur_vars, cur_text = e.get_payload()
+        d = s.diff_vars(cur_vars, vars_)
+        same_text = text is None or text == (cur_text if cur_text is not None else plain_text(cur_vars))
+        if not any(d.values()) and same_text:
             return {"name": name, "ver": e.ver, "status": "unchanged", "added": [], "changed": [], "removed": []}
-        replace_vars(e, vars_, f"방금 · {who}")
+        replace_vars(e, vars_, f"방금 · {who}", text)
         status = "updated"
     parts = " / ".join(p for p in [
         d["add"] and "추가 " + ", ".join(d["add"]),
         d["chg"] and "수정 " + ", ".join(d["chg"]),
         d["del"] and "삭제 " + ", ".join(d["del"]),
-    ] if p)
+    ] if p) or "주석·순서만 수정"
     db.add(m.Activity(time=s.now_hms(), user=who[:128], action="환경 변수 업로드", object=f"{name} v{e.ver} · {parts}"[:500],
                       ip=s.client_ip(), result="ok"))
     db.commit()

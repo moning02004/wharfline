@@ -119,6 +119,7 @@ class Plan:
     # both
     env_label: str = ""
     env_vars: list[list[str]] | None = None
+    env_text: str | None = None  # the set's .env as written: its comments and blank lines go into the file too
     env_path: str = ""
     registries: list[Registry] = field(default_factory=list)
     done_label: str = ""
@@ -242,7 +243,7 @@ def _fill(db: Session, plan: Plan, job: dict, groups: list[str], tag: str, runne
     if job.get("env") and not env:
         raise PlanError(f"환경 변수 {job['env']}을(를) 찾을 수 없어요.")
     if env:
-        plan.env_vars = env.get_vars()
+        plan.env_vars, plan.env_text = env.get_payload()
         plan.env_label = f"{env.name} v{env.ver}"
         plan.secrets += [v for _, v in plan.env_vars]
 
@@ -486,7 +487,7 @@ def access_lines(plan: Plan) -> list[Line]:
 PLAIN_VALUE = re.compile(r"[A-Za-z0-9_./:@%+,=-]*")
 
 
-def env_file_text(vars_: list[list[str]], style: str = "compose") -> str:
+def env_file_text(vars_: list[list[str]], style: str = "compose", layout: str | None = None) -> str:
     """KEY=value lines, written so the reader gets back exactly the stored value.
 
     compose: docker compose reads .env with its own rules: unquoted and double-quoted values expand
@@ -495,9 +496,10 @@ def env_file_text(vars_: list[list[str]], style: str = "compose") -> str:
       newline is double-quoted with \\ " $ and newlines escaped.
     docker: `docker run --env-file` takes everything after = literally, quotes included, and has no
       way to write a newline. Values are written as they are.
+    layout: the .env as it was written. Its comment and blank lines stay where they were; each variable
+      line is written again by the rules above, so a comment never changes what a value reads as.
     """
-    out = []
-    for k, v in vars_:
+    def line(k: str, v: str) -> str:
         if style == "docker":
             if "\n" in v:
                 raise ValueError(f"{k} 값에 줄바꿈이 있어요. docker --env-file로는 넘길 수 없어요.")
@@ -506,7 +508,22 @@ def env_file_text(vars_: list[list[str]], style: str = "compose") -> str:
                 v = f"'{v}'"
             else:
                 v = '"' + v.replace("\\", "\\\\").replace('"', '\\"').replace("$", "\\$").replace("\n", "\\n") + '"'
-        out.append(f"{k}={v}")
+        return f"{k}={v}"
+
+    values = dict(map(tuple, vars_))
+    out: list[str] = []
+    done: set[str] = set()
+    for raw in (layout or "").splitlines():
+        t = raw.strip()
+        kv = s.env_line(raw)
+        if kv and kv[0] in values and kv[0] not in done:
+            out.append(line(kv[0], values[kv[0]]))
+            done.add(kv[0])
+        elif not t or t.startswith("#"):
+            out.append(t)  # docker --env-file takes a comment only at the start of a line
+    out += [line(k, v) for k, v in vars_ if k not in done]
+    while out and not out[-1]:
+        out.pop()
     return "\n".join(out) + "\n"
 
 
@@ -1043,7 +1060,7 @@ async def _run_playbook(plan: Plan, out: Out, tmp: Path) -> bool:
         # The built-in playbook hands the file to `docker run --env-file`; other playbooks usually to compose.
         style = "docker" if plan.repo["kind"] == "builtin" else "compose"
         try:
-            extra[".wharfline/app.env"] = env_file_text(plan.env_vars, style)
+            extra[".wharfline/app.env"] = env_file_text(plan.env_vars, style, plan.env_text)
         except ValueError as e:
             out.line("r", f"✘ {e}")
             out.end("플레이북 실행", False)
@@ -1234,7 +1251,7 @@ async def _run_script(plan: Plan, out: Out) -> bool:
 
         if plan.env_vars is not None and ".env 전송" in plan.steps and alive:
             header(".env 전송", f"Upload .env → {plan.env_path} ({plan.env_label})")
-            text = env_file_text(plan.env_vars)
+            text = env_file_text(plan.env_vars, layout=plan.env_text)
             for k, _ in plan.env_vars[:3]:
                 out.line("m", f"  {k}={MASK}")
 

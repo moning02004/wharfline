@@ -41,6 +41,11 @@ def agent_url(db: Session) -> str:
     return v.rstrip("/")
 
 
+def agent_hosts(db: Session) -> list[list[str]]:
+    """Internal addresses written into the servers' /etc/hosts: [[ip, name], ...] (see agentinstall)."""
+    return [list(p) for p in s.get_setting(db, SETTING).get("hosts") or []]
+
+
 def _clean_info(info: Any) -> dict[str, Any]:
     if not isinstance(info, dict) or len(json.dumps(info)) > MAX_INFO:
         return {}
@@ -182,4 +187,4 @@ async def finish(task_id: str, request: Request):
 
 @router.get("/install.sh", response_class=PlainTextResponse)
 def install_sh(db: Session = Depends(get_db)):
-    return agentinstall.install_script(agent_url(db), agentinstall.agent_image())
+    return agentinstall.install_script(agent_url(db), agentinstall.agent_image(), agent_hosts(db))

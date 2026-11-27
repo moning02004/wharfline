@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
-import type { EnvSet } from "../lib/types";
-import { EditEnvModal, EnvHistoryModal, NewEnvModal } from "../modals/EnvModals";
+import type { EnvSet, EnvValues } from "../lib/types";
+import { EnvHistoryModal, NewEnvModal } from "../modals/EnvModals";
+import { openEnvWorkspace } from "../modals/EnvWorkspace";
 import { copyText } from "../modals/ResourceModals";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
@@ -25,7 +26,7 @@ export default function Envs() {
     <>
       <PageHeader title="환경 변수" desc="배포할 때 서버에 넣는 .env 묶음이에요.">
         {manage && (
-          <Button variant="primary" icon="upload" onClick={() => openModal((c) => <NewEnvModal onClose={c} />, "md")}>
+          <Button variant="primary" icon="upload" onClick={() => openModal((c) => <NewEnvModal onClose={c} />, "full")}>
             .env 추가
           </Button>
         )}
@@ -87,29 +88,34 @@ export default function Envs() {
  * and edit / history / copy. Revealed values live only here and go away when sudo ends.
  */
 function EnvSetModal({ env, onClose }: { env: EnvSet; onClose: () => void }) {
-  const { withSudo, openModal, toast, can, sudoActive } = useApp();
+  const { withSudo, openModal, toast, can, sudoActive, refresh } = useApp();
   const manage = can("env");
   const [vals, setVals] = useState<[string, string][] | null>(null);
+  const [text, setText] = useState<string | null>(null);
   useEffect(() => {
-    if (!sudoActive) setVals(null);
+    if (!sudoActive) {
+      setVals(null);
+      setText(null);
+    }
   }, [sudoActive]);
 
   const reveal = () =>
     vals
-      ? setVals(null)
+      ? (setVals(null), setText(null))
       : withSudo("환경 변수 값 보기", async () => {
-          const r = await api.get<{ vars: [string, string][] }>(`/envs/${env.id}/values`);
+          const r = await api.get<EnvValues>(`/envs/${env.id}/values`);
           setVals(r.vars);
+          setText(r.text);
         });
   const edit = () =>
     withSudo("환경 변수 수정", async () => {
-      const r = await api.get<{ vars: [string, string][] }>(`/envs/${env.id}/values?purpose=edit`);
+      const r = await api.get<EnvValues>(`/envs/${env.id}/values?purpose=edit`);
       onClose();
-      openModal((c) => <EditEnvModal env={env} values={r.vars} onClose={c} />, "md");
+      openEnvWorkspace(env, r, { openModal, withSudo, toast, refresh });
     });
   const copy = () => {
-    if (!vals) return;
-    copyText(vals.map(([k, v]) => `${k}=${v}`).join("\n"), toast);
+    if (text === null) return;
+    copyText(text, toast); // as written, comments included
     api.post(`/envs/${env.id}/copied`).catch(() => {});
   };
 

@@ -151,6 +151,7 @@ Gitea(Forgejo), GitHub, GitLab의 CI가 이미지를 빌드하는 동안 배포 
 - **비밀번호 없는 sudo**: `become: true` 플레이북에 필요해요. 서버 수정에서 허용 계정마다 켜고 끌 수 있어요(`/etc/sudoers.d/wharfline-<계정>`).
 - **에이전트 업데이트**: 서버 수정의 '에이전트 업데이트'를 누르면 에이전트가 Wharfline의 에이전트 이미지(`WHARFLINE_AGENT_IMAGE`, 릴리스와 같은 태그)를 받아 자기 컨테이너를 바꿔요. 등록 정보는 볼륨에 남아서 다시 등록하지 않아요.
 - **에이전트 접속 주소**: 기본은 `WHARFLINE_URL`. 서버에서 닿는 주소가 다르면(사내망 주소 등) 인벤토리의 '에이전트 설정'에서 바꿔요. 이미 설치된 에이전트는 설치할 때의 주소를 써요.
+- **내부 주소**: 같은 사설망의 서버가 Wharfline이나 레지스트리의 공인 도메인으로 접속하지 못할 때(헤어핀 NAT 없음) '에이전트 설정'에 `10.0.1.6 deploy.example.com git.example.com`처럼 적어요. 설치·초기화·에이전트 전환 때 서버의 `/etc/hosts` 맨 위에 `# BEGIN wharfline` ~ `# END wharfline` 블록으로 들어가고(다시 실행하면 그 블록만 바뀌어요), 설치 명령의 curl은 `--resolve`로 사설 IP에 바로 접속해요. 서버마다 `/etc/hosts`를 손으로 고칠 필요가 없어요.
 
 ## 배포 실행
 

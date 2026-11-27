@@ -361,6 +361,12 @@ export interface EnvSet {
   usedBy: string[];
 }
 
+/** /envs/{id}/values: the variables, and the .env as written (comments and blank lines included). */
+export interface EnvValues {
+  vars: [string, string][];
+  text: string;
+}
+
 export interface EnvDiff {
   add: string[];
   chg: string[];

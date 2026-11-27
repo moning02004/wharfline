@@ -23,7 +23,7 @@ from .. import runner
 from .. import store as s
 from ..db import get_db
 from ..deps import build_scope, require, require_login, require_sudo, viewer
-from .envs import replace_vars
+from .envs import plain_text, replace_vars, vars_from
 
 router = APIRouter(prefix="/api", tags=["deploy"], dependencies=[Depends(require_login)])
 
@@ -267,6 +267,7 @@ class JobIn(BaseModel):
     envMode: str = Field(default="paste", pattern="^(paste|existing|none|copy)$")  # copy: a new set with envName's values
     envName: str | None = None
     envVars: list[list[str]] = []
+    envText: str | None = None  # the pasted .env as written; when sent, envVars come from it and its comments are kept
     editors: EditorsIn = Field(default_factory=EditorsIn)
     hook: bool = False
     hookRule: str = "v"  # v | date | any | re:<regex>
@@ -581,14 +582,14 @@ def existing_env(db: Session, env_name: str | None) -> str:
     return env_name or ""
 
 
-def new_env_set(db: Session, job_name: str, vars_: list[list[str]]) -> str:
+def new_env_set(db: Session, job_name: str, vars_: list[list[str]], text: str | None = None) -> str:
     """A new .env set named after the job ("api · prod" -> "api.prod")."""
     env_name = re.sub(r"\s+", "-", re.sub(r"\s*·\s*", ".", job_name))
     if s.env_by_name(db, env_name):
         raise HTTPException(400, f"환경 변수 {env_name}이(가) 이미 있어요. '저장된 것 쓰기'를 골라 주세요.")
     s.validate_vars(vars_)
     env = m.EnvSet(id=s.new_id("e"), name=env_name, ver=1, updated=f"방금 · {s.actor_name(db)}")
-    env.set_vars(vars_)
+    env.set_vars(vars_, text)
     db.add(env)
     return env_name
 
@@ -721,9 +722,9 @@ def create_job(body: JobIn, db: Session = Depends(get_db), scope: set[str] | Non
         env_name = existing_env(db, body.envName)
     elif body.envMode == "copy":  # 복제: the values of another set, in a set of its own (never shown to the member)
         src = db.scalar(select(m.EnvSet).where(m.EnvSet.name == existing_env(db, body.envName)))
-        env_name = new_env_set(db, name, src.get_vars())
+        env_name = new_env_set(db, name, *src.get_payload())
     else:
-        env_name = new_env_set(db, name, body.envVars)
+        env_name = new_env_set(db, name, vars_from(body.envVars, body.envText), body.envText)
 
     files = bundles.check_files([f.model_dump() for f in body.files or []]) if script is not None else None
     if body.playbook.source == "upload":
@@ -796,13 +797,16 @@ def update_job(job_id: str, body: JobUpdate, db: Session = Depends(get_db), scop
     elif body.envMode == "existing":
         env_name = existing_env(db, body.envName)
     elif body.envMode == "paste":
+        new_vars = vars_from(body.envVars, body.envText)
         if current_set:
-            s.validate_vars(body.envVars)
-            if any(s.diff_vars(current_set.get_vars(), body.envVars).values()):
-                replace_vars(current_set, body.envVars, f"방금 · {s.actor_name(db)}")
+            s.validate_vars(new_vars)
+            cur_vars, cur_text = current_set.get_payload()
+            text_changed = body.envText is not None and body.envText != (cur_text if cur_text is not None else plain_text(cur_vars))
+            if any(s.diff_vars(cur_vars, new_vars).values()) or text_changed:
+                replace_vars(current_set, new_vars, f"방금 · {s.actor_name(db)}", body.envText)
                 changed.append("env")
         else:
-            env_name = new_env_set(db, name, body.envVars)
+            env_name = new_env_set(db, name, new_vars, body.envText)
 
     new = {
         "name": name, "playbook": (repo.name if repo else None, path, script, service_path, body.compose is not None), "files": files, "images": [{k: x.get(k) for k in ("ref", "var", "defaultTag", "literal", "tagVar")} for x in extra_images], "target": (body.inventory, list(body.targets)),

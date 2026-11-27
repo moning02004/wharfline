@@ -53,7 +53,7 @@ def _head() -> list[str]:
     return ["set -eu", "IFS= read -r TOKEN", "exec </dev/null"]
 
 
-def init_script(users: str, paths: str, full_sudo: bool, url: str, image: str) -> str:
+def init_script(users: str, paths: str, full_sudo: bool, url: str, image: str, hosts: list[list[str]] | None = None) -> str:
     """POSIX sh run as root on the server. Every step can run twice; each announces itself on a MARK line."""
     names = step_names(full_sudo)
     user_list = users.split(",")
@@ -95,15 +95,15 @@ def init_script(users: str, paths: str, full_sudo: bool, url: str, image: str) -
             'visudo -cf "$F" || { rm -f "$F"; exit 1; }',
         ]
         i += 1
-    lines += [_mark(names, i), *agentinstall.run_lines(url, image, users, paths)]
+    lines += [_mark(names, i), *agentinstall.run_lines(url, image, users, paths, hosts=hosts)]
     return "\n".join(lines) + "\n"
 
 
-def convert_script(users: str, paths: str, url: str, image: str) -> str:
+def convert_script(users: str, paths: str, url: str, image: str, hosts: list[list[str]] | None = None) -> str:
     """Run as the deploy account (docker group, no root needed) on a server that deploys over SSH today."""
     names = convert_step_names()
     lines = _head() + ["docker info >/dev/null 2>&1 || { echo 'docker를 쓸 수 없어요 (docker 그룹을 확인해 주세요)'; exit 1; }",
-                       _mark(names, 0), *agentinstall.run_lines(url, image, users, paths)]
+                       _mark(names, 0), *agentinstall.run_lines(url, image, users, paths, hosts=hosts)]
     return "\n".join(lines) + "\n"
 
 
@@ -179,7 +179,8 @@ async def _finish(conn, result: dict, enrolled: EnrollWait, as_root: bool | None
 
 
 async def init_server(ip: str, port: int, fingerprint: str, account: str, password: str, token: str,
-                      users: str, paths: str, full_sudo: bool, url: str, image: str, enrolled: EnrollWait) -> dict:
+                      users: str, paths: str, full_sudo: bool, url: str, image: str, enrolled: EnrollWait,
+                      hosts: list[list[str]] | None = None) -> dict:
     """{ok, steps: [{name, status: ok | fail | skip}], log, error}. `error` says what to do when ok is false."""
     names = step_names(full_sudo)
     if sshcheck.simulated():
@@ -210,7 +211,7 @@ async def init_server(ip: str, port: int, fingerprint: str, account: str, passwo
             if not as_root and len(facts) < 2:
                 return _failed(names, f"{account} 계정은 root가 아닌데 서버에 sudo가 없어요. root로 초기화해 주세요.")
             stdin = (token + "\n") if as_root else (password + "\n" + token + "\n")
-            r = await conn.run(remote_command(init_script(users, paths, full_sudo, url, image), as_root),
+            r = await conn.run(remote_command(init_script(users, paths, full_sudo, url, image, hosts), as_root),
                                input=stdin, stderr=asyncssh.STDOUT, check=False, timeout=SETUP_TIMEOUT)
         except (OSError, asyncio.TimeoutError, asyncssh.Error) as e:
             return _failed(names, f"서버에서 설정하는 중에 끊겼어요. 다시 실행해도 괜찮아요. ({str(e) or type(e).__name__})")
@@ -223,7 +224,8 @@ async def init_server(ip: str, port: int, fingerprint: str, account: str, passwo
 
 
 async def convert_server(ip: str, port: int, fingerprint: str | None, user: str, private_key: str, token: str,
-                         users: str, paths: str, url: str, image: str, enrolled: EnrollWait) -> dict:
+                         users: str, paths: str, url: str, image: str, enrolled: EnrollWait,
+                         hosts: list[list[str]] | None = None) -> dict:
     """Start the agent on a server Wharfline deploys to over SSH today, logging in with the inventory's key."""
     names = convert_step_names()
     if sshcheck.simulated():
@@ -247,7 +249,7 @@ async def convert_server(ip: str, port: int, fingerprint: str | None, user: str,
         return _failed(names, f"{ip}:{port}에 로그인하지 못했어요. ({str(e) or type(e).__name__})")
     async with conn:
         try:
-            r = await conn.run(remote_command(convert_script(users, paths, url, image), True), input=token + "\n",
+            r = await conn.run(remote_command(convert_script(users, paths, url, image, hosts), True), input=token + "\n",
                                stderr=asyncssh.STDOUT, check=False, timeout=SETUP_TIMEOUT)
         except (OSError, asyncio.TimeoutError, asyncssh.Error) as e:
             return _failed(names, f"서버에서 설정하는 중에 끊겼어요. 다시 실행해도 괜찮아요. ({str(e) or type(e).__name__})")

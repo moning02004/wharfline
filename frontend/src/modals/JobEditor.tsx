@@ -3,8 +3,9 @@ import { Link, useLocation, useNavigate, useParams, useSearchParams } from "reac
 import { api, ApiError, errMsg, parseEnv } from "../lib/api";
 import { useApi, useApp } from "../lib/app";
 import { indentOnTab } from "../lib/indent";
-import type { BundleFile, EnvSet, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
+import type { BundleFile, EnvSet, EnvValues, Group, Inventory, Job, Key, Member, Repo } from "../lib/types";
 import { EnvSource, type EnvMode } from "../components/EnvSource";
+import { openEnvWorkspace } from "./EnvWorkspace";
 import { GroupSelect } from "../components/GroupSelect";
 import { Icon } from "../components/Icon";
 import { ModalBody, ModalFoot, ModalHead, YesNoModal } from "../components/Modal";
@@ -438,30 +439,14 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
   const [envPick, setEnvPick] = useState(job?.env ?? "");
   // The current set's values, shown in place after the password re-check (edit only).
   // Shown as KEY=VALUE text; saving writes a new version of the set right away, apart from the job.
-  const [envShown, setEnvShown] = useState<{ text: string; saved: string } | null>(null);
-  const [envSaving, setEnvSaving] = useState(false);
   const shownEnv = envs.find((x) => x.name === job?.env);
+  // The set this job uses, in the .env editor; saving stores a new version for every job using it.
   const showEnv = () => {
     if (!shownEnv) return toast(`${job?.env} 세트를 찾지 못했어요`, "error");
     withSudo("환경 변수 보기", async () => {
-      const r = await api.get<{ vars: [string, string][] }>(`/envs/${shownEnv.id}/values?purpose=edit`);
-      const text = r.vars.map(([k, v]) => `${k}=${v}`).join("\n");
-      setEnvShown({ text, saved: text });
+      const r = await api.get<EnvValues>(`/envs/${shownEnv.id}/values?purpose=edit`);
+      openEnvWorkspace(shownEnv, r, { openModal, withSudo, toast, refresh });
     }, { always: true });
-  };
-  const saveShownEnv = () => {
-    if (!envShown || !shownEnv || envSaving) return;
-    withSudo("환경 변수 저장", async () => {
-      setEnvSaving(true);
-      try {
-        const r = await api.put<EnvSet>(`/envs/${shownEnv.id}`, { vars: parseEnv(envShown.text) });
-        setEnvShown({ text: envShown.text, saved: envShown.text });
-        refresh();
-        toast(`${shownEnv.name} v${r.ver}으로 저장했어요`);
-      } finally {
-        setEnvSaving(false);
-      }
-    });
   };
   const [hook, setHook] = useState(job ? job.hook : false);
   const [hookRule, setHookRule] = useState(job?.hookRule ?? "v");
@@ -800,6 +785,7 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
     envMode: envChoice === "keep" ? "keep" : envChoice === "copy" ? "copy" : !envOn ? "none" : envMode === "existing" ? "existing" : "paste",
     envName: envChoice === "copy" ? job?.env ?? null : envOn && envMode === "existing" ? envPick : null,
     envVars: envOn && envMode !== "existing" ? envVars : [],
+    envText: envOn && envMode !== "existing" ? envText : null, // kept as written: comments and blank lines too
     // Playbook variables: Git playbook jobs only, the server rejects them elsewhere.
     playVars: source === "git" ? playVars.filter((v) => v.name.trim() || v.value).map((v) => [v.name.trim(), v.value]) : [],
     // null keeps the saved secrets (edit); a list replaces them, [] removes them all.
@@ -1680,43 +1666,11 @@ function JobEditor({ mode, job, onClose, initialGuide }: { mode: Mode; job?: Job
                   <Icon name="file" className="size-4 flex-none text-faint" />
                   {job?.env ? <span className="font-mono truncate flex-1 min-w-0">{job.env}</span> : <span className="text-muted flex-1">없음</span>}
                   {job?.env && canEnv && (
-                    envShown ? (
-                      <>
-                        <Button size="sm" variant="ghost" onClick={() => setEnvShown(null)}>
-                          {envShown.text !== envShown.saved ? "취소" : "숨기기"}
-                        </Button>
-                        <Button size="sm" variant="primary" disabled={envShown.text === envShown.saved || envSaving} onClick={saveShownEnv}>
-                          값 저장
-                        </Button>
-                      </>
-                    ) : (
-                      <Button size="sm" variant="ghost" icon="lock" onClick={showEnv}>
-                        값 보기
-                      </Button>
-                    )
+                    <Button size="sm" variant="ghost" icon="edit" onClick={showEnv}>
+                      편집기
+                    </Button>
                   )}
                 </div>
-                {envShown && (
-                  <div className="border-t border-line p-2">
-                    <Textarea
-                      className="font-mono text-[12.5px]"
-                      rows={Math.min(12, Math.max(4, envShown.text.split("\n").length + 1))}
-                      aria-label={`${job?.env} 값`}
-                      placeholder="KEY=value"
-                      value={envShown.text}
-                      onChange={(e) => setEnvShown({ ...envShown, text: e.target.value })}
-                      onKeyDown={(e) => {
-                        if ((e.metaKey || e.ctrlKey) && e.key === "s") {
-                          e.preventDefault();
-                          saveShownEnv();
-                        }
-                      }}
-                    />
-                    <p className="mt-1.5 px-1 text-[12px] text-muted">
-                      저장하면 이 세트를 쓰는 모든 작업에 새 버전이 적용돼요.
-                    </p>
-                  </div>
-                )}
               </div>
             )}
             {envOn && (
