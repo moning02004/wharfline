@@ -4,7 +4,7 @@ import { useApi, useApp } from "../lib/app";
 import type { Host, Inventory } from "../lib/types";
 import { since, stamp } from "../lib/time";
 import { ModalBody, ModalFoot, ModalHead } from "../components/Modal";
-import { Banner, Button, Chip, Dot, ErrorText, Field, Hint, Input, KV, Switch, cx } from "../components/ui";
+import { Banner, Button, Chip, Dot, ErrorText, Field, Hint, Input, KV, Switch, Textarea, cx } from "../components/ui";
 import { Icon } from "../components/Icon";
 import { copyText } from "./ResourceModals";
 
@@ -32,6 +32,8 @@ export interface AgentSettings {
   url: string;
   saved: string;
   image: string;
+  /** Internal addresses written into the servers' /etc/hosts, one "IP name name…" per line */
+  hosts: string;
 }
 
 /** An agent counts as connected when it polled in the last minute. */
@@ -274,13 +276,15 @@ export function AgentSettingsModal({ onClose }: { onClose: () => void }) {
   const { withSudo, toast } = useApp();
   const { data } = useApi<AgentSettings>("/agent-settings");
   const [url, setUrl] = useState<string | null>(null);
+  const [hosts, setHosts] = useState<string | null>(null);
   const value = url ?? data?.saved ?? "";
+  const hostsValue = hosts ?? data?.hosts ?? "";
   const save = (e: React.FormEvent) => {
     e.preventDefault();
-    withSudo("에이전트 접속 주소", async () => {
+    withSudo("에이전트 설정", async () => {
       try {
-        await api.put("/agent-settings", { url: value.trim() });
-        toast("에이전트 접속 주소를 바꿨어요");
+        await api.put("/agent-settings", { url: value.trim(), hosts: hostsValue });
+        toast("에이전트 설정을 저장했어요");
         onClose();
       } catch (err) {
         if ((err as { sudoRequired?: boolean }).sudoRequired) throw err;
@@ -299,6 +303,25 @@ export function AgentSettingsModal({ onClose }: { onClose: () => void }) {
             hint={<>서버의 에이전트가 Wharfline에 접속할 주소예요. 비우면 {data?.url ? <span className="font-mono">{data.url}</span> : "Wharfline 주소"}를 써요. 이미 설치된 에이전트는 설치할 때의 주소를 계속 써요.</>}
           >
             <Input id="agUrl" mono spellCheck={false} placeholder={data?.url || "https://deploy.example.com"} value={value} onChange={(e) => setUrl(e.target.value)} />
+          </Field>
+          <Field
+            label="내부 주소"
+            htmlFor="agHosts"
+            hint={
+              <>
+                서버에서 공인 주소로는 닿지 않는 도메인(같은 사설망의 Wharfline, 레지스트리)을 사설 IP로 적어요. /etc/hosts 형식으로 한 줄에 <span className="font-mono">IP 도메인 …</span>.
+                설치·초기화할 때 서버의 /etc/hosts에 넣고, Wharfline 주소가 있으면 설치 명령의 curl도 그 IP로 바로 접속해요. 이미 설치된 서버는 설치 명령을 다시 실행하면 바뀐 내용이 들어가요.
+              </>
+            }
+          >
+            <Textarea
+              id="agHosts"
+              rows={4}
+              spellCheck={false}
+              placeholder={"10.0.1.6 deploy.example.com git.example.com"}
+              value={hostsValue}
+              onChange={(e) => setHosts(e.target.value)}
+            />
           </Field>
           {data && <KV items={[["에이전트 이미지", <span className="font-mono break-all">{data.image}</span>, "!whitespace-normal"]]} labelWidth={96} />}
         </ModalBody>
