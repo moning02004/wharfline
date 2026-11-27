@@ -332,6 +332,29 @@ def prev_tag(db: Session, job: dict, img: dict) -> str | None:
 ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 ENV_MAX_VARS = 500
 ENV_MAX_VALUE = 32 * 1024
+ENV_MAX_TEXT = 512 * 1024
+
+
+def env_line(line: str) -> tuple[str, str] | None:
+    """(KEY, value) of one .env line, or None for a comment, a blank line or anything without "=".
+    Same rules as parseEnv in the web app: `export ` is dropped, one pair of quotes around the value too."""
+    t = line.strip()
+    if not t or t.startswith("#") or "=" not in t:
+        return None
+    k, _, v = t.partition("=")
+    k = re.sub(r"^export\s+", "", k).strip()
+    v = v.strip()
+    v = re.sub(r"""^["']|["']$""", "", v)
+    return k, v
+
+
+def parse_env_text(text: str) -> list[list[str]]:
+    """The variables of a pasted .env, in order. Comments and blank lines stay in the text only."""
+    from fastapi import HTTPException
+
+    if len(text) > ENV_MAX_TEXT:
+        raise HTTPException(400, f".env 텍스트가 너무 길어요 (최대 {ENV_MAX_TEXT // 1024}KB).")
+    return [list(kv) for line in text.splitlines() if (kv := env_line(line))]
 
 
 def validate_vars(vars_: list[list[str]]) -> None:

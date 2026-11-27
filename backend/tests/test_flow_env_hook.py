@@ -21,7 +21,7 @@ def gitea(monkeypatch):
             return 401, None
         if path == "user":
             return 200, {"login": users[auth]}
-        if path == "repos/ermore-org/ergo-hook":
+        if path in ("repos/ermore-org/ergo-hook", "repos/ermore-org/ergo-notes"):
             return 200, {"permissions": {"admin": False, "push": auth == GOOD, "pull": True}}
         return 404, None
 
@@ -58,7 +58,8 @@ def test_upload_creates_then_versions(client, login, gitea):
     assert e["ver"] == 1 and e["values"] == {"PGPASSWORD": "two", "API_KEY": "", "MODE": "prod"}
 
     set_session_cookie(client, None)
-    assert _send(client, GOOD, "PGPASSWORD=two\nAPI_KEY=\nMODE=prod\n").json()["status"] == "unchanged"
+    first = "# comment\nPGPASSWORD=one\nAPI_KEY=\nexport MODE='prod'\nPGPASSWORD=two\n"
+    assert _send(client, GOOD, first).json()["status"] == "unchanged"
     r = _send(client, GOOD, "PGPASSWORD=three\nMODE=prod\nNEW=1\n").json()
     assert (r["status"], r["ver"], r["added"], r["changed"], r["removed"]) == ("updated", 2, ["NEW"], ["PGPASSWORD"], ["API_KEY"])
 
@@ -80,3 +81,20 @@ def test_rejects(client, gitea, monkeypatch):
     assert _send(client, GOOD, "# nothing").status_code == 400
     monkeypatch.delenv("WHARFLINE_GITEA_URL")
     assert _send(client, GOOD, "A=1").status_code == 503
+
+
+def test_upload_keeps_the_text_as_written(client, login, gitea):
+    from tests.conftest import set_session_cookie
+
+    set_session_cookie(client, None)
+    text = "# DB\nPGPASSWORD=one\n\n# API\nAPI_KEY=k\n"
+    assert _send(client, GOOD, text, repo="ermore-org/ergo-notes").json()["status"] == "created"
+    e = _env(client, login, "ergo-notes-env")
+    assert client.get(f"/api/envs/{e['id']}/values?purpose=edit").json()["text"] == text
+
+    set_session_cookie(client, None)
+    r = _send(client, GOOD, repo="ermore-org/ergo-notes", env="# DB (운영)\nPGPASSWORD=one\n\n# API\nAPI_KEY=k\n").json()  # only a comment changed
+    assert (r["status"], r["ver"], r["added"], r["changed"], r["removed"]) == ("updated", 2, [], [], [])
+    login(OWNER)
+    acts = [a for a in client.get("/api/activity").json()["items"] if a["action"] == "환경 변수 업로드"]
+    assert acts[0]["object"].endswith("주석·순서만 수정")

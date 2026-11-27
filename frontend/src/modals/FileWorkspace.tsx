@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type RefObject } from "react";
 import { api, ApiError, errMsg } from "../lib/api";
 import { fromDrop, fromFileList, uploadBody, type Picked } from "../lib/folder";
 import { FileTree } from "../components/FileTree";
@@ -99,7 +99,23 @@ const when = (t: number) => new Date(t * 1000).toLocaleString("ko-KR", { month: 
 const NEW = "\u0000new";
 
 /** Textarea with line numbers. No wrapping, so each number stays beside its line. */
-function CodeArea({ value, onChange, placeholder, autoFocus, label }: { value: string; onChange: (v: string) => void; placeholder?: string; autoFocus?: boolean; label: string }) {
+export function CodeArea({
+  value,
+  onChange,
+  placeholder,
+  autoFocus,
+  label,
+  areaRef,
+  onKeyDown,
+}: {
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+  autoFocus?: boolean;
+  label: string;
+  areaRef?: RefObject<HTMLTextAreaElement>;
+  onKeyDown?: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
+}) {
   const gutter = useRef<HTMLDivElement>(null);
   const n = value.split("\n").length;
   return (
@@ -110,6 +126,7 @@ function CodeArea({ value, onChange, placeholder, autoFocus, label }: { value: s
         ))}
       </div>
       <textarea
+        ref={areaRef}
         aria-label={label}
         wrap="off"
         spellCheck={false}
@@ -118,7 +135,10 @@ function CodeArea({ value, onChange, placeholder, autoFocus, label }: { value: s
         className="flex-1 min-w-0 resize-none outline-none bg-surface text-fg placeholder:text-faint p-3 whitespace-pre overflow-auto scroll-soft"
         value={value}
         onChange={(e) => onChange(e.target.value)}
-        onKeyDown={indentOnTab}
+        onKeyDown={(e) => {
+          onKeyDown?.(e);
+          if (!e.defaultPrevented) indentOnTab(e);
+        }}
         onScroll={(e) => {
           if (gutter.current) gutter.current.scrollTop = e.currentTarget.scrollTop;
         }}

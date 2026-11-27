@@ -265,12 +265,23 @@ class EncryptedVars:
     def envelope(self, env: crypto.Envelope) -> None:
         self.kek_id, self.wrapped_dek, self.nonce, self.ciphertext = env.kek_id, env.wrapped_dek, env.nonce, env.ciphertext
 
-    def set_vars(self, vars_: list[list[str]]) -> None:
+    def set_vars(self, vars_: list[list[str]], text: str | None = None) -> None:
+        """text: the .env as it was written (comments, blank lines, order), sealed with the values.
+        Without it the payload is the bare list, as rows written before text was kept."""
         self.var_names = [k for k, _ in vars_]
-        self.envelope = crypto.seal_json(vars_, self.crypto_context())
+        payload: Any = {"vars": vars_, "text": text} if text is not None else vars_
+        self.envelope = crypto.seal_json(payload, self.crypto_context())
+
+    def get_payload(self) -> tuple[list[list[str]], str | None]:
+        """(vars, text) in one decryption; text is None for rows saved as a bare list."""
+        p = crypto.open_json(self.envelope, self.crypto_context())
+        return (p["vars"], p.get("text")) if isinstance(p, dict) else (p, None)
 
     def get_vars(self) -> list[list[str]]:
-        return crypto.open_json(self.envelope, self.crypto_context())
+        return self.get_payload()[0]
+
+    def get_text(self) -> str | None:
+        return self.get_payload()[1]
 
     def check_secret(self) -> None:
         self.get_vars()

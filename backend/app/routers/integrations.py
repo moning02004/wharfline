@@ -115,14 +115,14 @@ async def env_hook(request: Request, db: Session = Depends(get_db)):
     if not base:
         raise HTTPException(503, "이 Wharfline 에는 WHARFLINE_GITEA_URL 이 설정되지 않았어요.")
     try:
-        repo, vars_ = envhook.parse(json.loads(body))
+        repo, vars_, text = envhook.parse(json.loads(body))
         s.validate_vars(vars_)
         login = await asyncio.to_thread(envhook.check_push, base, auth, repo)
     except ValueError as e:
         raise HTTPException(400, "JSON 으로 보내 주세요.") from e
     except envhook.Rejected as e:
         raise HTTPException(e.status, e.detail) from e
-    return {"ok": True, **envhook.save(db, envhook.env_name(repo), vars_, login)}
+    return {"ok": True, **envhook.save(db, envhook.env_name(repo), vars_, login, text)}
 
 
 # ---------- settings ----------
